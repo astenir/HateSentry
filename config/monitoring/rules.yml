@@ -1,0 +1,234 @@
+groups:
+  - name: hatesentry_alerts
+    interval: 30s
+    rules:
+      # 应用健康告警
+      - alert: ApplicationDown
+        expr: up{job="hatesentry-app"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "HateSentry 应用已停止"
+          description: "{{ $labels.instance }} 应用已停止运行超过1分钟"
+
+      - alert: HighErrorRate
+        expr: rate(http_requests_total{status=~"5.."}[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "高错误率"
+          description: "{{ $labels.instance }} 错误率超过 10% (当前: {{ $value }})"
+
+      # 性能告警
+      - alert: HighLatency
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "高延迟"
+          description: "{{ $labels.instance }} P95 延迟超过 1秒 (当前: {{ $value }}s)"
+
+      - alert: VeryHighLatency
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) > 5
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "极高延迟"
+          description: "{{ $labels.instance }} P95 延迟超过 5秒 (当前: {{ $value }}s)"
+
+      # 检测服务告警
+      - alert: DetectionServiceDown
+        expr: rate(detection_requests_total[5m]) == 0
+        for: 10m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "检测服务无响应"
+          description: "检测服务在过去10分钟内没有处理任何请求"
+
+      - alert: HighDetectionFailureRate
+        expr: |
+          sum(rate(detection_requests_total{provider="openai"}[5m])) by (provider) 
+          / 
+          sum(rate(detection_requests_total[5m])) by (provider) 
+          < 0.95
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "检测服务成功率低"
+          description: "{{ $labels.provider }} 检测服务成功率低于 95%"
+
+      # 数据库告警
+      - alert: DatabaseDown
+        expr: up{job="mysql"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: dba
+        annotations:
+          summary: "数据库连接失败"
+          description: "MySQL 数据库无法连接"
+
+      - alert: SlowDatabaseQueries
+        expr: rate(db_query_duration_seconds_sum[5m]) / rate(db_query_duration_seconds_count[5m]) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          team: dba
+        annotations:
+          summary: "慢查询"
+          description: "数据库查询平均延迟超过 500ms"
+
+      - alert: DatabaseConnectionPoolExhausted
+        expr: db_connections_active / db_connections_active + db_connections_idle > 0.9
+        for: 5m
+        labels:
+          severity: warning
+          team: dba
+        annotations:
+          summary: "数据库连接池耗尽"
+          description: "数据库连接池使用率超过 90%"
+
+      # 缓存告警
+      - alert: CacheDown
+        expr: up{job="redis"} == 0
+        for: 1m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Redis 缓存连接失败"
+          description: "Redis 缓存无法连接"
+
+      - alert: LowCacheHitRate
+        expr: |
+          rate(cache_hits_total[5m]) 
+          / 
+          (rate(cache_hits_total[5m]) + rate(cache_misses_total[5m])) 
+          < 0.6
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "缓存命中率低"
+          description: "缓存命中率低于 60% (当前: {{ $value }})"
+
+      # 消息队列告警
+      - alert: RabbitMQDown
+        expr: up{job="rabbitmq"} == 0
+        for: 1m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "RabbitMQ 连接失败"
+          description: "RabbitMQ 消息队列无法连接"
+
+      - alert: MessageQueueBacklog
+        expr: mq_queue_size > 1000
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "消息队列积压"
+          description: "{{ $labels.queue }} 队列积压超过 1000 条消息 (当前: {{ $value }})"
+
+      - alert: HighConsumerLag
+        expr: mq_consumer_lag > 500
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "消费者延迟高"
+          description: "{{ $labels.queue }} 消费者延迟超过 500 条消息"
+
+      # 系统资源告警
+      - alert: HighMemoryUsage
+        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "内存使用率高"
+          description: "内存使用率超过 85% (当前: {{ $value }}%)"
+
+      - alert: CriticalMemoryUsage
+        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 95
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "内存严重不足"
+          description: "内存使用率超过 95% (当前: {{ $value }}%)"
+
+      - alert: HighCPUUsage
+        expr: 100 - (avg by(instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "CPU 使用率高"
+          description: "CPU 使用率超过 80% (当前: {{ $value }}%)"
+
+      - alert: DiskSpaceRunningLow
+        expr: (node_filesystem_avail_bytes{fstype=~"ext4|xfs"} / node_filesystem_size_bytes{fstype=~"ext4|xfs"}) * 100 < 15
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "磁盘空间不足"
+          description: "{{ $labels.device }} 磁盘空间剩余低于 15% (当前: {{ $value }}%)"
+
+      - alert: DiskSpaceCritical
+        expr: (node_filesystem_avail_bytes{fstype=~"ext4|xfs"} / node_filesystem_size_bytes{fstype=~"ext4|xfs"}) * 100 < 5
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "磁盘空间严重不足"
+          description: "{{ $labels.device }} 磁盘空间剩余低于 5% (当前: {{ $value }}%)"
+
+      # 限流告警
+      - alert: HighRateLimiting
+        expr: rate(rate_limit_requests_total[5m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "高频限流"
+          description: "{{ $labels.endpoint }} 端点限流频率过高 (当前: {{ $value }} 次/秒)"
+
+      # 认证告警
+      - alert: HighAuthFailureRate
+        expr: |
+          sum(rate(auth_attempts_total{result="failed"}[5m])) 
+          / 
+          sum(rate(auth_attempts_total[5m])) 
+          > 0.3
+        for: 5m
+        labels:
+          severity: warning
+          team: security
+        annotations:
+          summary: "认证失败率高"
+          description: "认证失败率超过 30% (当前: {{ $value }})"

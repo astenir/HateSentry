@@ -1,0 +1,114 @@
+services:
+  # HateSentry API
+  hatesentry:
+    build: .
+    container_name: hatesentry-api
+    ports:
+      - "8080:8080"
+    environment:
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_USERNAME=root
+      - DB_PASSWORD=password
+      - DB_DATABASE=hatesentry
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_PORT=5672
+      - RABBITMQ_USERNAME=guest
+      - RABBITMQ_PASSWORD=guest
+      - JWT_SECRET=your-production-secret-key-change-me
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-your-openai-api-key}
+      - OLLAMA_BASE_URL=http://ollama:11434
+    depends_on:
+      - mysql
+      - redis
+      - rabbitmq
+    networks:
+      - hatesentry-network
+    restart: unless-stopped
+
+  # MySQL Database
+  mysql:
+    image: mysql:8.0
+    container_name: hatesentry-mysql
+    environment:
+      - MYSQL_ROOT_PASSWORD=password
+      - MYSQL_DATABASE=hatesentry
+      - MYSQL_USER=hatesentry
+      - MYSQL_PASSWORD=hatesentry
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    networks:
+      - hatesentry-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: hatesentry-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - hatesentry-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # RabbitMQ Message Queue
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: hatesentry-rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      - RABBITMQ_DEFAULT_USER=guest
+      - RABBITMQ_DEFAULT_PASS=guest
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    networks:
+      - hatesentry-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Ollama (Optional - for local AI models)
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   container_name: hatesentry-ollama
+  #   ports:
+  #     - "11434:11434"
+  #   volumes:
+  #     - ollama-data:/root/.ollama
+  #   networks:
+  #     - hatesentry-network
+  #   restart: unless-stopped
+    # Uncomment and customize to pull specific models
+    # command: >
+    #   sh -c "ollama serve & sleep 5 && ollama pull llava:13b && wait"
+
+volumes:
+  mysql-data:
+  redis-data:
+  rabbitmq-data:
+  ollama-data:
+
+networks:
+  hatesentry-network:
+    driver: bridge

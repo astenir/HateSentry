@@ -1,0 +1,62 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output
+bin/
+dist/
+logs/
+
+# Go
+*.mod.sum
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*.sublime-project
+*.sublime-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+*.bak
+*~
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+log/
+
+# Coverage
+coverage.txt
+coverage.html
+*.out
+
+# Temporary files
+*.tmp
+*.temp
+REPORT*.md
+FIX*.md
+ERROR*.md
+*_REPORT.md
+
+# Build artifacts
+build/
+vendor/
+tmp/
+
+# Air hot reload
+.air.toml
+build-errors.log

@@ -1,0 +1,130 @@
+package router
+
+import (
+	"hatesentry/internal/ai"
+	"hatesentry/internal/auth"
+	"hatesentry/internal/cache"
+	"hatesentry/internal/handlers"
+	"hatesentry/internal/observability"
+	"hatesentry/internal/queue"
+
+	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+)
+
+// Router represents the HTTP router
+type Router struct {
+	engine          *gin.Engine
+	detectionService *ai.DetectionService
+	publisher       queue.Publisher
+	rabbitMQManager  *queue.RabbitMQManager
+	cache           *cache.DetectionCache
+	rateLimiter     *cache.RateLimiter
+	jwtManager      *auth.JWTManager
+	db              *gorm.DB
+}
+
+// NewRouter creates a new router
+func NewRouter(
+	db *gorm.DB,
+	detectionService *ai.DetectionService,
+	publisher queue.Publisher,
+	rabbitMQManager *queue.RabbitMQManager,
+	cache *cache.DetectionCache,
+	rateLimiter *cache.RateLimiter,
+	jwtManager *auth.JWTManager,
+) *Router {
+	return &Router{
+		engine:          gin.New(),
+		db:              db,
+		detectionService: detectionService,
+		publisher:       publisher,
+		rabbitMQManager:  rabbitMQManager,
+		cache:           cache,
+		rateLimiter:     rateLimiter,
+		jwtManager:      jwtManager,
+	}
+}
+
+// Setup sets up all routes
+func (r *Router) Setup() *gin.Engine {
+	// Middleware
+	r.engine.Use(gin.Recovery())
+	r.engine.Use(gin.Logger())
+	r.engine.Use(corsMiddleware())
+	r.engine.Use(observability.MetricsMiddleware())
+
+	// Handlers
+	authHandler := handlers.NewAuthHandler(r.db, r.jwtManager)
+	detectionHandler := handlers.NewDetectionHandler(
+		r.db,
+		r.detectionService,
+		r.publisher,
+		r.cache,
+		r.rateLimiter,
+		r.jwtManager,
+	)
+	healthHandler := handlers.NewHealthHandler(r.rabbitMQManager)
+
+	// Public routes
+	public := r.engine.Group("/api/v1")
+	{
+		public.POST("/auth/register", authHandler.Register)
+		public.POST("/auth/login", authHandler.Login)
+		public.GET("/health", healthHandler.Health)
+	}
+
+	// Protected routes
+	protected := r.engine.Group("/api/v1")
+	protected.Use(r.jwtManager.AuthMiddleware())
+	{
+		// Auth
+		auth := protected.Group("/auth")
+		{
+			auth.POST("/refresh", authHandler.RefreshToken)
+			auth.GET("/profile", authHandler.GetProfile)
+			auth.POST("/api-key/regenerate", authHandler.RegenerateAPIKey)
+		}
+
+		// Detection
+		detection := protected.Group("/detection")
+		{
+			detection.POST("/detect", detectionHandler.Detect)
+			detection.GET("/result/:id", detectionHandler.GetResult)
+			detection.GET("/history", detectionHandler.GetHistory)
+		}
+	}
+
+	// Admin routes
+	admin := r.engine.Group("/api/v1/admin")
+	admin.Use(r.jwtManager.AuthMiddleware(), r.jwtManager.RequireRole("admin"))
+	{
+		// Add admin endpoints as needed
+	}
+
+	// Register metrics endpoint
+	observability.RegisterMetricsEndpoint(r.engine)
+
+	return r.engine
+}
+
+// corsMiddleware adds CORS support
+func corsMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("Access-Control-Allow-Origin", "*")
+		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization")
+
+		if c.Request.Method == "OPTIONS" {
+			c.AbortWithStatus(204)
+			return
+		}
+
+		c.Next()
+	}
+}
+
+// GetEngine returns the gin engine
+func (r *Router) GetEngine() *gin.Engine {
+	return r.engine
+}
