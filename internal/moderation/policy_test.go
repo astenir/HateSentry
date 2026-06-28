@@ -130,6 +130,40 @@ func TestPolicySetRejectsDuplicateAndUnknownVersions(t *testing.T) {
 	}
 }
 
+func TestPolicySetListReturnsDefaultFirstThenSortedPolicies(t *testing.T) {
+	defaultPolicy := DefaultPolicy()
+	strictPolicy, err := NewPolicy("strict-v1", 0.2, 0.5)
+	if err != nil {
+		t.Fatalf("NewPolicy() strict error = %v", err)
+	}
+	lenientPolicy, err := NewPolicy("lenient-v1", 0.6, 0.9)
+	if err != nil {
+		t.Fatalf("NewPolicy() lenient error = %v", err)
+	}
+	policies, err := NewPolicySet(defaultPolicy, strictPolicy, lenientPolicy)
+	if err != nil {
+		t.Fatalf("NewPolicySet() error = %v", err)
+	}
+
+	output := policies.List()
+
+	if len(output) != 3 {
+		t.Fatalf("len(output) = %d, want 3", len(output))
+	}
+	if output[0].Version != "default-v1" || !output[0].Default {
+		t.Fatalf("first policy = %#v, want default-v1 marked default", output[0])
+	}
+	if output[1].Version != "lenient-v1" || output[1].Default {
+		t.Fatalf("second policy = %#v, want lenient-v1 non-default", output[1])
+	}
+	if output[2].Version != "strict-v1" || output[2].Default {
+		t.Fatalf("third policy = %#v, want strict-v1 non-default", output[2])
+	}
+	if output[2].ReviewThreshold != 0.2 || output[2].BlockThreshold != 0.5 {
+		t.Fatalf("strict thresholds = %#v, want 0.2/0.5", output[2])
+	}
+}
+
 func TestPolicyValidateRejectsInvalidThresholds(t *testing.T) {
 	tests := []struct {
 		name    string

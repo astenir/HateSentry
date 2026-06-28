@@ -256,6 +256,79 @@ func TestModerationHandlerGetResultRequiresUser(t *testing.T) {
 	}
 }
 
+func TestModerationHandlerListPolicies(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	strictPolicy, err := moderation.NewPolicy("strict-v1", 0.2, 0.5)
+	if err != nil {
+		t.Fatalf("NewPolicy() error = %v", err)
+	}
+	policies, err := moderation.NewPolicySet(moderation.DefaultPolicy(), strictPolicy)
+	if err != nil {
+		t.Fatalf("NewPolicySet() error = %v", err)
+	}
+	handler := NewModerationHandler(moderation.NewServiceWithPolicySet(
+		nil,
+		nil,
+		policies,
+	))
+
+	engine := gin.New()
+	engine.GET("/api/v1/admin/moderation/policies", func(c *gin.Context) {
+		c.Set(auth.UserContextKey, &auth.Claims{
+			UserID:   42,
+			Username: "reviewer",
+			Role:     "admin",
+		})
+		handler.ListPolicies(c)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/moderation/policies", nil)
+	recorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	var response moderation.ListPoliciesOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(response.Items) != 2 {
+		t.Fatalf("items = %d, want 2", len(response.Items))
+	}
+	if response.Items[0].Version != "default-v1" || !response.Items[0].Default {
+		t.Fatalf("first policy = %#v, want default-v1 default", response.Items[0])
+	}
+	if response.Items[1].Version != "strict-v1" || response.Items[1].Default {
+		t.Fatalf("second policy = %#v, want strict-v1 non-default", response.Items[1])
+	}
+}
+
+func TestModerationHandlerListPoliciesRequiresUser(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	handler := NewModerationHandler(moderation.NewService(
+		nil,
+		nil,
+		moderation.DefaultPolicy(),
+	))
+
+	engine := gin.New()
+	engine.GET("/api/v1/admin/moderation/policies", handler.ListPolicies)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/moderation/policies", nil)
+	recorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", recorder.Code)
+	}
+}
+
 func TestModerationHandlerListHistory(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

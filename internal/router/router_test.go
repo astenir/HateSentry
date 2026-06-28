@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"hatesentry/internal/auth"
 	"hatesentry/internal/cache"
@@ -66,6 +67,7 @@ func TestSetupRegistersCoreRoutes(t *testing.T) {
 		"POST /api/v1/admin/clients/:id/policy",
 		"POST /api/v1/admin/clients/:id/webhook",
 		"POST /api/v1/admin/clients/:id/api-key/rotate",
+		"GET /api/v1/admin/moderation/policies",
 		"GET /api/v1/admin/moderation/results",
 		"GET /api/v1/admin/webhook-deliveries",
 		"GET /api/v1/admin/webhook-deliveries/:id",
@@ -376,6 +378,16 @@ func TestSetupRequiresAdminForClientRoutes(t *testing.T) {
 		t.Fatalf("client api key rotate status = %d, want 403", recorder.Code)
 	}
 
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/moderation/policies", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	recorder = httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("policy list status = %d, want 403", recorder.Code)
+	}
+
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/moderation/results", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	recorder = httptest.NewRecorder()
@@ -414,6 +426,65 @@ func TestSetupRequiresAdminForClientRoutes(t *testing.T) {
 
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("webhook delivery detail status = %d, want 403", recorder.Code)
+	}
+}
+
+func TestSetupListsConfiguredModerationPolicies(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	jwtManager := auth.NewJWTManager(&config.JWTConfig{
+		Secret:      "test-secret",
+		ExpireHours: 1,
+		Issuer:      "hatesentry-test",
+	})
+	token, err := jwtManager.GenerateToken(7, "admin", "admin")
+	if err != nil {
+		t.Fatalf("GenerateToken() error = %v", err)
+	}
+	strictPolicy, err := moderation.NewPolicy("strict-v1", 0.2, 0.5)
+	if err != nil {
+		t.Fatalf("NewPolicy() error = %v", err)
+	}
+	policies, err := moderation.NewPolicySet(moderation.DefaultPolicy(), strictPolicy)
+	if err != nil {
+		t.Fatalf("NewPolicySet() error = %v", err)
+	}
+
+	router := NewRouterWithPolicies(
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		jwtManager,
+		policies,
+		config.ModerationRateLimitConfig{},
+	)
+
+	engine := router.Setup()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/moderation/policies", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	recorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	var response moderation.ListPoliciesOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(response.Items) != 2 {
+		t.Fatalf("items = %d, want 2", len(response.Items))
+	}
+	if response.Items[0].Version != "default-v1" || !response.Items[0].Default {
+		t.Fatalf("first policy = %#v, want default-v1 default", response.Items[0])
+	}
+	if response.Items[1].Version != "strict-v1" {
+		t.Fatalf("second policy = %#v, want strict-v1", response.Items[1])
 	}
 }
 

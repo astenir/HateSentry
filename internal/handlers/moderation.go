@@ -143,6 +143,27 @@ func (h *ModerationHandler) ListHistory(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
+// ListPolicies returns configured moderation policies for operator client assignment.
+func (h *ModerationHandler) ListPolicies(c *gin.Context) {
+	claims, exists := auth.GetClaims(c)
+	if !exists {
+		apperrors.RespondWithError(c, apperrors.Unauthorized("User not authenticated"))
+		return
+	}
+	if h.service == nil {
+		apperrors.RespondWithError(c, apperrors.ConfigurationError("moderation service is not configured"))
+		return
+	}
+
+	result, err := h.service.ListPolicies(claims.UserID)
+	if err != nil {
+		apperrors.Handle(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
 // ListReviewCases returns review cases for the authenticated user.
 func (h *ModerationHandler) ListReviewCases(c *gin.Context) {
 	claims, exists := auth.GetClaims(c)

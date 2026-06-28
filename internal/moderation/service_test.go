@@ -1073,6 +1073,57 @@ func TestServiceGetStatsRejectsMissingUser(t *testing.T) {
 	}
 }
 
+func TestServiceListPolicies(t *testing.T) {
+	strictPolicy, err := NewPolicy("strict-v1", 0.2, 0.5)
+	if err != nil {
+		t.Fatalf("NewPolicy() error = %v", err)
+	}
+	policies, err := NewPolicySet(DefaultPolicy(), strictPolicy)
+	if err != nil {
+		t.Fatalf("NewPolicySet() error = %v", err)
+	}
+	service := NewServiceWithPolicySet(nil, nil, policies)
+
+	output, err := service.ListPolicies(9)
+	if err != nil {
+		t.Fatalf("ListPolicies() error = %v", err)
+	}
+
+	if len(output.Items) != 2 {
+		t.Fatalf("len(output.Items) = %d, want 2", len(output.Items))
+	}
+	if output.Items[0].Version != "default-v1" || !output.Items[0].Default {
+		t.Fatalf("first policy = %#v, want default-v1 marked default", output.Items[0])
+	}
+	if output.Items[1].Version != "strict-v1" || output.Items[1].Default {
+		t.Fatalf("second policy = %#v, want strict-v1 non-default", output.Items[1])
+	}
+}
+
+func TestServiceListPoliciesRejectsMissingOperator(t *testing.T) {
+	service := NewService(nil, nil, DefaultPolicy())
+
+	_, err := service.ListPolicies(0)
+	if err == nil {
+		t.Fatal("ListPolicies() error = nil, want unauthorized")
+	}
+	if !strings.Contains(err.Error(), "User not authenticated") {
+		t.Fatalf("ListPolicies() error = %q, want unauthenticated", err.Error())
+	}
+}
+
+func TestServiceListPoliciesRejectsMissingPolicyRegistry(t *testing.T) {
+	service := NewServiceWithPolicySet(nil, nil, PolicySet{})
+
+	_, err := service.ListPolicies(9)
+	if err == nil {
+		t.Fatal("ListPolicies() error = nil, want configuration error")
+	}
+	if !strings.Contains(err.Error(), "moderation policies are not configured") {
+		t.Fatalf("ListPolicies() error = %q, want missing policies", err.Error())
+	}
+}
+
 func TestServiceListHistory(t *testing.T) {
 	clientID := uint(11)
 	createdAt := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)

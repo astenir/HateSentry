@@ -300,6 +300,25 @@ type ListWebhookDeliveriesOutput struct {
 	Items []WebhookDeliveryOutput `json:"items"`
 }
 
+// ListPoliciesOutput is the operator list response for configured moderation policies.
+type ListPoliciesOutput struct {
+	Items []PolicyConfig `json:"items"`
+}
+
+// ListPolicies returns configured moderation policies for authenticated operators.
+func (s *Service) ListPolicies(operatorID uint) (ListPoliciesOutput, error) {
+	if operatorID == 0 {
+		return ListPoliciesOutput{}, apperrors.Unauthorized("User not authenticated")
+	}
+
+	policies := s.policies.List()
+	if len(policies) == 0 {
+		return ListPoliciesOutput{}, apperrors.ConfigurationError("moderation policies are not configured")
+	}
+
+	return ListPoliciesOutput{Items: policies}, nil
+}
+
 // Check performs a synchronous text moderation workflow and stores audit records.
 func (s *Service) Check(ctx context.Context, input CheckInput) (CheckOutput, error) {
 	normalized, err := validateCheckInput(input)
