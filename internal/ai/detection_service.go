@@ -35,10 +35,7 @@ func NewDetectionService(cfg *config.AIConfig, detectionCfg *config.DetectionCon
 
 	switch cfg.Provider {
 	case "ollama":
-		// TODO: Ollama provider is temporarily disabled due to dependency issues
-		// To enable, use: go get github.com/ollama/ollama-go/v0
 		provider = NewOllamaProvider(&cfg.Ollama)
-		// return nil, errors.BadRequest("ollama provider is temporarily disabled. Please use 'openai' provider")
 	case "openai", "":
 		provider = NewOpenAIProvider(&cfg.OpenAI)
 	default:

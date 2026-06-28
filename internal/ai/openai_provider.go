@@ -60,6 +60,9 @@ func (p *OpenAIProvider) AnalyzeTextModeration(
 		Messages:    messages,
 		MaxTokens:   p.cfg.MaxTokens,
 		Temperature: float32(p.cfg.Temperature),
+		ResponseFormat: &openai.ChatCompletionResponseFormat{
+			Type: openai.ChatCompletionResponseFormatTypeJSONObject,
+		},
 	})
 	if err != nil {
 		return moderation.ProviderSuggestion{}, moderation.ProviderInfo{}, errors.ExternalServiceError(err, "failed to create moderation completion")
