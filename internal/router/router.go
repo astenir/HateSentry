@@ -128,6 +128,7 @@ func (r *Router) Setup() *gin.Engine {
 		reviews.Use(r.jwtManager.RequireRole("admin"))
 		{
 			reviews.GET("", moderationHandler.ListReviewCases)
+			reviews.GET("/stats", moderationHandler.GetReviewStats)
 			reviews.POST("/:id/approve", moderationHandler.ApproveReviewCase)
 			reviews.POST("/:id/reject", moderationHandler.RejectReviewCase)
 			reviews.POST("/:id/mark-mistake", moderationHandler.MarkReviewMistake)

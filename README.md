@@ -211,6 +211,12 @@ GET /api/v1/reviews?status=pending
 Authorization: Bearer <admin-token>
 ```
 
+#### 查看复核与审核统计
+```http
+GET /api/v1/reviews/stats
+Authorization: Bearer <admin-token>
+```
+
 #### 处理复核记录
 ```http
 POST /api/v1/reviews/:id/approve
@@ -562,6 +568,7 @@ make create-user
 - 同步文本审核接口：`POST /api/v1/moderation/check`。
 - 审核结果查询接口：`GET /api/v1/moderation/results/:request_id`。
 - 人工复核队列：`GET /api/v1/reviews?status=pending`。
+- 复核与审核统计：`GET /api/v1/reviews/stats`。
 - 复核处理接口：`POST /api/v1/reviews/:id/approve`、`reject`、`mark-mistake`。
 - 外部客户端管理：`POST /api/v1/admin/clients`、`GET /api/v1/admin/clients`。
 - API Key 文本审核接入：`X-API-Key` + `POST /api/v1/moderation/check`。
@@ -578,7 +585,7 @@ make create-user
 
 - 旧版 `/api/v1/detection/*` 路由仍存在，但不是新的产品主线。
 - Redis 缓存、RabbitMQ 队列和 Prometheus 监控相关代码已存在，但完整异步审核工作流、批量审核状态查询、真实图片审核和高并发承诺还没有作为 MVP 完成。
-- Webhook 当前为同步单次尝试，暂未实现异步重试队列；复核统计和管理界面仍在路线图中。
+- Webhook 当前为同步单次尝试，暂未实现异步重试队列；管理界面仍在路线图中。
 
 ## 🔒 安全与限制
 
@@ -666,6 +673,7 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 - [x] 审核结果持久化和查询
 - [x] 策略阈值配置
 - [x] 人工复核队列和复核处理接口
+- [x] 复核与审核统计接口
 - [x] API Key 外部客户端认证
 - [x] 外部客户端 `external_id` 幂等
 - [x] 基础同步单次 Webhook 回调和 HMAC 签名
@@ -675,7 +683,7 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 - [x] Docker 部署支持
 
 ### 进行中 🚧
-- [ ] 复核统计和操作指标
+- [ ] 更完整的操作指标和延迟观测
 - [ ] Webhook 异步重试队列
 - [ ] README、API 文档和运维文档持续按实现校准
 - [ ] Docker Compose 端到端运行验证

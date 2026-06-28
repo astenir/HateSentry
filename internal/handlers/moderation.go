@@ -140,6 +140,27 @@ func (h *ModerationHandler) ListReviewCases(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"items": results})
 }
 
+// GetReviewStats returns aggregate moderation and review workflow metrics.
+func (h *ModerationHandler) GetReviewStats(c *gin.Context) {
+	claims, exists := auth.GetClaims(c)
+	if !exists {
+		apperrors.RespondWithError(c, apperrors.Unauthorized("User not authenticated"))
+		return
+	}
+	if h.service == nil {
+		apperrors.RespondWithError(c, apperrors.ConfigurationError("moderation service is not configured"))
+		return
+	}
+
+	stats, err := h.service.GetStats(c.Request.Context(), claims.UserID)
+	if err != nil {
+		apperrors.Handle(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, stats)
+}
+
 // ApproveReviewCase finalizes a review case as allowed.
 func (h *ModerationHandler) ApproveReviewCase(c *gin.Context) {
 	h.finalizeReviewCase(c, func(

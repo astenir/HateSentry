@@ -319,6 +319,67 @@ func TestModerationHandlerListReviewCases(t *testing.T) {
 	}
 }
 
+func TestModerationHandlerGetReviewStats(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	repository := &moderationHandlerRepository{
+		stats: moderation.StoredStats{
+			TotalModerated:     10,
+			PolicyAllowed:      2,
+			PolicyBlocked:      3,
+			ReviewFinalAllowed: 1,
+			ReviewFinalBlocked: 2,
+			PendingReview:      1,
+			Reviewed:           3,
+			Mistakes:           1,
+		},
+	}
+	handler := NewModerationHandler(moderation.NewService(
+		moderationHandlerAnalyzer{},
+		repository,
+		moderation.DefaultPolicy(),
+	))
+
+	engine := gin.New()
+	engine.GET("/api/v1/reviews/stats", func(c *gin.Context) {
+		c.Set(auth.UserContextKey, &auth.Claims{
+			UserID:   42,
+			Username: "reviewer",
+			Role:     "admin",
+		})
+		handler.GetReviewStats(c)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/reviews/stats", nil)
+	recorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	var response moderation.StatsOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.TotalModerated != 10 {
+		t.Fatalf("TotalModerated = %d, want 10", response.TotalModerated)
+	}
+	if response.Allowed != 3 {
+		t.Fatalf("Allowed = %d, want 3", response.Allowed)
+	}
+	if response.Blocked != 5 {
+		t.Fatalf("Blocked = %d, want 5", response.Blocked)
+	}
+	if response.PendingReview != 1 {
+		t.Fatalf("PendingReview = %d, want 1", response.PendingReview)
+	}
+	if response.MistakeRate != float64(1)/float64(3) {
+		t.Fatalf("MistakeRate = %v, want %v", response.MistakeRate, float64(1)/float64(3))
+	}
+}
+
 func TestModerationHandlerApproveReviewCase(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -426,6 +487,7 @@ type moderationHandlerRepository struct {
 	stored        moderation.StoredResult
 	reviewCases   []moderation.StoredReviewCase
 	finalized     moderation.StoredReviewCase
+	stats         moderation.StoredStats
 	userID        uint
 	requestID     string
 	reviewStatus  moderation.ReviewStatus
@@ -485,6 +547,10 @@ func (r *moderationHandlerRepository) ListReviewCases(
 ) ([]moderation.StoredReviewCase, error) {
 	r.reviewStatus = status
 	return r.reviewCases, nil
+}
+
+func (r *moderationHandlerRepository) GetStats(ctx context.Context) (moderation.StoredStats, error) {
+	return r.stats, nil
 }
 
 func (r *moderationHandlerRepository) FinalizeReviewCase(

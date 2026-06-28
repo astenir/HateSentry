@@ -697,6 +697,61 @@ func TestServiceListReviewCasesDefaultsToPending(t *testing.T) {
 	}
 }
 
+func TestServiceGetStatsMapsStoredCounts(t *testing.T) {
+	repository := &fakeRepository{
+		stats: StoredStats{
+			TotalModerated:     12,
+			PolicyAllowed:      3,
+			PolicyBlocked:      2,
+			ReviewFinalAllowed: 4,
+			ReviewFinalBlocked: 1,
+			PendingReview:      2,
+			Reviewed:           5,
+			Mistakes:           1,
+		},
+	}
+	service := NewService(fakeAnalyzer{}, repository, DefaultPolicy())
+
+	output, err := service.GetStats(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("GetStats() error = %v", err)
+	}
+
+	if output.TotalModerated != 12 {
+		t.Fatalf("TotalModerated = %d, want 12", output.TotalModerated)
+	}
+	if output.Allowed != 7 {
+		t.Fatalf("Allowed = %d, want 7", output.Allowed)
+	}
+	if output.Blocked != 3 {
+		t.Fatalf("Blocked = %d, want 3", output.Blocked)
+	}
+	if output.PendingReview != 2 {
+		t.Fatalf("PendingReview = %d, want 2", output.PendingReview)
+	}
+	if output.Reviewed != 5 {
+		t.Fatalf("Reviewed = %d, want 5", output.Reviewed)
+	}
+	if output.Mistakes != 1 {
+		t.Fatalf("Mistakes = %d, want 1", output.Mistakes)
+	}
+	if output.MistakeRate != 0.2 {
+		t.Fatalf("MistakeRate = %v, want 0.2", output.MistakeRate)
+	}
+}
+
+func TestServiceGetStatsRejectsMissingUser(t *testing.T) {
+	service := NewService(fakeAnalyzer{}, &fakeRepository{}, DefaultPolicy())
+
+	_, err := service.GetStats(context.Background(), 0)
+	if err == nil {
+		t.Fatal("GetStats() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "User not authenticated") {
+		t.Fatalf("GetStats() error = %q, want authentication error", err.Error())
+	}
+}
+
 func TestServiceReviewActionsFinalizePendingCase(t *testing.T) {
 	createdAt := time.Date(2026, 6, 28, 11, 0, 0, 0, time.UTC)
 	repository := &fakeRepository{
@@ -862,6 +917,7 @@ type fakeRepository struct {
 	webhookClientFound         bool
 	reviewCases                []StoredReviewCase
 	finalized                  StoredReviewCase
+	stats                      StoredStats
 	userID                     uint
 	clientID                   uint
 	externalID                 string
@@ -947,6 +1003,13 @@ func (r *fakeRepository) ListReviewCases(
 	}
 	r.reviewStatus = status
 	return r.reviewCases, nil
+}
+
+func (r *fakeRepository) GetStats(ctx context.Context) (StoredStats, error) {
+	if r.err != nil {
+		return StoredStats{}, r.err
+	}
+	return r.stats, nil
 }
 
 func (r *fakeRepository) FinalizeReviewCase(

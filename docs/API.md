@@ -419,6 +419,30 @@ Content-Type: application/json
 
 响应字段与通过复核一致，其中 `status` 为 `mistake`。
 
+### 5. 复核与审核统计
+
+返回当前审核工作流的最小运营统计。`allowed` / `blocked` 会把自动策略终态和人工复核终态合并统计；待复核内容只计入 `pending_review`，不会提前计入 `allowed` 或 `blocked`。
+
+**端点**: `GET /reviews/stats`
+
+**请求头**:
+```
+Authorization: Bearer <admin-token>
+```
+
+**响应** (200 OK):
+```json
+{
+  "total_moderated": 120,
+  "allowed": 80,
+  "blocked": 30,
+  "pending_review": 10,
+  "reviewed": 25,
+  "mistakes": 2,
+  "mistake_rate": 0.08
+}
+```
+
 ## 检测
 
 ### 1. 检测仇恨言论

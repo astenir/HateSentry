@@ -150,6 +150,72 @@ func (r *GormRepository) GetClient(ctx context.Context, clientID uint) (models.C
 	return client, true, nil
 }
 
+// GetStats returns aggregate moderation and review workflow counts.
+func (r *GormRepository) GetStats(ctx context.Context) (StoredStats, error) {
+	if r == nil || r.db == nil {
+		return StoredStats{}, apperrors.ConfigurationError("moderation database is not configured")
+	}
+
+	db := r.db.WithContext(ctx)
+	var stats StoredStats
+	counts := []statsCountQuery{
+		{
+			name:  "total moderated",
+			query: totalModeratedStatsQuery(db),
+			dest:  &stats.TotalModerated,
+		},
+		{
+			name:  "policy allowed",
+			query: policyDecisionStatsQuery(db, DecisionAllow),
+			dest:  &stats.PolicyAllowed,
+		},
+		{
+			name:  "policy blocked",
+			query: policyDecisionStatsQuery(db, DecisionBlock),
+			dest:  &stats.PolicyBlocked,
+		},
+		{
+			name:  "review final allowed",
+			query: reviewFinalDecisionStatsQuery(db, DecisionAllow),
+			dest:  &stats.ReviewFinalAllowed,
+		},
+		{
+			name:  "review final blocked",
+			query: reviewFinalDecisionStatsQuery(db, DecisionBlock),
+			dest:  &stats.ReviewFinalBlocked,
+		},
+		{
+			name:  "pending review",
+			query: reviewStatusStatsQuery(db, ReviewStatusPending),
+			dest:  &stats.PendingReview,
+		},
+		{
+			name:  "reviewed",
+			query: reviewedStatsQuery(db),
+			dest:  &stats.Reviewed,
+		},
+		{
+			name:  "mistakes",
+			query: reviewStatusStatsQuery(db, ReviewStatusMistake),
+			dest:  &stats.Mistakes,
+		},
+	}
+
+	for _, count := range counts {
+		if err := count.query.Count(count.dest).Error; err != nil {
+			return StoredStats{}, apperrors.DatabaseError(err, "failed to count "+count.name)
+		}
+	}
+
+	return stats, nil
+}
+
+type statsCountQuery struct {
+	name  string
+	query *gorm.DB
+	dest  *int64
+}
+
 // ListReviewCases retrieves review cases by workflow status.
 func (r *GormRepository) ListReviewCases(
 	ctx context.Context,
@@ -262,6 +328,27 @@ func reviewCaseListQuery(db *gorm.DB, status ReviewStatus) *gorm.DB {
 
 func reviewCaseByIDQuery(db *gorm.DB, caseID uint) *gorm.DB {
 	return db.Where("id = ?", caseID)
+}
+
+func totalModeratedStatsQuery(db *gorm.DB) *gorm.DB {
+	return db.Model(&models.ModerationResult{})
+}
+
+func policyDecisionStatsQuery(db *gorm.DB, decision Decision) *gorm.DB {
+	return db.Model(&models.ModerationResult{}).Where("decision = ?", string(decision))
+}
+
+func reviewFinalDecisionStatsQuery(db *gorm.DB, decision Decision) *gorm.DB {
+	return db.Model(&models.ReviewCase{}).
+		Where("status <> ? AND final_decision = ?", string(ReviewStatusPending), string(decision))
+}
+
+func reviewStatusStatsQuery(db *gorm.DB, status ReviewStatus) *gorm.DB {
+	return db.Model(&models.ReviewCase{}).Where("status = ?", string(status))
+}
+
+func reviewedStatsQuery(db *gorm.DB) *gorm.DB {
+	return db.Model(&models.ReviewCase{}).Where("status <> ?", string(ReviewStatusPending))
 }
 
 func (r *GormRepository) loadStoredReviewCase(

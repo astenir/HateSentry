@@ -48,6 +48,7 @@ func TestSetupRegistersCoreRoutes(t *testing.T) {
 		"POST /api/v1/moderation/check",
 		"GET /api/v1/moderation/results/:request_id",
 		"GET /api/v1/reviews",
+		"GET /api/v1/reviews/stats",
 		"POST /api/v1/reviews/:id/approve",
 		"POST /api/v1/reviews/:id/reject",
 		"POST /api/v1/reviews/:id/mark-mistake",
@@ -162,6 +163,37 @@ func TestSetupProtectsReviewRoutes(t *testing.T) {
 	}
 }
 
+func TestSetupProtectsReviewStatsRoute(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	jwtManager := auth.NewJWTManager(&config.JWTConfig{
+		Secret:      "test-secret",
+		ExpireHours: 1,
+		Issuer:      "hatesentry-test",
+	})
+
+	router := NewRouter(
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		jwtManager,
+		moderation.DefaultPolicy(),
+	)
+
+	engine := router.Setup()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/reviews/stats", nil)
+	recorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", recorder.Code)
+	}
+}
+
 func TestSetupRequiresAdminForReviewRoutes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -195,6 +227,16 @@ func TestSetupRequiresAdminForReviewRoutes(t *testing.T) {
 
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", recorder.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/reviews/stats", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	recorder = httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("stats status = %d, want 403", recorder.Code)
 	}
 }
 

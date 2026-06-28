@@ -42,6 +42,7 @@ type Repository interface {
 	GetResult(ctx context.Context, userID uint, requestID string) (StoredResult, error)
 	FindResultByClientExternalID(ctx context.Context, clientID uint, externalID string) (StoredResult, bool, error)
 	GetClient(ctx context.Context, clientID uint) (models.ClientApplication, bool, error)
+	GetStats(ctx context.Context) (StoredStats, error)
 	ListReviewCases(ctx context.Context, status ReviewStatus) ([]StoredReviewCase, error)
 	FinalizeReviewCase(
 		ctx context.Context,
@@ -65,6 +66,18 @@ type StoredReviewCase struct {
 	Case    models.ReviewCase
 	Request models.ModerationRequest
 	Result  models.ModerationResult
+}
+
+// StoredStats is the repository representation for moderation operations metrics.
+type StoredStats struct {
+	TotalModerated     int64
+	PolicyAllowed      int64
+	PolicyBlocked      int64
+	ReviewFinalAllowed int64
+	ReviewFinalBlocked int64
+	PendingReview      int64
+	Reviewed           int64
+	Mistakes           int64
 }
 
 // Service coordinates provider analysis, policy decisions, and persistence.
@@ -155,6 +168,17 @@ type ReviewCaseOutput struct {
 	ReviewNotes    string       `json:"review_notes,omitempty"`
 	ReviewedAt     *time.Time   `json:"reviewed_at,omitempty"`
 	CreatedAt      time.Time    `json:"created_at"`
+}
+
+// StatsOutput is the public representation of moderation and review operations metrics.
+type StatsOutput struct {
+	TotalModerated int64   `json:"total_moderated"`
+	Allowed        int64   `json:"allowed"`
+	Blocked        int64   `json:"blocked"`
+	PendingReview  int64   `json:"pending_review"`
+	Reviewed       int64   `json:"reviewed"`
+	Mistakes       int64   `json:"mistakes"`
+	MistakeRate    float64 `json:"mistake_rate"`
 }
 
 // Check performs a synchronous text moderation workflow and stores audit records.
@@ -472,6 +496,38 @@ func (s *Service) finalizeReviewCase(
 	}, string(status), string(finalDecision))
 
 	return output, nil
+}
+
+// GetStats returns moderation and review operations metrics for an authenticated operator.
+func (s *Service) GetStats(ctx context.Context, reviewerID uint) (StatsOutput, error) {
+	if reviewerID == 0 {
+		return StatsOutput{}, apperrors.Unauthorized("User not authenticated")
+	}
+	if s.repository == nil {
+		return StatsOutput{}, apperrors.ConfigurationError("moderation repository is not configured")
+	}
+
+	stored, err := s.repository.GetStats(ctx)
+	if err != nil {
+		return StatsOutput{}, err
+	}
+
+	allowed := stored.PolicyAllowed + stored.ReviewFinalAllowed
+	blocked := stored.PolicyBlocked + stored.ReviewFinalBlocked
+	mistakeRate := 0.0
+	if stored.Reviewed > 0 {
+		mistakeRate = float64(stored.Mistakes) / float64(stored.Reviewed)
+	}
+
+	return StatsOutput{
+		TotalModerated: stored.TotalModerated,
+		Allowed:        allowed,
+		Blocked:        blocked,
+		PendingReview:  stored.PendingReview,
+		Reviewed:       stored.Reviewed,
+		Mistakes:       stored.Mistakes,
+		MistakeRate:    mistakeRate,
+	}, nil
 }
 
 func (s *Service) dispatchFinalDecision(

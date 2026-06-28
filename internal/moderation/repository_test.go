@@ -95,6 +95,64 @@ func TestClientExternalIDQueryFiltersByClientAndExternalID(t *testing.T) {
 	}
 }
 
+func TestStatsQueriesUseExpectedFilters(t *testing.T) {
+	db := openDryRunDB(t)
+
+	tests := []struct {
+		name     string
+		stmt     *gorm.Statement
+		wantSQL  []string
+		wantVars []interface{}
+	}{
+		{
+			name: "policy decision",
+			stmt: policyDecisionStatsQuery(db, DecisionAllow).
+				Count(new(int64)).
+				Statement,
+			wantSQL:  []string{"moderation_results", "decision"},
+			wantVars: []interface{}{string(DecisionAllow)},
+		},
+		{
+			name: "review final decision excludes pending",
+			stmt: reviewFinalDecisionStatsQuery(db, DecisionBlock).
+				Count(new(int64)).
+				Statement,
+			wantSQL:  []string{"review_cases", "status", "final_decision"},
+			wantVars: []interface{}{string(ReviewStatusPending), string(DecisionBlock)},
+		},
+		{
+			name: "pending review",
+			stmt: reviewStatusStatsQuery(db, ReviewStatusPending).
+				Count(new(int64)).
+				Statement,
+			wantSQL:  []string{"review_cases", "status"},
+			wantVars: []interface{}{string(ReviewStatusPending)},
+		},
+		{
+			name: "reviewed excludes pending",
+			stmt: reviewedStatsQuery(db).
+				Count(new(int64)).
+				Statement,
+			wantSQL:  []string{"review_cases", "status"},
+			wantVars: []interface{}{string(ReviewStatusPending)},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sql := tt.stmt.SQL.String()
+			for _, want := range tt.wantSQL {
+				if !strings.Contains(sql, want) {
+					t.Fatalf("SQL = %q, want %q", sql, want)
+				}
+			}
+			if !reflect.DeepEqual(tt.stmt.Vars, tt.wantVars) {
+				t.Fatalf("Vars = %#v, want %#v", tt.stmt.Vars, tt.wantVars)
+			}
+		})
+	}
+}
+
 func openDryRunDB(t *testing.T) *gorm.DB {
 	t.Helper()
 
