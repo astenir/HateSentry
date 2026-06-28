@@ -1,4 +1,4 @@
-.PHONY: all build run clean test deps docker-build docker-up docker-down docker-logs install-deps
+.PHONY: all build run clean test test-integration deps docker-build docker-up docker-down docker-logs install-deps
 
 # Variables
 BINARY_NAME=hatesentry
@@ -34,6 +34,11 @@ clean:
 test:
 	@echo "Running tests..."
 	@go test -v ./...
+
+# Run integration tests that need external services
+test-integration:
+	@echo "Running integration tests..."
+	@go test -v -tags=integration ./...
 
 # Run tests with coverage
 test-coverage:

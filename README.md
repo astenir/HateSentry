@@ -558,6 +558,16 @@ make lint
 make test
 ```
 
+默认测试不包含带 `integration` build tag 的 MySQL 集成测试。
+
+### 运行集成测试
+```bash
+docker compose up -d mysql
+HATESENTRY_TEST_DSN='root:password@tcp(127.0.0.1:3306)/hatesentry?charset=utf8mb4&parseTime=True&loc=Local' make test-integration
+```
+
+集成测试会通过 `go test -tags=integration ./...` 运行，需要可连接的 MySQL 测试库。
+
 ### 测试覆盖率
 ```bash
 make test-coverage

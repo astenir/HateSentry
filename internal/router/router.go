@@ -24,6 +24,7 @@ import (
 type Router struct {
 	engine             *gin.Engine
 	detectionService   *ai.DetectionService
+	moderationAnalyzer moderation.Analyzer
 	publisher          queue.Publisher
 	rabbitMQManager    *queue.RabbitMQManager
 	cache              *cache.DetectionCache
@@ -84,6 +85,7 @@ func NewRouterWithPolicies(
 		engine:             gin.New(),
 		db:                 db,
 		detectionService:   detectionService,
+		moderationAnalyzer: detectionService,
 		publisher:          publisher,
 		rabbitMQManager:    rabbitMQManager,
 		cache:              cache,
@@ -116,7 +118,7 @@ func (r *Router) Setup() *gin.Engine {
 		r.jwtManager,
 	)
 	moderationService := moderation.NewServiceWithPolicySet(
-		r.detectionService,
+		r.moderationAnalyzer,
 		moderation.NewGormRepository(r.db),
 		r.moderationPolicies,
 		webhooks.NewHTTPDispatcher(),

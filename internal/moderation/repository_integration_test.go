@@ -239,11 +239,7 @@ func TestGormRepositoryWebhookDeliveryClaimIntegration(t *testing.T) {
 
 	t.Cleanup(func() {
 		db.Unscoped().
-			Where("id IN ?", []uint{
-				delivery.ID,
-				sameClientOtherRequestDelivery.ID,
-				otherClientSameRequestDelivery.ID,
-			}).
+			Where("client_id IN ?", []uint{client.ID, otherClient.ID}).
 			Delete(&models.WebhookDelivery{})
 		db.Unscoped().Delete(&models.ClientApplication{}, otherClient.ID)
 		db.Unscoped().Delete(&models.ClientApplication{}, client.ID)
