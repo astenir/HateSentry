@@ -38,23 +38,25 @@ func TestGormRepositoryReviewWorkflowIntegration(t *testing.T) {
 	repository := NewGormRepository(db)
 	requestID := uuid.New().String()
 	ctx := context.Background()
+	user := createIntegrationUser(t, ctx, db, "review-workflow")
 
 	t.Cleanup(func() {
 		db.Unscoped().Where("request_id = ?", requestID).Delete(&models.ReviewCase{})
 		db.Unscoped().Where("request_id = ?", requestID).Delete(&models.ModerationResult{})
 		db.Unscoped().Where("request_id = ?", requestID).Delete(&models.ModerationRequest{})
+		db.Unscoped().Delete(&models.User{}, user.ID)
 	})
 
 	request := &models.ModerationRequest{
 		RequestID: requestID,
-		UserID:    7,
+		UserID:    user.ID,
 		Content:   "needs review",
 		Source:    "comment",
 		Status:    "completed",
 	}
 	result := &models.ModerationResult{
 		RequestID:     requestID,
-		UserID:        7,
+		UserID:        user.ID,
 		Provider:      "test-provider",
 		Model:         "test-model",
 		RiskScore:     0.6,
@@ -65,7 +67,7 @@ func TestGormRepositoryReviewWorkflowIntegration(t *testing.T) {
 	}
 	reviewCase := &models.ReviewCase{
 		RequestID: requestID,
-		UserID:    7,
+		UserID:    user.ID,
 		Status:    string(ReviewStatusPending),
 	}
 
@@ -97,8 +99,8 @@ func TestGormRepositoryReviewWorkflowIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FinalizeReviewCase() error = %v", err)
 	}
-	if finalized.Case.UserID != 7 {
-		t.Fatalf("finalized user id = %d, want submitter id 7", finalized.Case.UserID)
+	if finalized.Case.UserID != user.ID {
+		t.Fatalf("finalized user id = %d, want submitter id %d", finalized.Case.UserID, user.ID)
 	}
 	if finalized.Case.ReviewerID == nil || *finalized.Case.ReviewerID != 99 {
 		t.Fatalf("reviewer id = %#v, want 99", finalized.Case.ReviewerID)
@@ -149,11 +151,13 @@ func TestGormRepositoryGetStatsIntegration(t *testing.T) {
 	repository := NewGormRepository(db)
 	ctx := context.Background()
 	prefix := uuid.New().String()
+	user := createIntegrationUser(t, ctx, db, "stats")
 
 	t.Cleanup(func() {
 		db.Unscoped().Where("request_id LIKE ?", prefix+"%").Delete(&models.ReviewCase{})
 		db.Unscoped().Where("request_id LIKE ?", prefix+"%").Delete(&models.ModerationResult{})
 		db.Unscoped().Where("request_id LIKE ?", prefix+"%").Delete(&models.ModerationRequest{})
+		db.Unscoped().Delete(&models.User{}, user.ID)
 	})
 
 	baseline, err := repository.GetStats(ctx)
@@ -202,7 +206,7 @@ func TestGormRepositoryGetStatsIntegration(t *testing.T) {
 	}
 
 	for _, seed := range seeds {
-		if err := seedStatsRecord(ctx, db, prefix, seed); err != nil {
+		if err := seedStatsRecord(ctx, db, prefix, user.ID, seed); err != nil {
 			t.Fatalf("seed stats record %q: %v", seed.suffix, err)
 		}
 	}
@@ -240,18 +244,36 @@ type statsSeed struct {
 	softDeleted   bool
 }
 
-func seedStatsRecord(ctx context.Context, db *gorm.DB, prefix string, seed statsSeed) error {
+func createIntegrationUser(t *testing.T, ctx context.Context, db *gorm.DB, suffix string) models.User {
+	t.Helper()
+
+	id := strings.ReplaceAll(uuid.New().String(), "-", "")[:12]
+	user := models.User{
+		Username: "it-" + suffix + "-" + id,
+		Email:    "it-" + suffix + "-" + id + "@example.test",
+		Password: "not-used",
+		Role:     "user",
+		Status:   "active",
+	}
+	if err := db.WithContext(ctx).Create(&user).Error; err != nil {
+		t.Fatalf("create integration user: %v", err)
+	}
+
+	return user
+}
+
+func seedStatsRecord(ctx context.Context, db *gorm.DB, prefix string, userID uint, seed statsSeed) error {
 	requestID := prefix + "-" + seed.suffix
 	request := &models.ModerationRequest{
 		RequestID: requestID,
-		UserID:    77,
+		UserID:    userID,
 		Content:   "stats fixture " + seed.suffix,
 		Source:    "comment",
 		Status:    "completed",
 	}
 	result := &models.ModerationResult{
 		RequestID:     requestID,
-		UserID:        77,
+		UserID:        userID,
 		Provider:      "test-provider",
 		Model:         "test-model",
 		RiskScore:     0.8,
@@ -272,7 +294,7 @@ func seedStatsRecord(ctx context.Context, db *gorm.DB, prefix string, seed stats
 	if seed.reviewStatus != "" {
 		reviewCase = &models.ReviewCase{
 			RequestID: requestID,
-			UserID:    77,
+			UserID:    userID,
 			Status:    string(seed.reviewStatus),
 		}
 		if seed.reviewStatus != ReviewStatusPending {

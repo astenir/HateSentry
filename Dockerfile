@@ -1,12 +1,10 @@
 # Build stage
 FROM golang:1.24-alpine AS builder
 
+ARG GOPROXY=https://goproxy.cn
+ENV GOPROXY=${GOPROXY}
+
 WORKDIR /app
-
-RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories
-
-# Install build dependencies
-RUN apk add --no-cache git gcc musl-dev
 
 # Copy go mod files
 COPY go.mod go.sum ./
@@ -19,25 +17,20 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o hatesentry .
 
 # Final stage
-FROM alpine:latest
+FROM scratch
 
 WORKDIR /app
 
-# Install ca-certificates for HTTPS
-RUN apk --no-cache add ca-certificates
+# Copy CA certificates for HTTPS provider and webhook calls.
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 
 # Copy binary from builder
-COPY --from=builder /app/hatesentry .
+COPY --from=builder --chown=1000:1000 /app/hatesentry .
 
 # Copy config
-COPY config/config.yaml ./config/
+COPY --chown=1000:1000 config/config.yaml ./config/
 
-# Create non-root user
-RUN addgroup -g 1000 hatesentry && \
-    adduser -D -u 1000 -G hatesentry hatesentry && \
-    chown -R hatesentry:hatesentry /app
-
-USER hatesentry
+USER 1000:1000
 
 EXPOSE 8080
 
