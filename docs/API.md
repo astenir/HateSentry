@@ -266,7 +266,50 @@ Content-Type: application/json
 }
 ```
 
-### 6. 轮换客户端 API Key
+### 6. 更新客户端 Webhook
+
+更新客户端接收最终决策回调的 HTTPS 地址。请求体必须包含 `webhook_url` 字段。传入非空 `webhook_url` 时，服务会保存新地址并生成新的 `webhook_secret`，该 secret 只在本次响应中返回一次；旧 secret 会立即失效。传入空字符串会清除 Webhook URL 和 secret，后续审核结果不会再向该客户端发送回调。该接口不会改变客户端状态、API Key 或策略版本，也不会返回 API Key 哈希。
+
+**端点**: `POST /admin/clients/:id/webhook`
+
+**请求头**:
+```
+Authorization: Bearer <admin-token>
+Content-Type: application/json
+```
+
+**请求体**:
+```json
+{
+  "webhook_url": "https://example.com/moderation/webhook"
+}
+```
+
+**响应** (200 OK):
+```json
+{
+  "id": 11,
+  "name": "blog-comments",
+  "status": "active",
+  "api_key_prefix": "hs_live_xxxx",
+  "webhook_secret": "whsec_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+  "webhook_url": "https://example.com/moderation/webhook",
+  "policy_version": "strict-v1",
+  "created_at": "2026-06-28T12:00:00Z",
+  "updated_at": "2026-06-28T12:42:00Z"
+}
+```
+
+清除 Webhook 配置时请求体为：
+```json
+{
+  "webhook_url": ""
+}
+```
+
+清除响应不会包含 `webhook_url` 或 `webhook_secret`。
+
+### 7. 轮换客户端 API Key
 
 轮换客户端 API Key 会替换数据库中的 API Key 哈希和展示前缀，旧 API Key 会立即失效。响应中的新 `api_key` 只返回一次；客户端状态、Webhook URL、Webhook secret 和策略版本不会改变。如果客户端当前为 `inactive`，轮换密钥不会自动启用客户端。若管理员并发触发多次轮换，最后完成的轮换返回的 API Key 才是当前有效密钥。
 

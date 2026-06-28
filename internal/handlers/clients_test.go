@@ -258,6 +258,210 @@ func TestClientHandlerUpdatePolicyRequiresUser(t *testing.T) {
 	}
 }
 
+func TestClientHandlerUpdateWebhook(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	repository := &clientHandlerRepository{
+		webhookClient: models.ClientApplication{
+			ID:            11,
+			Name:          "blog",
+			Status:        clients.StatusActive,
+			APIKeyHash:    "secret-hash",
+			APIKeyPrefix:  "hs_live_abc",
+			WebhookSecret: "old-secret",
+			WebhookURL:    "https://old.example.com/moderation",
+			PolicyVersion: "default-v1",
+			CreatedAt:     time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC),
+			UpdatedAt:     time.Date(2026, 6, 28, 12, 15, 0, 0, time.UTC),
+		},
+	}
+	handler := NewClientHandler(clients.NewService(repository))
+
+	engine := gin.New()
+	engine.POST("/api/v1/admin/clients/:id/webhook", func(c *gin.Context) {
+		c.Set(auth.UserContextKey, &auth.Claims{
+			UserID:   42,
+			Username: "admin",
+			Role:     "admin",
+		})
+		handler.UpdateWebhook(c)
+	})
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/admin/clients/11/webhook",
+		strings.NewReader(`{"webhook_url":"https://example.com/moderation"}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	if strings.Contains(body, "secret-hash") || strings.Contains(body, "old-secret") {
+		t.Fatalf("response leaked stored secret material: %s", body)
+	}
+
+	var response clients.UpdateWebhookOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.ID != 11 {
+		t.Fatalf("ID = %d, want 11", response.ID)
+	}
+	if response.WebhookURL != "https://example.com/moderation" {
+		t.Fatalf("WebhookURL = %q, want updated URL", response.WebhookURL)
+	}
+	if response.WebhookSecret == "" {
+		t.Fatal("WebhookSecret is empty")
+	}
+	if !strings.HasPrefix(response.WebhookSecret, "whsec_") {
+		t.Fatalf("WebhookSecret = %q, want whsec_ prefix", response.WebhookSecret)
+	}
+	if repository.webhookClientID != 11 {
+		t.Fatalf("webhook client id = %d, want 11", repository.webhookClientID)
+	}
+	if repository.webhookURL != "https://example.com/moderation" {
+		t.Fatalf("webhook URL = %q, want updated URL", repository.webhookURL)
+	}
+	if repository.webhookSecret != response.WebhookSecret {
+		t.Fatal("persisted webhook secret does not match response")
+	}
+}
+
+func TestClientHandlerUpdateWebhookAllowsExplicitClear(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	repository := &clientHandlerRepository{
+		webhookClient: models.ClientApplication{
+			ID:           11,
+			Name:         "blog",
+			Status:       clients.StatusActive,
+			APIKeyPrefix: "hs_live_abc",
+			WebhookURL:   "https://old.example.com/moderation",
+		},
+	}
+	handler := NewClientHandler(clients.NewService(repository))
+
+	engine := gin.New()
+	engine.POST("/api/v1/admin/clients/:id/webhook", func(c *gin.Context) {
+		c.Set(auth.UserContextKey, &auth.Claims{
+			UserID:   42,
+			Username: "admin",
+			Role:     "admin",
+		})
+		handler.UpdateWebhook(c)
+	})
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/admin/clients/11/webhook",
+		strings.NewReader(`{"webhook_url":""}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if repository.webhookURL != "" {
+		t.Fatalf("webhook URL = %q, want cleared", repository.webhookURL)
+	}
+	if repository.webhookSecret != "" {
+		t.Fatalf("webhook secret = %q, want cleared", repository.webhookSecret)
+	}
+
+	var response clients.UpdateWebhookOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.WebhookURL != "" {
+		t.Fatalf("WebhookURL = %q, want empty", response.WebhookURL)
+	}
+	if response.WebhookSecret != "" {
+		t.Fatalf("WebhookSecret = %q, want empty", response.WebhookSecret)
+	}
+}
+
+func TestClientHandlerUpdateWebhookRequiresExplicitField(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	repository := &clientHandlerRepository{}
+	handler := NewClientHandler(clients.NewService(repository))
+
+	engine := gin.New()
+	engine.POST("/api/v1/admin/clients/:id/webhook", func(c *gin.Context) {
+		c.Set(auth.UserContextKey, &auth.Claims{
+			UserID:   42,
+			Username: "admin",
+			Role:     "admin",
+		})
+		handler.UpdateWebhook(c)
+	})
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "missing field",
+			body: `{}`,
+		},
+		{
+			name: "null field",
+			body: `{"webhook_url":null}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"/api/v1/admin/clients/11/webhook",
+				strings.NewReader(tt.body),
+			)
+			req.Header.Set("Content-Type", "application/json")
+			recorder := httptest.NewRecorder()
+
+			engine.ServeHTTP(recorder, req)
+
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, body = %s, want 400", recorder.Code, recorder.Body.String())
+			}
+			if repository.webhookClientID != 0 {
+				t.Fatalf("repository was called with client id %d", repository.webhookClientID)
+			}
+		})
+	}
+}
+
+func TestClientHandlerUpdateWebhookRequiresUser(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	handler := NewClientHandler(clients.NewService(&clientHandlerRepository{}))
+	engine := gin.New()
+	engine.POST("/api/v1/admin/clients/:id/webhook", handler.UpdateWebhook)
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/admin/clients/11/webhook",
+		strings.NewReader(`{"webhook_url":"https://example.com/moderation"}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", recorder.Code)
+	}
+}
+
 type clientHandlerRepository struct {
 	client              *models.ClientApplication
 	clients             []models.ClientApplication
@@ -267,6 +471,10 @@ type clientHandlerRepository struct {
 	policyClient        models.ClientApplication
 	policyClientID      uint
 	policyVersion       string
+	webhookClient       models.ClientApplication
+	webhookClientID     uint
+	webhookURL          string
+	webhookSecret       string
 	rotatedClient       models.ClientApplication
 	rotateClientID      uint
 	rotatedAPIKeyHash   string
@@ -327,6 +535,25 @@ func (r *clientHandlerRepository) UpdateClientPolicyVersion(
 	r.policyClient.ID = clientID
 	r.policyClient.PolicyVersion = policyVersion
 	return r.policyClient, nil
+}
+
+func (r *clientHandlerRepository) UpdateClientWebhook(
+	ctx context.Context,
+	clientID uint,
+	webhookURL string,
+	webhookSecret string,
+) (models.ClientApplication, error) {
+	if r.err != nil {
+		return models.ClientApplication{}, r.err
+	}
+
+	r.webhookClientID = clientID
+	r.webhookURL = webhookURL
+	r.webhookSecret = webhookSecret
+	r.webhookClient.ID = clientID
+	r.webhookClient.WebhookURL = webhookURL
+	r.webhookClient.WebhookSecret = webhookSecret
+	return r.webhookClient, nil
 }
 
 func (r *clientHandlerRepository) RotateClientAPIKey(

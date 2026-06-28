@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"hatesentry/internal/auth"
@@ -353,6 +354,181 @@ func TestGormRepositoryUpdateClientPolicyVersionIntegration(t *testing.T) {
 	)
 }
 
+func TestGormRepositoryUpdateClientWebhookIntegration(t *testing.T) {
+	dsn := os.Getenv("HATESENTRY_TEST_DSN")
+	if strings.TrimSpace(dsn) == "" {
+		t.Skip("HATESENTRY_TEST_DSN is required for integration repository tests")
+	}
+
+	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+	if err := db.AutoMigrate(
+		&models.User{},
+		&models.ClientApplication{},
+	); err != nil {
+		t.Fatalf("auto migrate test database: %v", err)
+	}
+
+	ctx := context.Background()
+	repository := NewGormRepository(db)
+	suffix := strings.ReplaceAll(uuid.New().String(), "-", "")[:12]
+	user := models.User{
+		Username: "it-client-webhook-" + suffix,
+		Email:    "it-client-webhook-" + suffix + "@example.test",
+		Password: "not-used",
+		Role:     "admin",
+		Status:   "active",
+		APIKey:   "it_client_webhook_" + suffix,
+	}
+	if err := db.WithContext(ctx).Create(&user).Error; err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	apiKey, err := auth.GenerateAPIKey()
+	if err != nil {
+		t.Fatalf("GenerateAPIKey() error = %v", err)
+	}
+	client := models.ClientApplication{
+		UserID:        user.ID,
+		Name:          "integration webhook client",
+		APIKeyHash:    auth.HashAPIKey(apiKey),
+		APIKeyPrefix:  auth.APIKeyPrefix(apiKey),
+		Status:        StatusActive,
+		WebhookURL:    "https://old.example.com/moderation/webhook",
+		WebhookSecret: "whsec_old_integration",
+		PolicyVersion: "default-v1",
+	}
+	if err := db.WithContext(ctx).Create(&client).Error; err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	originalAPIKeyHash := client.APIKeyHash
+	originalAPIKeyPrefix := client.APIKeyPrefix
+	originalStatus := client.Status
+	originalPolicyVersion := client.PolicyVersion
+
+	t.Cleanup(func() {
+		db.Unscoped().Delete(&models.ClientApplication{}, client.ID)
+		db.Unscoped().Delete(&models.User{}, user.ID)
+	})
+
+	updated, err := repository.UpdateClientWebhook(
+		ctx,
+		client.ID,
+		"https://example.com/moderation/webhook",
+		"whsec_new_integration",
+	)
+	if err != nil {
+		t.Fatalf("UpdateClientWebhook() set error = %v", err)
+	}
+	if updated.WebhookURL != "https://example.com/moderation/webhook" {
+		t.Fatalf("WebhookURL = %q, want updated URL", updated.WebhookURL)
+	}
+	if updated.WebhookSecret != "whsec_new_integration" {
+		t.Fatal("WebhookSecret was not updated")
+	}
+	assertClientWebhookUpdatePreservedFields(
+		t,
+		updated,
+		originalAPIKeyHash,
+		originalAPIKeyPrefix,
+		originalStatus,
+		originalPolicyVersion,
+	)
+
+	updated, err = repository.UpdateClientWebhook(ctx, client.ID, "", "")
+	if err != nil {
+		t.Fatalf("UpdateClientWebhook() clear error = %v", err)
+	}
+	if updated.WebhookURL != "" {
+		t.Fatalf("WebhookURL = %q, want cleared", updated.WebhookURL)
+	}
+	if updated.WebhookSecret != "" {
+		t.Fatal("WebhookSecret was not cleared")
+	}
+	assertClientWebhookUpdatePreservedFields(
+		t,
+		updated,
+		originalAPIKeyHash,
+		originalAPIKeyPrefix,
+		originalStatus,
+		originalPolicyVersion,
+	)
+
+	concurrentUpdates := []struct {
+		webhookURL    string
+		webhookSecret string
+	}{
+		{
+			webhookURL:    "https://first.example.com/moderation/webhook",
+			webhookSecret: "whsec_first_integration",
+		},
+		{
+			webhookURL:    "https://second.example.com/moderation/webhook",
+			webhookSecret: "whsec_second_integration",
+		},
+	}
+	concurrentResults := make([]models.ClientApplication, len(concurrentUpdates))
+	concurrentErrors := make([]error, len(concurrentUpdates))
+	start := make(chan struct{})
+	var waitGroup sync.WaitGroup
+	for i, update := range concurrentUpdates {
+		waitGroup.Add(1)
+		go func(index int, webhookURL string, webhookSecret string) {
+			defer waitGroup.Done()
+			<-start
+
+			concurrentResults[index], concurrentErrors[index] = repository.UpdateClientWebhook(
+				ctx,
+				client.ID,
+				webhookURL,
+				webhookSecret,
+			)
+		}(i, update.webhookURL, update.webhookSecret)
+	}
+
+	close(start)
+	waitGroup.Wait()
+
+	for i, err := range concurrentErrors {
+		if err != nil {
+			t.Fatalf("UpdateClientWebhook() concurrent %d error = %v", i, err)
+		}
+		if concurrentResults[i].WebhookURL != concurrentUpdates[i].webhookURL {
+			t.Fatalf(
+				"concurrent %d WebhookURL = %q, want %q",
+				i,
+				concurrentResults[i].WebhookURL,
+				concurrentUpdates[i].webhookURL,
+			)
+		}
+		if concurrentResults[i].WebhookSecret != concurrentUpdates[i].webhookSecret {
+			t.Fatalf("concurrent %d WebhookSecret was not returned with its persisted update", i)
+		}
+		assertClientWebhookUpdatePreservedFields(
+			t,
+			concurrentResults[i],
+			originalAPIKeyHash,
+			originalAPIKeyPrefix,
+			originalStatus,
+			originalPolicyVersion,
+		)
+	}
+
+	var finalClient models.ClientApplication
+	if err := db.WithContext(ctx).First(&finalClient, client.ID).Error; err != nil {
+		t.Fatalf("retrieve final client after concurrent webhook updates: %v", err)
+	}
+	if !clientWebhookMatchesAny(finalClient, concurrentUpdates) {
+		t.Fatalf(
+			"final webhook pair = (%q, %q), want one complete concurrent update pair",
+			finalClient.WebhookURL,
+			finalClient.WebhookSecret,
+		)
+	}
+}
+
 func assertClientStatusUpdatePreservedFields(
 	t *testing.T,
 	client models.ClientApplication,
@@ -407,6 +583,47 @@ func assertClientPolicyUpdatePreservedFields(
 	if client.WebhookSecret != webhookSecret {
 		t.Fatal("WebhookSecret changed after policy update")
 	}
+}
+
+func assertClientWebhookUpdatePreservedFields(
+	t *testing.T,
+	client models.ClientApplication,
+	apiKeyHash string,
+	apiKeyPrefix string,
+	status string,
+	policyVersion string,
+) {
+	t.Helper()
+
+	if client.APIKeyHash != apiKeyHash {
+		t.Fatal("APIKeyHash changed after webhook update")
+	}
+	if client.APIKeyPrefix != apiKeyPrefix {
+		t.Fatalf("APIKeyPrefix = %q, want %q", client.APIKeyPrefix, apiKeyPrefix)
+	}
+	if client.Status != status {
+		t.Fatalf("Status = %q, want %q", client.Status, status)
+	}
+	if client.PolicyVersion != policyVersion {
+		t.Fatalf("PolicyVersion = %q, want %q", client.PolicyVersion, policyVersion)
+	}
+}
+
+func clientWebhookMatchesAny(
+	client models.ClientApplication,
+	updates []struct {
+		webhookURL    string
+		webhookSecret string
+	},
+) bool {
+	for _, update := range updates {
+		if client.WebhookURL == update.webhookURL &&
+			client.WebhookSecret == update.webhookSecret {
+			return true
+		}
+	}
+
+	return false
 }
 
 func assertRotatedClientPreservedFields(

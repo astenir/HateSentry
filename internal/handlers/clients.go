@@ -32,6 +32,11 @@ type UpdateClientPolicyRequest struct {
 	PolicyVersion string `json:"policy_version"`
 }
 
+// UpdateClientWebhookRequest is the admin request body for changing a client's callback URL.
+type UpdateClientWebhookRequest struct {
+	WebhookURL *string `json:"webhook_url"`
+}
+
 // Create creates an external client and returns its raw API key once.
 func (h *ClientHandler) Create(c *gin.Context) {
 	claims, exists := auth.GetClaims(c)
@@ -142,6 +147,42 @@ func (h *ClientHandler) UpdatePolicy(c *gin.Context) {
 		claims.UserID,
 		c.Param("id"),
 		req.PolicyVersion,
+	)
+	if err != nil {
+		apperrors.Handle(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, output)
+}
+
+// UpdateWebhook changes the callback URL and rotates the webhook signing secret.
+func (h *ClientHandler) UpdateWebhook(c *gin.Context) {
+	claims, exists := auth.GetClaims(c)
+	if !exists {
+		apperrors.RespondWithError(c, apperrors.Unauthorized("User not authenticated"))
+		return
+	}
+	if h.service == nil {
+		apperrors.RespondWithError(c, apperrors.ConfigurationError("client service is not configured"))
+		return
+	}
+
+	var req UpdateClientWebhookRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		apperrors.RespondWithError(c, apperrors.ValidationError("Invalid request body").WithDetails(err.Error()))
+		return
+	}
+	if req.WebhookURL == nil {
+		apperrors.RespondWithError(c, apperrors.ValidationError("webhook_url is required"))
+		return
+	}
+
+	output, err := h.service.UpdateClientWebhook(
+		c.Request.Context(),
+		claims.UserID,
+		c.Param("id"),
+		*req.WebhookURL,
 	)
 	if err != nil {
 		apperrors.Handle(c, err)

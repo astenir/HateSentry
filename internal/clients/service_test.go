@@ -511,6 +511,179 @@ func TestServiceUpdateClientPolicyVersionRejectsInvalidInput(t *testing.T) {
 	}
 }
 
+func TestServiceUpdateClientWebhook(t *testing.T) {
+	updatedAt := time.Date(2026, 6, 28, 12, 15, 0, 0, time.UTC)
+	repository := &fakeRepository{
+		webhookClient: models.ClientApplication{
+			ID:            11,
+			Name:          "blog",
+			Status:        StatusActive,
+			APIKeyHash:    "secret-hash",
+			APIKeyPrefix:  "hs_live_abc",
+			WebhookSecret: "old-secret",
+			WebhookURL:    "https://old.example.com/moderation",
+			PolicyVersion: "default-v1",
+			UpdatedAt:     updatedAt,
+		},
+	}
+	service := NewService(repository)
+
+	output, err := service.UpdateClientWebhook(
+		context.Background(),
+		42,
+		"11",
+		" https://example.com/moderation ",
+	)
+	if err != nil {
+		t.Fatalf("UpdateClientWebhook() error = %v", err)
+	}
+
+	if repository.webhookClientID != 11 {
+		t.Fatalf("webhook client id = %d, want 11", repository.webhookClientID)
+	}
+	if repository.webhookURL != "https://example.com/moderation" {
+		t.Fatalf("webhook URL = %q, want trimmed URL", repository.webhookURL)
+	}
+	if repository.webhookSecret == "" {
+		t.Fatal("webhook secret was not generated")
+	}
+	if !strings.HasPrefix(repository.webhookSecret, "whsec_") {
+		t.Fatalf("webhook secret = %q, want whsec_ prefix", repository.webhookSecret)
+	}
+	if repository.webhookSecret == "old-secret" {
+		t.Fatal("webhook secret was not rotated")
+	}
+	if output.WebhookURL != "https://example.com/moderation" {
+		t.Fatalf("output WebhookURL = %q, want updated URL", output.WebhookURL)
+	}
+	if output.WebhookSecret != repository.webhookSecret {
+		t.Fatal("output WebhookSecret does not match persisted secret")
+	}
+	if output.APIKeyPrefix != "hs_live_abc" {
+		t.Fatalf("APIKeyPrefix = %q, want hs_live_abc", output.APIKeyPrefix)
+	}
+	if strings.Contains(output.APIKeyPrefix, "secret-hash") {
+		t.Fatal("output exposed API key hash")
+	}
+}
+
+func TestServiceUpdateClientWebhookAllowsClearingURL(t *testing.T) {
+	repository := &fakeRepository{
+		webhookClient: models.ClientApplication{
+			ID:            11,
+			Name:          "blog",
+			Status:        StatusActive,
+			APIKeyPrefix:  "hs_live_abc",
+			WebhookURL:    "https://old.example.com/moderation",
+			WebhookSecret: "old-secret",
+			PolicyVersion: "default-v1",
+		},
+	}
+	service := NewService(repository)
+
+	output, err := service.UpdateClientWebhook(context.Background(), 42, "11", "   ")
+	if err != nil {
+		t.Fatalf("UpdateClientWebhook() clear error = %v", err)
+	}
+
+	if repository.webhookURL != "" {
+		t.Fatalf("webhook URL = %q, want cleared", repository.webhookURL)
+	}
+	if repository.webhookSecret != "" {
+		t.Fatalf("webhook secret = %q, want cleared", repository.webhookSecret)
+	}
+	if output.WebhookURL != "" {
+		t.Fatalf("output WebhookURL = %q, want empty", output.WebhookURL)
+	}
+	if output.WebhookSecret != "" {
+		t.Fatalf("output WebhookSecret = %q, want empty", output.WebhookSecret)
+	}
+}
+
+func TestServiceUpdateClientWebhookRejectsInvalidInput(t *testing.T) {
+	service := NewService(&fakeRepository{})
+
+	tests := []struct {
+		name       string
+		operatorID uint
+		clientID   string
+		webhookURL string
+		wantErr    string
+	}{
+		{
+			name:       "missing operator",
+			clientID:   "11",
+			webhookURL: "https://example.com/moderation",
+			wantErr:    "User not authenticated",
+		},
+		{
+			name:       "missing client id",
+			operatorID: 42,
+			webhookURL: "https://example.com/moderation",
+			wantErr:    "client id is required",
+		},
+		{
+			name:       "bad client id",
+			operatorID: 42,
+			clientID:   "abc",
+			webhookURL: "https://example.com/moderation",
+			wantErr:    "client id must be a positive integer",
+		},
+		{
+			name:       "zero client id",
+			operatorID: 42,
+			clientID:   "0",
+			webhookURL: "https://example.com/moderation",
+			wantErr:    "client id must be a positive integer",
+		},
+		{
+			name:       "webhook URL too long",
+			operatorID: 42,
+			clientID:   "11",
+			webhookURL: "https://example.com/" + strings.Repeat("a", maxWebhookURLLength),
+			wantErr:    "webhook_url must not exceed 500 characters",
+		},
+		{
+			name:       "plain http webhook",
+			operatorID: 42,
+			clientID:   "11",
+			webhookURL: "http://example.com/moderation",
+			wantErr:    "webhook_url must use https",
+		},
+		{
+			name:       "localhost webhook",
+			operatorID: 42,
+			clientID:   "11",
+			webhookURL: "https://localhost/moderation",
+			wantErr:    "webhook_url must not target localhost",
+		},
+		{
+			name:       "relative webhook",
+			operatorID: 42,
+			clientID:   "11",
+			webhookURL: "/moderation",
+			wantErr:    "webhook_url must be a valid absolute URL",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := service.UpdateClientWebhook(
+				context.Background(),
+				tt.operatorID,
+				tt.clientID,
+				tt.webhookURL,
+			)
+			if err == nil {
+				t.Fatal("UpdateClientWebhook() error = nil, want validation error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("UpdateClientWebhook() error = %q, want %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestServiceRotateClientAPIKey(t *testing.T) {
 	updatedAt := time.Date(2026, 6, 28, 12, 5, 0, 0, time.UTC)
 	repository := &fakeRepository{
@@ -616,6 +789,10 @@ type fakeRepository struct {
 	policyClient        models.ClientApplication
 	policyClientID      uint
 	policyVersion       string
+	webhookClient       models.ClientApplication
+	webhookClientID     uint
+	webhookURL          string
+	webhookSecret       string
 	rotatedClient       models.ClientApplication
 	rotateClientID      uint
 	rotatedAPIKeyHash   string
@@ -693,6 +870,25 @@ func (r *fakeRepository) UpdateClientPolicyVersion(
 	r.policyClient.ID = clientID
 	r.policyClient.PolicyVersion = policyVersion
 	return r.policyClient, nil
+}
+
+func (r *fakeRepository) UpdateClientWebhook(
+	ctx context.Context,
+	clientID uint,
+	webhookURL string,
+	webhookSecret string,
+) (models.ClientApplication, error) {
+	if r.err != nil {
+		return models.ClientApplication{}, r.err
+	}
+
+	r.webhookClientID = clientID
+	r.webhookURL = webhookURL
+	r.webhookSecret = webhookSecret
+	r.webhookClient.ID = clientID
+	r.webhookClient.WebhookURL = webhookURL
+	r.webhookClient.WebhookSecret = webhookSecret
+	return r.webhookClient, nil
 }
 
 func (r *fakeRepository) RotateClientAPIKey(

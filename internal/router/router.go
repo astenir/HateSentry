@@ -190,6 +190,7 @@ func (r *Router) Setup() *gin.Engine {
 		admin.POST("/clients/:id/activate", clientHandler.Activate)
 		admin.POST("/clients/:id/deactivate", clientHandler.Deactivate)
 		admin.POST("/clients/:id/policy", clientHandler.UpdatePolicy)
+		admin.POST("/clients/:id/webhook", clientHandler.UpdateWebhook)
 		admin.POST("/clients/:id/api-key/rotate", clientHandler.RotateAPIKey)
 		admin.GET("/moderation/results", moderationHandler.ListHistory)
 		admin.GET("/webhook-deliveries", moderationHandler.ListWebhookDeliveries)

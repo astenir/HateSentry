@@ -109,6 +109,50 @@ func (r *GormRepository) UpdateClientPolicyVersion(
 	return client, nil
 }
 
+// UpdateClientWebhook changes a client's callback URL and signing secret.
+func (r *GormRepository) UpdateClientWebhook(
+	ctx context.Context,
+	clientID uint,
+	webhookURL string,
+	webhookSecret string,
+) (models.ClientApplication, error) {
+	if r == nil || r.db == nil {
+		return models.ClientApplication{}, apperrors.ConfigurationError("client database is not configured")
+	}
+
+	var client models.ClientApplication
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			First(&client, clientID).Error; err != nil {
+			if stderrors.Is(err, gorm.ErrRecordNotFound) {
+				return apperrors.RecordNotFound("Client not found")
+			}
+			return apperrors.DatabaseError(err, "failed to retrieve client")
+		}
+
+		result := tx.Model(&models.ClientApplication{}).
+			Where("id = ?", clientID).
+			Updates(map[string]any{
+				"webhook_url":    webhookURL,
+				"webhook_secret": webhookSecret,
+			})
+		if result.Error != nil {
+			return apperrors.DatabaseError(result.Error, "failed to update client webhook")
+		}
+
+		if err := tx.First(&client, clientID).Error; err != nil {
+			return apperrors.DatabaseError(err, "failed to retrieve client")
+		}
+
+		return nil
+	})
+	if err != nil {
+		return models.ClientApplication{}, err
+	}
+
+	return client, nil
+}
+
 // RotateClientAPIKey replaces the stored API key hash and visible prefix.
 func (r *GormRepository) RotateClientAPIKey(
 	ctx context.Context,

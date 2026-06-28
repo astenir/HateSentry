@@ -28,6 +28,7 @@ type Repository interface {
 	ListClients(ctx context.Context) ([]models.ClientApplication, error)
 	UpdateClientStatus(ctx context.Context, clientID uint, status string) (models.ClientApplication, error)
 	UpdateClientPolicyVersion(ctx context.Context, clientID uint, policyVersion string) (models.ClientApplication, error)
+	UpdateClientWebhook(ctx context.Context, clientID uint, webhookURL string, webhookSecret string) (models.ClientApplication, error)
 	RotateClientAPIKey(ctx context.Context, clientID uint, apiKeyHash string, apiKeyPrefix string) (models.ClientApplication, error)
 }
 
@@ -100,6 +101,19 @@ type RotateAPIKeyOutput struct {
 	APIKeyPrefix  string    `json:"api_key_prefix"`
 	WebhookURL    string    `json:"webhook_url,omitempty"`
 	PolicyVersion string    `json:"policy_version,omitempty"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+// UpdateWebhookOutput returns the updated client and a one-time webhook secret when configured.
+type UpdateWebhookOutput struct {
+	ID            uint      `json:"id"`
+	Name          string    `json:"name"`
+	Status        string    `json:"status"`
+	APIKeyPrefix  string    `json:"api_key_prefix"`
+	WebhookSecret string    `json:"webhook_secret,omitempty"`
+	WebhookURL    string    `json:"webhook_url,omitempty"`
+	PolicyVersion string    `json:"policy_version,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }
 
@@ -270,6 +284,55 @@ func (s *Service) UpdateClientPolicyVersion(
 	return clientListOutput(client), nil
 }
 
+// UpdateClientWebhook changes the callback URL and rotates the signing secret for future final decisions.
+func (s *Service) UpdateClientWebhook(
+	ctx context.Context,
+	operatorID uint,
+	clientID string,
+	webhookURL string,
+) (UpdateWebhookOutput, error) {
+	if operatorID == 0 {
+		return UpdateWebhookOutput{}, apperrors.Unauthorized("User not authenticated")
+	}
+	if s.repository == nil {
+		return UpdateWebhookOutput{}, apperrors.ConfigurationError("client repository is not configured")
+	}
+
+	parsedClientID, err := parseClientID(clientID)
+	if err != nil {
+		return UpdateWebhookOutput{}, err
+	}
+	normalizedWebhookURL, err := validateWebhookURLInput(webhookURL)
+	if err != nil {
+		return UpdateWebhookOutput{}, err
+	}
+
+	webhookSecret := ""
+	if normalizedWebhookURL != "" {
+		webhookSecret, err = webhooks.GenerateSecret()
+		if err != nil {
+			return UpdateWebhookOutput{}, err
+		}
+	}
+
+	client, err := s.repository.UpdateClientWebhook(
+		ctx,
+		parsedClientID,
+		normalizedWebhookURL,
+		webhookSecret,
+	)
+	if err != nil {
+		return UpdateWebhookOutput{}, err
+	}
+
+	returnedWebhookSecret := ""
+	if normalizedWebhookURL != "" {
+		returnedWebhookSecret = client.WebhookSecret
+	}
+
+	return clientWebhookOutput(client, returnedWebhookSecret), nil
+}
+
 func (s *Service) updateClientStatus(
 	ctx context.Context,
 	operatorID uint,
@@ -345,12 +408,42 @@ func validatePolicyVersionInput(policyVersion string) (string, error) {
 	return policyVersion, nil
 }
 
+func validateWebhookURLInput(webhookURL string) (string, error) {
+	webhookURL = strings.TrimSpace(webhookURL)
+	if len(webhookURL) > maxWebhookURLLength {
+		return "", apperrors.ValidationError(
+			fmt.Sprintf("webhook_url must not exceed %d characters", maxWebhookURLLength),
+		)
+	}
+	if webhookURL != "" {
+		if err := webhooks.ValidateURL(webhookURL); err != nil {
+			return "", err
+		}
+	}
+
+	return webhookURL, nil
+}
+
 func clientListOutput(client models.ClientApplication) ListOutput {
 	return ListOutput{
 		ID:            client.ID,
 		Name:          client.Name,
 		Status:        client.Status,
 		APIKeyPrefix:  client.APIKeyPrefix,
+		WebhookURL:    client.WebhookURL,
+		PolicyVersion: client.PolicyVersion,
+		CreatedAt:     client.CreatedAt,
+		UpdatedAt:     client.UpdatedAt,
+	}
+}
+
+func clientWebhookOutput(client models.ClientApplication, webhookSecret string) UpdateWebhookOutput {
+	return UpdateWebhookOutput{
+		ID:            client.ID,
+		Name:          client.Name,
+		Status:        client.Status,
+		APIKeyPrefix:  client.APIKeyPrefix,
+		WebhookSecret: webhookSecret,
 		WebhookURL:    client.WebhookURL,
 		PolicyVersion: client.PolicyVersion,
 		CreatedAt:     client.CreatedAt,
