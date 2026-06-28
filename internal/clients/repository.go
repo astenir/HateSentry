@@ -80,6 +80,35 @@ func (r *GormRepository) UpdateClientStatus(
 	return client, nil
 }
 
+// UpdateClientPolicyVersion changes a client's assigned moderation policy version.
+func (r *GormRepository) UpdateClientPolicyVersion(
+	ctx context.Context,
+	clientID uint,
+	policyVersion string,
+) (models.ClientApplication, error) {
+	if r == nil || r.db == nil {
+		return models.ClientApplication{}, apperrors.ConfigurationError("client database is not configured")
+	}
+
+	result := r.db.WithContext(ctx).
+		Model(&models.ClientApplication{}).
+		Where("id = ?", clientID).
+		Update("policy_version", policyVersion)
+	if result.Error != nil {
+		return models.ClientApplication{}, apperrors.DatabaseError(result.Error, "failed to update client policy version")
+	}
+
+	var client models.ClientApplication
+	if err := r.db.WithContext(ctx).First(&client, clientID).Error; err != nil {
+		if stderrors.Is(err, gorm.ErrRecordNotFound) {
+			return models.ClientApplication{}, apperrors.RecordNotFound("Client not found")
+		}
+		return models.ClientApplication{}, apperrors.DatabaseError(err, "failed to retrieve client")
+	}
+
+	return client, nil
+}
+
 // RotateClientAPIKey replaces the stored API key hash and visible prefix.
 func (r *GormRepository) RotateClientAPIKey(
 	ctx context.Context,

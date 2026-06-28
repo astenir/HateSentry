@@ -12,7 +12,7 @@ import (
 
 func TestServiceCreateClientStoresHashedAPIKey(t *testing.T) {
 	repository := &fakeRepository{}
-	service := NewServiceWithPolicyValidator(repository, fakePolicyValidator{
+	service := NewServiceWithPolicyValidator(repository, &fakePolicyValidator{
 		allowed: map[string]bool{"default-v1": true},
 	})
 
@@ -69,7 +69,7 @@ func TestServiceCreateClientStoresHashedAPIKey(t *testing.T) {
 
 func TestServiceCreateClientRejectsUnknownPolicyVersion(t *testing.T) {
 	repository := &fakeRepository{}
-	service := NewServiceWithPolicyValidator(repository, fakePolicyValidator{
+	service := NewServiceWithPolicyValidator(repository, &fakePolicyValidator{
 		allowed: map[string]bool{"default-v1": true},
 	})
 
@@ -346,6 +346,171 @@ func TestServiceUpdateClientStatusRejectsInvalidInput(t *testing.T) {
 	}
 }
 
+func TestServiceUpdateClientPolicyVersion(t *testing.T) {
+	updatedAt := time.Date(2026, 6, 28, 12, 10, 0, 0, time.UTC)
+	repository := &fakeRepository{
+		policyClient: models.ClientApplication{
+			ID:            11,
+			Name:          "blog",
+			Status:        StatusActive,
+			APIKeyHash:    "secret-hash",
+			APIKeyPrefix:  "hs_live_abc",
+			WebhookSecret: "whsec_secret",
+			WebhookURL:    "https://example.com/moderation",
+			UpdatedAt:     updatedAt,
+		},
+	}
+	validator := &fakePolicyValidator{
+		allowed: map[string]bool{
+			"":          true,
+			"strict-v1": true,
+		},
+	}
+	service := NewServiceWithPolicyValidator(repository, validator)
+
+	output, err := service.UpdateClientPolicyVersion(context.Background(), 42, "11", " strict-v1 ")
+	if err != nil {
+		t.Fatalf("UpdateClientPolicyVersion() error = %v", err)
+	}
+
+	if repository.policyClientID != 11 {
+		t.Fatalf("policy client id = %d, want 11", repository.policyClientID)
+	}
+	if repository.policyVersion != "strict-v1" {
+		t.Fatalf("policy version = %q, want strict-v1", repository.policyVersion)
+	}
+	if len(validator.calls) != 1 || validator.calls[0] != "strict-v1" {
+		t.Fatalf("validator calls = %#v, want strict-v1", validator.calls)
+	}
+	if output.ID != 11 {
+		t.Fatalf("output ID = %d, want 11", output.ID)
+	}
+	if output.PolicyVersion != "strict-v1" {
+		t.Fatalf("output PolicyVersion = %q, want strict-v1", output.PolicyVersion)
+	}
+	if output.APIKeyPrefix != "hs_live_abc" {
+		t.Fatalf("APIKeyPrefix = %q, want hs_live_abc", output.APIKeyPrefix)
+	}
+	if strings.Contains(output.APIKeyPrefix, "secret-hash") {
+		t.Fatal("output exposed API key hash")
+	}
+}
+
+func TestServiceUpdateClientPolicyVersionAllowsDefaultReset(t *testing.T) {
+	repository := &fakeRepository{
+		policyClient: models.ClientApplication{
+			ID:            11,
+			Name:          "blog",
+			Status:        StatusActive,
+			APIKeyPrefix:  "hs_live_abc",
+			PolicyVersion: "strict-v1",
+		},
+	}
+	validator := &fakePolicyValidator{
+		allowed: map[string]bool{
+			"":          true,
+			"strict-v1": true,
+		},
+	}
+	service := NewServiceWithPolicyValidator(repository, validator)
+
+	output, err := service.UpdateClientPolicyVersion(context.Background(), 42, "11", "   ")
+	if err != nil {
+		t.Fatalf("UpdateClientPolicyVersion() reset error = %v", err)
+	}
+
+	if repository.policyVersion != "" {
+		t.Fatalf("policy version = %q, want default reset", repository.policyVersion)
+	}
+	if output.PolicyVersion != "" {
+		t.Fatalf("output PolicyVersion = %q, want empty default reset", output.PolicyVersion)
+	}
+	if len(validator.calls) != 1 || validator.calls[0] != "" {
+		t.Fatalf("validator calls = %#v, want empty version", validator.calls)
+	}
+}
+
+func TestServiceUpdateClientPolicyVersionRejectsUnknownPolicyVersion(t *testing.T) {
+	repository := &fakeRepository{}
+	service := NewServiceWithPolicyValidator(repository, &fakePolicyValidator{
+		allowed: map[string]bool{"strict-v1": true},
+	})
+
+	_, err := service.UpdateClientPolicyVersion(context.Background(), 42, "11", "missing-v1")
+	if err == nil {
+		t.Fatal("UpdateClientPolicyVersion() error = nil, want policy validation error")
+	}
+	if !strings.Contains(err.Error(), "invalid policy_version") {
+		t.Fatalf("UpdateClientPolicyVersion() error = %q, want invalid policy_version", err.Error())
+	}
+	if repository.policyClientID != 0 {
+		t.Fatalf("policy client id = %d, want no repository write", repository.policyClientID)
+	}
+}
+
+func TestServiceUpdateClientPolicyVersionRejectsInvalidInput(t *testing.T) {
+	service := NewService(&fakeRepository{})
+
+	tests := []struct {
+		name          string
+		operatorID    uint
+		clientID      string
+		policyVersion string
+		wantErr       string
+	}{
+		{
+			name:          "missing operator",
+			clientID:      "11",
+			policyVersion: "strict-v1",
+			wantErr:       "User not authenticated",
+		},
+		{
+			name:          "missing client id",
+			operatorID:    42,
+			policyVersion: "strict-v1",
+			wantErr:       "client id is required",
+		},
+		{
+			name:          "bad client id",
+			operatorID:    42,
+			clientID:      "abc",
+			policyVersion: "strict-v1",
+			wantErr:       "client id must be a positive integer",
+		},
+		{
+			name:          "zero client id",
+			operatorID:    42,
+			clientID:      "0",
+			policyVersion: "strict-v1",
+			wantErr:       "client id must be a positive integer",
+		},
+		{
+			name:          "policy version too long",
+			operatorID:    42,
+			clientID:      "11",
+			policyVersion: strings.Repeat("a", maxPolicyVersionLength+1),
+			wantErr:       "policy_version must not exceed 50 characters",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := service.UpdateClientPolicyVersion(
+				context.Background(),
+				tt.operatorID,
+				tt.clientID,
+				tt.policyVersion,
+			)
+			if err == nil {
+				t.Fatal("UpdateClientPolicyVersion() error = nil, want validation error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("UpdateClientPolicyVersion() error = %q, want %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestServiceRotateClientAPIKey(t *testing.T) {
 	updatedAt := time.Date(2026, 6, 28, 12, 5, 0, 0, time.UTC)
 	repository := &fakeRepository{
@@ -448,6 +613,9 @@ type fakeRepository struct {
 	statusClient        models.ClientApplication
 	statusClientID      uint
 	status              string
+	policyClient        models.ClientApplication
+	policyClientID      uint
+	policyVersion       string
 	rotatedClient       models.ClientApplication
 	rotateClientID      uint
 	rotatedAPIKeyHash   string
@@ -457,9 +625,11 @@ type fakeRepository struct {
 
 type fakePolicyValidator struct {
 	allowed map[string]bool
+	calls   []string
 }
 
-func (v fakePolicyValidator) ValidatePolicyVersion(version string) error {
+func (v *fakePolicyValidator) ValidatePolicyVersion(version string) error {
+	v.calls = append(v.calls, version)
 	if v.allowed[version] {
 		return nil
 	}
@@ -507,6 +677,22 @@ func (r *fakeRepository) UpdateClientStatus(
 	r.statusClient.ID = clientID
 	r.statusClient.Status = status
 	return r.statusClient, nil
+}
+
+func (r *fakeRepository) UpdateClientPolicyVersion(
+	ctx context.Context,
+	clientID uint,
+	policyVersion string,
+) (models.ClientApplication, error) {
+	if r.err != nil {
+		return models.ClientApplication{}, r.err
+	}
+
+	r.policyClientID = clientID
+	r.policyVersion = policyVersion
+	r.policyClient.ID = clientID
+	r.policyClient.PolicyVersion = policyVersion
+	return r.policyClient, nil
 }
 
 func (r *fakeRepository) RotateClientAPIKey(

@@ -172,12 +172,101 @@ func TestClientHandlerRotateAPIKeyRequiresUser(t *testing.T) {
 	}
 }
 
+func TestClientHandlerUpdatePolicy(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	repository := &clientHandlerRepository{
+		policyClient: models.ClientApplication{
+			ID:            11,
+			Name:          "blog",
+			Status:        clients.StatusActive,
+			APIKeyHash:    "secret-hash",
+			APIKeyPrefix:  "hs_live_abc",
+			WebhookSecret: "whsec_secret",
+			WebhookURL:    "https://example.com/moderation",
+			PolicyVersion: "default-v1",
+			UpdatedAt:     time.Date(2026, 6, 28, 12, 10, 0, 0, time.UTC),
+		},
+	}
+	handler := NewClientHandler(clients.NewService(repository))
+
+	engine := gin.New()
+	engine.POST("/api/v1/admin/clients/:id/policy", func(c *gin.Context) {
+		c.Set(auth.UserContextKey, &auth.Claims{
+			UserID:   42,
+			Username: "admin",
+			Role:     "admin",
+		})
+		handler.UpdatePolicy(c)
+	})
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/admin/clients/11/policy",
+		strings.NewReader(`{"policy_version":"strict-v1"}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	if strings.Contains(body, "secret-hash") || strings.Contains(body, "whsec_secret") {
+		t.Fatalf("response leaked secret material: %s", body)
+	}
+
+	var response clients.ListOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.ID != 11 {
+		t.Fatalf("ID = %d, want 11", response.ID)
+	}
+	if response.PolicyVersion != "strict-v1" {
+		t.Fatalf("PolicyVersion = %q, want strict-v1", response.PolicyVersion)
+	}
+	if repository.policyClientID != 11 {
+		t.Fatalf("policy client id = %d, want 11", repository.policyClientID)
+	}
+	if repository.policyVersion != "strict-v1" {
+		t.Fatalf("policy version = %q, want strict-v1", repository.policyVersion)
+	}
+}
+
+func TestClientHandlerUpdatePolicyRequiresUser(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	handler := NewClientHandler(clients.NewService(&clientHandlerRepository{}))
+	engine := gin.New()
+	engine.POST("/api/v1/admin/clients/:id/policy", handler.UpdatePolicy)
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/admin/clients/11/policy",
+		strings.NewReader(`{"policy_version":"strict-v1"}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", recorder.Code)
+	}
+}
+
 type clientHandlerRepository struct {
 	client              *models.ClientApplication
 	clients             []models.ClientApplication
 	statusClient        models.ClientApplication
 	statusClientID      uint
 	status              string
+	policyClient        models.ClientApplication
+	policyClientID      uint
+	policyVersion       string
 	rotatedClient       models.ClientApplication
 	rotateClientID      uint
 	rotatedAPIKeyHash   string
@@ -222,6 +311,22 @@ func (r *clientHandlerRepository) UpdateClientStatus(
 	r.statusClient.ID = clientID
 	r.statusClient.Status = status
 	return r.statusClient, nil
+}
+
+func (r *clientHandlerRepository) UpdateClientPolicyVersion(
+	ctx context.Context,
+	clientID uint,
+	policyVersion string,
+) (models.ClientApplication, error) {
+	if r.err != nil {
+		return models.ClientApplication{}, r.err
+	}
+
+	r.policyClientID = clientID
+	r.policyVersion = policyVersion
+	r.policyClient.ID = clientID
+	r.policyClient.PolicyVersion = policyVersion
+	return r.policyClient, nil
 }
 
 func (r *clientHandlerRepository) RotateClientAPIKey(

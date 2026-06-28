@@ -27,6 +27,11 @@ type CreateClientRequest struct {
 	PolicyVersion string `json:"policy_version"`
 }
 
+// UpdateClientPolicyRequest is the admin request body for changing a client's assigned policy.
+type UpdateClientPolicyRequest struct {
+	PolicyVersion string `json:"policy_version"`
+}
+
 // Create creates an external client and returns its raw API key once.
 func (h *ClientHandler) Create(c *gin.Context) {
 	claims, exists := auth.GetClaims(c)
@@ -106,6 +111,38 @@ func (h *ClientHandler) RotateAPIKey(c *gin.Context) {
 	}
 
 	output, err := h.service.RotateClientAPIKey(c.Request.Context(), claims.UserID, c.Param("id"))
+	if err != nil {
+		apperrors.Handle(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, output)
+}
+
+// UpdatePolicy changes the policy assigned to future moderation checks from a client.
+func (h *ClientHandler) UpdatePolicy(c *gin.Context) {
+	claims, exists := auth.GetClaims(c)
+	if !exists {
+		apperrors.RespondWithError(c, apperrors.Unauthorized("User not authenticated"))
+		return
+	}
+	if h.service == nil {
+		apperrors.RespondWithError(c, apperrors.ConfigurationError("client service is not configured"))
+		return
+	}
+
+	var req UpdateClientPolicyRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		apperrors.RespondWithError(c, apperrors.ValidationError("Invalid request body").WithDetails(err.Error()))
+		return
+	}
+
+	output, err := h.service.UpdateClientPolicyVersion(
+		c.Request.Context(),
+		claims.UserID,
+		c.Param("id"),
+		req.PolicyVersion,
+	)
 	if err != nil {
 		apperrors.Handle(c, err)
 		return

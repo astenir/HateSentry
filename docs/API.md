@@ -233,7 +233,40 @@ Authorization: Bearer <admin-token>
 
 响应字段与停用客户端一致，其中 `status` 为 `active`。客户端列表和状态更新响应都不会返回 API Key 哈希或 Webhook secret。
 
-### 5. 轮换客户端 API Key
+### 5. 更新客户端策略版本
+
+更新客户端后续文本审核使用的策略版本。非空 `policy_version` 必须匹配 `moderation.policy.version` 或 `moderation.policies[].version`；传空字符串会重置为默认策略。该接口不会返回 API Key 哈希或 Webhook secret，也不会改变客户端状态、API Key 或 Webhook 配置。
+
+**端点**: `POST /admin/clients/:id/policy`
+
+**请求头**:
+```
+Authorization: Bearer <admin-token>
+Content-Type: application/json
+```
+
+**请求体**:
+```json
+{
+  "policy_version": "strict-v1"
+}
+```
+
+**响应** (200 OK):
+```json
+{
+  "id": 11,
+  "name": "blog-comments",
+  "status": "active",
+  "api_key_prefix": "hs_live_xxxx",
+  "webhook_url": "https://example.com/moderation/webhook",
+  "policy_version": "strict-v1",
+  "created_at": "2026-06-28T12:00:00Z",
+  "updated_at": "2026-06-28T12:40:00Z"
+}
+```
+
+### 6. 轮换客户端 API Key
 
 轮换客户端 API Key 会替换数据库中的 API Key 哈希和展示前缀，旧 API Key 会立即失效。响应中的新 `api_key` 只返回一次；客户端状态、Webhook URL、Webhook secret 和策略版本不会改变。如果客户端当前为 `inactive`，轮换密钥不会自动启用客户端。若管理员并发触发多次轮换，最后完成的轮换返回的 API Key 才是当前有效密钥。
 

@@ -27,6 +27,7 @@ type Repository interface {
 	CreateClient(ctx context.Context, client *models.ClientApplication) error
 	ListClients(ctx context.Context) ([]models.ClientApplication, error)
 	UpdateClientStatus(ctx context.Context, clientID uint, status string) (models.ClientApplication, error)
+	UpdateClientPolicyVersion(ctx context.Context, clientID uint, policyVersion string) (models.ClientApplication, error)
 	RotateClientAPIKey(ctx context.Context, clientID uint, apiKeyHash string, apiKeyPrefix string) (models.ClientApplication, error)
 }
 
@@ -233,6 +234,42 @@ func (s *Service) RotateClientAPIKey(
 	}, nil
 }
 
+// UpdateClientPolicyVersion changes the policy assigned to future moderation checks from a client.
+func (s *Service) UpdateClientPolicyVersion(
+	ctx context.Context,
+	operatorID uint,
+	clientID string,
+	policyVersion string,
+) (ListOutput, error) {
+	if operatorID == 0 {
+		return ListOutput{}, apperrors.Unauthorized("User not authenticated")
+	}
+	if s.repository == nil {
+		return ListOutput{}, apperrors.ConfigurationError("client repository is not configured")
+	}
+
+	parsedClientID, err := parseClientID(clientID)
+	if err != nil {
+		return ListOutput{}, err
+	}
+	normalizedPolicyVersion, err := validatePolicyVersionInput(policyVersion)
+	if err != nil {
+		return ListOutput{}, err
+	}
+	if s.policyValidator != nil {
+		if err := s.policyValidator.ValidatePolicyVersion(normalizedPolicyVersion); err != nil {
+			return ListOutput{}, apperrors.ValidationError("invalid policy_version").WithDetails(err.Error())
+		}
+	}
+
+	client, err := s.repository.UpdateClientPolicyVersion(ctx, parsedClientID, normalizedPolicyVersion)
+	if err != nil {
+		return ListOutput{}, err
+	}
+
+	return clientListOutput(client), nil
+}
+
 func (s *Service) updateClientStatus(
 	ctx context.Context,
 	operatorID uint,
@@ -295,6 +332,17 @@ func validateCreateInput(input CreateInput) (CreateInput, error) {
 	}
 
 	return input, nil
+}
+
+func validatePolicyVersionInput(policyVersion string) (string, error) {
+	policyVersion = strings.TrimSpace(policyVersion)
+	if len(policyVersion) > maxPolicyVersionLength {
+		return "", apperrors.ValidationError(
+			fmt.Sprintf("policy_version must not exceed %d characters", maxPolicyVersionLength),
+		)
+	}
+
+	return policyVersion, nil
 }
 
 func clientListOutput(client models.ClientApplication) ListOutput {

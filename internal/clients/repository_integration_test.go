@@ -258,6 +258,101 @@ func TestGormRepositoryRotateClientAPIKeyIntegration(t *testing.T) {
 	}
 }
 
+func TestGormRepositoryUpdateClientPolicyVersionIntegration(t *testing.T) {
+	dsn := os.Getenv("HATESENTRY_TEST_DSN")
+	if strings.TrimSpace(dsn) == "" {
+		t.Skip("HATESENTRY_TEST_DSN is required for integration repository tests")
+	}
+
+	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+	if err := db.AutoMigrate(
+		&models.User{},
+		&models.ClientApplication{},
+	); err != nil {
+		t.Fatalf("auto migrate test database: %v", err)
+	}
+
+	ctx := context.Background()
+	repository := NewGormRepository(db)
+	suffix := strings.ReplaceAll(uuid.New().String(), "-", "")[:12]
+	user := models.User{
+		Username: "it-client-policy-" + suffix,
+		Email:    "it-client-policy-" + suffix + "@example.test",
+		Password: "not-used",
+		Role:     "admin",
+		Status:   "active",
+		APIKey:   "it_client_policy_" + suffix,
+	}
+	if err := db.WithContext(ctx).Create(&user).Error; err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	apiKey, err := auth.GenerateAPIKey()
+	if err != nil {
+		t.Fatalf("GenerateAPIKey() error = %v", err)
+	}
+	client := models.ClientApplication{
+		UserID:        user.ID,
+		Name:          "integration policy client",
+		APIKeyHash:    auth.HashAPIKey(apiKey),
+		APIKeyPrefix:  auth.APIKeyPrefix(apiKey),
+		Status:        StatusInactive,
+		WebhookURL:    "https://example.com/moderation/webhook",
+		WebhookSecret: "whsec_policy_integration",
+		PolicyVersion: "default-v1",
+	}
+	if err := db.WithContext(ctx).Create(&client).Error; err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	originalAPIKeyHash := client.APIKeyHash
+	originalAPIKeyPrefix := client.APIKeyPrefix
+	originalStatus := client.Status
+	originalWebhookURL := client.WebhookURL
+	originalWebhookSecret := client.WebhookSecret
+
+	t.Cleanup(func() {
+		db.Unscoped().Delete(&models.ClientApplication{}, client.ID)
+		db.Unscoped().Delete(&models.User{}, user.ID)
+	})
+
+	updated, err := repository.UpdateClientPolicyVersion(ctx, client.ID, "strict-v1")
+	if err != nil {
+		t.Fatalf("UpdateClientPolicyVersion() strict error = %v", err)
+	}
+	if updated.PolicyVersion != "strict-v1" {
+		t.Fatalf("PolicyVersion = %q, want strict-v1", updated.PolicyVersion)
+	}
+	assertClientPolicyUpdatePreservedFields(
+		t,
+		updated,
+		originalAPIKeyHash,
+		originalAPIKeyPrefix,
+		originalStatus,
+		originalWebhookURL,
+		originalWebhookSecret,
+	)
+
+	updated, err = repository.UpdateClientPolicyVersion(ctx, client.ID, "")
+	if err != nil {
+		t.Fatalf("UpdateClientPolicyVersion() reset error = %v", err)
+	}
+	if updated.PolicyVersion != "" {
+		t.Fatalf("PolicyVersion = %q, want default reset", updated.PolicyVersion)
+	}
+	assertClientPolicyUpdatePreservedFields(
+		t,
+		updated,
+		originalAPIKeyHash,
+		originalAPIKeyPrefix,
+		originalStatus,
+		originalWebhookURL,
+		originalWebhookSecret,
+	)
+}
+
 func assertClientStatusUpdatePreservedFields(
 	t *testing.T,
 	client models.ClientApplication,
@@ -283,6 +378,34 @@ func assertClientStatusUpdatePreservedFields(
 	}
 	if client.PolicyVersion != policyVersion {
 		t.Fatalf("PolicyVersion = %q, want %q", client.PolicyVersion, policyVersion)
+	}
+}
+
+func assertClientPolicyUpdatePreservedFields(
+	t *testing.T,
+	client models.ClientApplication,
+	apiKeyHash string,
+	apiKeyPrefix string,
+	status string,
+	webhookURL string,
+	webhookSecret string,
+) {
+	t.Helper()
+
+	if client.APIKeyHash != apiKeyHash {
+		t.Fatal("APIKeyHash changed after policy update")
+	}
+	if client.APIKeyPrefix != apiKeyPrefix {
+		t.Fatalf("APIKeyPrefix = %q, want %q", client.APIKeyPrefix, apiKeyPrefix)
+	}
+	if client.Status != status {
+		t.Fatalf("Status = %q, want %q", client.Status, status)
+	}
+	if client.WebhookURL != webhookURL {
+		t.Fatalf("WebhookURL = %q, want %q", client.WebhookURL, webhookURL)
+	}
+	if client.WebhookSecret != webhookSecret {
+		t.Fatal("WebhookSecret changed after policy update")
 	}
 }
 
