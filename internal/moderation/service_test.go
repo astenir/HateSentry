@@ -1553,6 +1553,166 @@ func TestServiceRetryWebhookDelivery(t *testing.T) {
 	}
 }
 
+func TestServiceRetryFailedWebhookDeliveries(t *testing.T) {
+	payload := webhooks.FinalDecisionPayload{
+		Event:         "moderation.final_decision",
+		RequestID:     "request-123",
+		ClientID:      11,
+		Decision:      string(DecisionBlock),
+		RiskScore:     0.8,
+		Labels:        []string{"hate"},
+		Reason:        "Policy threshold exceeded.",
+		PolicyVersion: "default-v1",
+	}
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("encode payload: %v", err)
+	}
+
+	dispatcher := &fakeWebhookDispatcher{}
+	repository := &fakeRepository{
+		retryableWebhookDeliveries: []models.WebhookDelivery{
+			{
+				ID:            5,
+				DeliveryID:    "delivery-123",
+				RequestID:     "request-123",
+				ClientID:      11,
+				Event:         "moderation.final_decision",
+				Status:        string(WebhookDeliveryFailed),
+				AttemptCount:  1,
+				LastAttemptAt: time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC),
+			},
+		},
+		webhookClient: models.ClientApplication{
+			ID:            11,
+			WebhookURL:    "https://example.com/moderation/webhook",
+			WebhookSecret: "whsec_test",
+		},
+		webhookClientFound: true,
+		webhookDeliveryStored: models.WebhookDelivery{
+			ID:            5,
+			DeliveryID:    "delivery-123",
+			RequestID:     "request-123",
+			ClientID:      11,
+			Event:         "moderation.final_decision",
+			Status:        string(WebhookDeliveryFailed),
+			AttemptCount:  1,
+			LastAttemptAt: time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC),
+			ErrorMessage:  "webhook returned status 500",
+			Payload:       string(payloadJSON),
+		},
+	}
+	service := NewService(fakeAnalyzer{}, repository, DefaultPolicy(), dispatcher)
+
+	output, err := service.RetryFailedWebhookDeliveries(context.Background(), WebhookRetryInput{
+		Limit:       10,
+		MaxAttempts: 3,
+	})
+	if err != nil {
+		t.Fatalf("RetryFailedWebhookDeliveries() error = %v", err)
+	}
+
+	if output.Attempted != 1 {
+		t.Fatalf("Attempted = %d, want 1", output.Attempted)
+	}
+	if output.Succeeded != 1 {
+		t.Fatalf("Succeeded = %d, want 1", output.Succeeded)
+	}
+	if output.Failed != 0 {
+		t.Fatalf("Failed = %d, want 0", output.Failed)
+	}
+	if repository.webhookRetryLimit != 10 {
+		t.Fatalf("retry limit = %d, want 10", repository.webhookRetryLimit)
+	}
+	if repository.webhookRetryMaxAttempts != 3 {
+		t.Fatalf("retry max attempts = %d, want 3", repository.webhookRetryMaxAttempts)
+	}
+	if repository.webhookDeliveryID != 5 {
+		t.Fatalf("delivery id = %d, want 5", repository.webhookDeliveryID)
+	}
+	if dispatcher.DispatchCount() != 1 {
+		t.Fatalf("webhook dispatches = %d, want 1", dispatcher.DispatchCount())
+	}
+}
+
+func TestServiceRetryFailedWebhookDeliveriesSkipsClaimConflicts(t *testing.T) {
+	repository := &fakeRepository{
+		retryableWebhookDeliveries: []models.WebhookDelivery{
+			{
+				ID:        5,
+				RequestID: "request-123",
+				ClientID:  11,
+				Status:    string(WebhookDeliveryFailed),
+			},
+		},
+		claimWebhookDeliveryOnce: true,
+		webhookDeliveryClaimed:   true,
+	}
+	service := NewService(fakeAnalyzer{}, repository, DefaultPolicy(), &fakeWebhookDispatcher{})
+
+	output, err := service.RetryFailedWebhookDeliveries(context.Background(), WebhookRetryInput{
+		Limit:       10,
+		MaxAttempts: 3,
+	})
+	if err != nil {
+		t.Fatalf("RetryFailedWebhookDeliveries() error = %v", err)
+	}
+
+	if output.Skipped != 1 {
+		t.Fatalf("Skipped = %d, want 1", output.Skipped)
+	}
+	if output.Attempted != 0 {
+		t.Fatalf("Attempted = %d, want 0", output.Attempted)
+	}
+}
+
+func TestServiceRetryFailedWebhookDeliveriesValidatesInput(t *testing.T) {
+	service := NewService(fakeAnalyzer{}, &fakeRepository{}, DefaultPolicy(), &fakeWebhookDispatcher{})
+
+	tests := []struct {
+		name    string
+		input   WebhookRetryInput
+		wantErr string
+	}{
+		{
+			name: "zero limit",
+			input: WebhookRetryInput{
+				Limit:       0,
+				MaxAttempts: 3,
+			},
+			wantErr: "webhook retry limit must be a positive integer",
+		},
+		{
+			name: "excessive limit",
+			input: WebhookRetryInput{
+				Limit:       maxWebhookDeliveryListLimit + 1,
+				MaxAttempts: 3,
+			},
+			wantErr: "webhook retry limit must not exceed",
+		},
+		{
+			name: "single max attempt",
+			input: WebhookRetryInput{
+				Limit:       10,
+				MaxAttempts: 1,
+			},
+			wantErr: "webhook retry max_attempts must be greater than 1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := service.RetryFailedWebhookDeliveries(context.Background(), tt.input)
+			if err == nil {
+				t.Fatal("RetryFailedWebhookDeliveries() error = nil, want validation error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("RetryFailedWebhookDeliveries() error = %q, want %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestServiceGetWebhookDelivery(t *testing.T) {
 	httpStatus := 500
 	repository := &fakeRepository{
@@ -1885,6 +2045,7 @@ type fakeRepository struct {
 	webhookDelivery                 *models.WebhookDelivery
 	webhookDeliveryStored           models.WebhookDelivery
 	webhookDeliveries               []models.WebhookDelivery
+	retryableWebhookDeliveries      []models.WebhookDelivery
 	claimWebhookDeliveryOnce        bool
 	webhookDeliveryClaimed          bool
 	stored                          StoredResult
@@ -1914,6 +2075,9 @@ type fakeRepository struct {
 	webhookDeliveryUpdateContextErr error
 	webhookDeliverySaveContextErr   error
 	webhookDeliveryListFilter       WebhookDeliveryFilter
+	webhookRetryLimit               int
+	webhookRetryMaxAttempts         int
+	webhookRetryStaleBefore         time.Time
 	afterSaveCheck                  func()
 	reviewerID                      uint
 	finalStatus                     ReviewStatus
@@ -2029,9 +2193,28 @@ func (r *fakeRepository) ListWebhookDeliveries(
 	return r.webhookDeliveries, nil
 }
 
+func (r *fakeRepository) ListRetryableWebhookDeliveries(
+	ctx context.Context,
+	limit int,
+	maxAttempts int,
+	staleRetryingBefore time.Time,
+) ([]models.WebhookDelivery, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.err != nil {
+		return nil, r.err
+	}
+	r.webhookRetryLimit = limit
+	r.webhookRetryMaxAttempts = maxAttempts
+	r.webhookRetryStaleBefore = staleRetryingBefore
+	return r.retryableWebhookDeliveries, nil
+}
+
 func (r *fakeRepository) ClaimFailedWebhookDelivery(
 	ctx context.Context,
 	deliveryID uint,
+	maxAttempts int,
 	attemptedAt time.Time,
 ) (models.WebhookDelivery, error) {
 	r.mu.Lock()
@@ -2049,8 +2232,13 @@ func (r *fakeRepository) ClaimFailedWebhookDelivery(
 	}
 
 	claimed := r.webhookDeliveryStored
+	if maxAttempts > 0 && claimed.AttemptCount >= maxAttempts {
+		return models.WebhookDelivery{}, apperrors.Conflict("Webhook delivery is not failed")
+	}
 	claimed.Status = string(WebhookDeliveryRetrying)
+	claimed.AttemptCount++
 	claimed.LastAttemptAt = attemptedAt
+	r.webhookDeliveryStored = claimed
 	return claimed, nil
 }
 
@@ -2091,7 +2279,6 @@ func (r *fakeRepository) UpdateWebhookDeliveryAttempt(
 
 	updated := r.webhookDeliveryStored
 	updated.Status = string(status)
-	updated.AttemptCount++
 	updated.LastAttemptAt = attemptedAt
 	updated.HTTPStatus = httpStatus
 	updated.ErrorMessage = errorMessage

@@ -109,6 +109,7 @@ type ModerationConfig struct {
 	Policy          ModerationPolicyConfig    `mapstructure:"policy"`
 	Policies        []ModerationPolicyConfig  `mapstructure:"policies"`
 	ClientRateLimit ModerationRateLimitConfig `mapstructure:"client_rate_limit"`
+	WebhookRetry    WebhookRetryConfig        `mapstructure:"webhook_retry"`
 }
 
 type ModerationPolicyConfig struct {
@@ -120,6 +121,13 @@ type ModerationPolicyConfig struct {
 type ModerationRateLimitConfig struct {
 	Limit  int           `mapstructure:"limit"`
 	Window time.Duration `mapstructure:"window"`
+}
+
+type WebhookRetryConfig struct {
+	Enabled     bool          `mapstructure:"enabled"`
+	Interval    time.Duration `mapstructure:"interval"`
+	BatchSize   int           `mapstructure:"batch_size"`
+	MaxAttempts int           `mapstructure:"max_attempts"`
 }
 
 type LoggingConfig struct {
@@ -142,6 +150,10 @@ func Load(configPath string) (*Config, error) {
 	loader.SetDefault("moderation.policy.block_threshold", 0.75)
 	loader.SetDefault("moderation.client_rate_limit.limit", 60)
 	loader.SetDefault("moderation.client_rate_limit.window", time.Minute)
+	loader.SetDefault("moderation.webhook_retry.enabled", true)
+	loader.SetDefault("moderation.webhook_retry.interval", time.Minute)
+	loader.SetDefault("moderation.webhook_retry.batch_size", 10)
+	loader.SetDefault("moderation.webhook_retry.max_attempts", 3)
 
 	if err := loader.ReadInConfig(); err != nil {
 		return nil, errors.ConfigurationError("failed to read config file").WithDetails(err.Error())
@@ -171,6 +183,29 @@ func validateConfig(config *Config) error {
 	}
 	if config.Moderation.ClientRateLimit.Window > 0 && config.Moderation.ClientRateLimit.Window < time.Second {
 		return errors.ConfigurationError("invalid moderation client rate limit").WithDetails("window must be zero or at least 1s")
+	}
+	if config.Moderation.WebhookRetry.Interval < 0 {
+		return errors.ConfigurationError("invalid moderation webhook retry").WithDetails("interval must be zero or greater")
+	}
+	if config.Moderation.WebhookRetry.Interval > 0 && config.Moderation.WebhookRetry.Interval < time.Second {
+		return errors.ConfigurationError("invalid moderation webhook retry").WithDetails("interval must be zero or at least 1s")
+	}
+	if config.Moderation.WebhookRetry.BatchSize < 0 {
+		return errors.ConfigurationError("invalid moderation webhook retry").WithDetails("batch_size must be zero or greater")
+	}
+	if config.Moderation.WebhookRetry.MaxAttempts < 0 {
+		return errors.ConfigurationError("invalid moderation webhook retry").WithDetails("max_attempts must be zero or greater")
+	}
+	if config.Moderation.WebhookRetry.Enabled {
+		if config.Moderation.WebhookRetry.Interval == 0 {
+			return errors.ConfigurationError("invalid moderation webhook retry").WithDetails("interval is required when retry is enabled")
+		}
+		if config.Moderation.WebhookRetry.BatchSize == 0 {
+			return errors.ConfigurationError("invalid moderation webhook retry").WithDetails("batch_size is required when retry is enabled")
+		}
+		if config.Moderation.WebhookRetry.MaxAttempts <= 1 {
+			return errors.ConfigurationError("invalid moderation webhook retry").WithDetails("max_attempts must be greater than 1 when retry is enabled")
+		}
 	}
 
 	return nil
@@ -228,6 +263,18 @@ func applyEnvironmentOverrides(config *Config) error {
 	if err := overrideDuration("MODERATION_CLIENT_RATE_WINDOW", &config.Moderation.ClientRateLimit.Window); err != nil {
 		return err
 	}
+	if err := overrideBool("MODERATION_WEBHOOK_RETRY_ENABLED", &config.Moderation.WebhookRetry.Enabled); err != nil {
+		return err
+	}
+	if err := overrideDuration("MODERATION_WEBHOOK_RETRY_INTERVAL", &config.Moderation.WebhookRetry.Interval); err != nil {
+		return err
+	}
+	if err := overrideInt("MODERATION_WEBHOOK_RETRY_BATCH_SIZE", &config.Moderation.WebhookRetry.BatchSize); err != nil {
+		return err
+	}
+	if err := overrideInt("MODERATION_WEBHOOK_RETRY_MAX_ATTEMPTS", &config.Moderation.WebhookRetry.MaxAttempts); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -260,6 +307,21 @@ func overrideInt(name string, target *int) error {
 	parsed, err := strconv.Atoi(value)
 	if err != nil {
 		return errors.ConfigurationError("invalid environment variable").WithDetails(name + " must be an integer")
+	}
+
+	*target = parsed
+	return nil
+}
+
+func overrideBool(name string, target *bool) error {
+	value, ok := os.LookupEnv(name)
+	if !ok {
+		return nil
+	}
+
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return errors.ConfigurationError("invalid environment variable").WithDetails(name + " must be a boolean")
 	}
 
 	*target = parsed

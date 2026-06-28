@@ -32,6 +32,10 @@ func TestLoadOverridesComposeEnvironment(t *testing.T) {
 	t.Setenv("MODERATION_BLOCK_THRESHOLD", "0.8")
 	t.Setenv("MODERATION_CLIENT_RATE_LIMIT", "25")
 	t.Setenv("MODERATION_CLIENT_RATE_WINDOW", "2m")
+	t.Setenv("MODERATION_WEBHOOK_RETRY_ENABLED", "false")
+	t.Setenv("MODERATION_WEBHOOK_RETRY_INTERVAL", "3m")
+	t.Setenv("MODERATION_WEBHOOK_RETRY_BATCH_SIZE", "7")
+	t.Setenv("MODERATION_WEBHOOK_RETRY_MAX_ATTEMPTS", "4")
 
 	cfg, err := Load(configPath)
 	if err != nil {
@@ -100,6 +104,18 @@ func TestLoadOverridesComposeEnvironment(t *testing.T) {
 	}
 	if cfg.Moderation.ClientRateLimit.Window != 2*time.Minute {
 		t.Fatalf("Moderation.ClientRateLimit.Window = %s, want 2m", cfg.Moderation.ClientRateLimit.Window)
+	}
+	if cfg.Moderation.WebhookRetry.Enabled {
+		t.Fatal("Moderation.WebhookRetry.Enabled = true, want false")
+	}
+	if cfg.Moderation.WebhookRetry.Interval != 3*time.Minute {
+		t.Fatalf("Moderation.WebhookRetry.Interval = %s, want 3m", cfg.Moderation.WebhookRetry.Interval)
+	}
+	if cfg.Moderation.WebhookRetry.BatchSize != 7 {
+		t.Fatalf("Moderation.WebhookRetry.BatchSize = %d, want 7", cfg.Moderation.WebhookRetry.BatchSize)
+	}
+	if cfg.Moderation.WebhookRetry.MaxAttempts != 4 {
+		t.Fatalf("Moderation.WebhookRetry.MaxAttempts = %d, want 4", cfg.Moderation.WebhookRetry.MaxAttempts)
 	}
 }
 
@@ -184,6 +200,19 @@ func TestLoadRejectsInvalidDurationEnvironment(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsInvalidBooleanEnvironment(t *testing.T) {
+	configPath := writeTestConfig(t)
+	t.Setenv("MODERATION_WEBHOOK_RETRY_ENABLED", "not-a-bool")
+
+	_, err := Load(configPath)
+	if err == nil {
+		t.Fatal("Load() error = nil, want invalid environment variable error")
+	}
+	if !strings.Contains(err.Error(), "MODERATION_WEBHOOK_RETRY_ENABLED must be a boolean") {
+		t.Fatalf("Load() error = %q, want webhook retry enabled detail", err.Error())
+	}
+}
+
 func TestLoadRejectsNegativeModerationRateLimit(t *testing.T) {
 	configPath := writeTestConfig(t)
 	t.Setenv("MODERATION_CLIENT_RATE_LIMIT", "-1")
@@ -223,6 +252,67 @@ func TestLoadRejectsInvalidModerationRateWindow(t *testing.T) {
 			_, err := Load(configPath)
 			if err == nil {
 				t.Fatal("Load() error = nil, want invalid rate window error")
+			}
+			if !strings.Contains(err.Error(), tt.wantDetail) {
+				t.Fatalf("Load() error = %q, want %q", err.Error(), tt.wantDetail)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsInvalidModerationWebhookRetry(t *testing.T) {
+	tests := []struct {
+		name       string
+		envName    string
+		value      string
+		wantDetail string
+	}{
+		{
+			name:       "negative interval",
+			envName:    "MODERATION_WEBHOOK_RETRY_INTERVAL",
+			value:      "-1s",
+			wantDetail: "interval must be zero or greater",
+		},
+		{
+			name:       "sub second positive interval",
+			envName:    "MODERATION_WEBHOOK_RETRY_INTERVAL",
+			value:      "500ms",
+			wantDetail: "interval must be zero or at least 1s",
+		},
+		{
+			name:       "zero interval when enabled",
+			envName:    "MODERATION_WEBHOOK_RETRY_INTERVAL",
+			value:      "0s",
+			wantDetail: "interval is required when retry is enabled",
+		},
+		{
+			name:       "zero batch when enabled",
+			envName:    "MODERATION_WEBHOOK_RETRY_BATCH_SIZE",
+			value:      "0",
+			wantDetail: "batch_size is required when retry is enabled",
+		},
+		{
+			name:       "single max attempt when enabled",
+			envName:    "MODERATION_WEBHOOK_RETRY_MAX_ATTEMPTS",
+			value:      "1",
+			wantDetail: "max_attempts must be greater than 1 when retry is enabled",
+		},
+		{
+			name:       "negative max attempts",
+			envName:    "MODERATION_WEBHOOK_RETRY_MAX_ATTEMPTS",
+			value:      "-1",
+			wantDetail: "max_attempts must be zero or greater",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			configPath := writeTestConfig(t)
+			t.Setenv(tt.envName, tt.value)
+
+			_, err := Load(configPath)
+			if err == nil {
+				t.Fatal("Load() error = nil, want invalid webhook retry error")
 			}
 			if !strings.Contains(err.Error(), tt.wantDetail) {
 				t.Fatalf("Load() error = %q, want %q", err.Error(), tt.wantDetail)
@@ -359,6 +449,11 @@ moderation:
   client_rate_limit:
     limit: 60
     window: 1m
+  webhook_retry:
+    enabled: true
+    interval: 1m
+    batch_size: 10
+    max_attempts: 3
 logging:
   level: "info"
   format: "json"

@@ -55,9 +55,16 @@ type Repository interface {
 	SaveWebhookDelivery(ctx context.Context, delivery *models.WebhookDelivery) error
 	GetWebhookDelivery(ctx context.Context, deliveryID uint) (models.WebhookDelivery, error)
 	ListWebhookDeliveries(ctx context.Context, filter WebhookDeliveryFilter) ([]models.WebhookDelivery, error)
+	ListRetryableWebhookDeliveries(
+		ctx context.Context,
+		limit int,
+		maxAttempts int,
+		staleRetryingBefore time.Time,
+	) ([]models.WebhookDelivery, error)
 	ClaimFailedWebhookDelivery(
 		ctx context.Context,
 		deliveryID uint,
+		maxAttempts int,
 		attemptedAt time.Time,
 	) (models.WebhookDelivery, error)
 	UpdateWebhookDeliveryAttempt(
@@ -301,6 +308,20 @@ type WebhookDeliveryOutput struct {
 // ListWebhookDeliveriesOutput is the operator list response for callback deliveries.
 type ListWebhookDeliveriesOutput struct {
 	Items []WebhookDeliveryOutput `json:"items"`
+}
+
+// WebhookRetryInput controls one automatic retry batch.
+type WebhookRetryInput struct {
+	Limit       int
+	MaxAttempts int
+}
+
+// WebhookRetryOutput summarizes one automatic retry batch.
+type WebhookRetryOutput struct {
+	Attempted int
+	Succeeded int
+	Failed    int
+	Skipped   int
 }
 
 // ListPoliciesOutput is the operator list response for configured moderation policies.
@@ -914,9 +935,84 @@ func (s *Service) RetryWebhookDelivery(
 		return WebhookDeliveryOutput{}, err
 	}
 
-	delivery, err := s.repository.ClaimFailedWebhookDelivery(ctx, parsedDeliveryID, time.Now().UTC())
+	updated, err := s.retryWebhookDelivery(ctx, parsedDeliveryID, 0)
 	if err != nil {
 		return WebhookDeliveryOutput{}, err
+	}
+
+	return webhookDeliveryOutputFromModel(updated), nil
+}
+
+// RetryFailedWebhookDeliveries retries failed final-decision webhook deliveries in a bounded batch.
+func (s *Service) RetryFailedWebhookDeliveries(
+	ctx context.Context,
+	input WebhookRetryInput,
+) (WebhookRetryOutput, error) {
+	if s.repository == nil {
+		return WebhookRetryOutput{}, apperrors.ConfigurationError("moderation repository is not configured")
+	}
+	if s.webhookDispatcher == nil {
+		return WebhookRetryOutput{}, apperrors.ConfigurationError("webhook dispatcher is not configured")
+	}
+
+	limit, err := normalizeWebhookRetryLimit(input.Limit)
+	if err != nil {
+		return WebhookRetryOutput{}, err
+	}
+	maxAttempts, err := normalizeWebhookRetryMaxAttempts(input.MaxAttempts)
+	if err != nil {
+		return WebhookRetryOutput{}, err
+	}
+
+	now := time.Now().UTC()
+	deliveries, err := s.repository.ListRetryableWebhookDeliveries(
+		ctx,
+		limit,
+		maxAttempts,
+		now.Add(-webhookRetryLease),
+	)
+	if err != nil {
+		return WebhookRetryOutput{}, err
+	}
+
+	output := WebhookRetryOutput{}
+	for _, delivery := range deliveries {
+		updated, retryErr := s.retryWebhookDelivery(ctx, delivery.ID, maxAttempts)
+		if retryErr != nil {
+			if isWebhookRetryConflict(retryErr) {
+				output.Skipped++
+				continue
+			}
+			output.Attempted++
+			output.Failed++
+			zap.L().Warn(
+				"failed to retry webhook delivery automatically",
+				zap.Uint("delivery_id", delivery.ID),
+				zap.String("request_id", delivery.RequestID),
+				zap.Error(retryErr),
+			)
+			continue
+		}
+
+		output.Attempted++
+		if WebhookDeliveryStatus(updated.Status) == WebhookDeliverySucceeded {
+			output.Succeeded++
+		} else {
+			output.Failed++
+		}
+	}
+
+	return output, nil
+}
+
+func (s *Service) retryWebhookDelivery(
+	ctx context.Context,
+	deliveryID uint,
+	maxAttempts int,
+) (models.WebhookDelivery, error) {
+	delivery, err := s.repository.ClaimFailedWebhookDelivery(ctx, deliveryID, maxAttempts, time.Now().UTC())
+	if err != nil {
+		return models.WebhookDelivery{}, err
 	}
 	statusCtx, cancelStatusCtx := context.WithTimeout(
 		context.WithoutCancel(ctx),
@@ -927,17 +1023,17 @@ func (s *Service) RetryWebhookDelivery(
 	client, found, err := s.repository.GetClient(ctx, delivery.ClientID)
 	if err != nil {
 		s.recordClaimedWebhookDeliveryFailure(statusCtx, delivery.ID, err.Error())
-		return WebhookDeliveryOutput{}, err
+		return models.WebhookDelivery{}, err
 	}
 	if !found || strings.TrimSpace(client.WebhookURL) == "" {
 		s.recordClaimedWebhookDeliveryFailure(statusCtx, delivery.ID, "Webhook client not found")
-		return WebhookDeliveryOutput{}, apperrors.RecordNotFound("Webhook client not found")
+		return models.WebhookDelivery{}, apperrors.RecordNotFound("Webhook client not found")
 	}
 
 	var payload webhooks.FinalDecisionPayload
 	if err := json.Unmarshal([]byte(delivery.Payload), &payload); err != nil {
 		s.recordClaimedWebhookDeliveryFailure(statusCtx, delivery.ID, err.Error())
-		return WebhookDeliveryOutput{}, apperrors.Internal("failed to decode webhook payload").WithDetails(err.Error())
+		return models.WebhookDelivery{}, apperrors.Internal("failed to decode webhook payload").WithDetails(err.Error())
 	}
 	payload.DeliveryID = delivery.DeliveryID
 
@@ -951,10 +1047,10 @@ func (s *Service) RetryWebhookDelivery(
 		time.Now().UTC(),
 	)
 	if err != nil {
-		return WebhookDeliveryOutput{}, err
+		return models.WebhookDelivery{}, err
 	}
 
-	return webhookDeliveryOutputFromModel(updated), nil
+	return updated, nil
 }
 
 func (s *Service) recordClaimedWebhookDeliveryFailure(ctx context.Context, deliveryID uint, message string) {
@@ -1288,6 +1384,27 @@ func normalizeWebhookDeliveryListLimit(limit string) (int, error) {
 	return normalizeListLimit(limit, defaultWebhookDeliveryListLimit, maxWebhookDeliveryListLimit)
 }
 
+func normalizeWebhookRetryLimit(limit int) (int, error) {
+	if limit <= 0 {
+		return 0, apperrors.ValidationError("webhook retry limit must be a positive integer")
+	}
+	if limit > maxWebhookDeliveryListLimit {
+		return 0, apperrors.ValidationError(
+			fmt.Sprintf("webhook retry limit must not exceed %d", maxWebhookDeliveryListLimit),
+		)
+	}
+
+	return limit, nil
+}
+
+func normalizeWebhookRetryMaxAttempts(maxAttempts int) (int, error) {
+	if maxAttempts <= 1 {
+		return 0, apperrors.ValidationError("webhook retry max_attempts must be greater than 1")
+	}
+
+	return maxAttempts, nil
+}
+
 func normalizeListLimit(limit string, defaultLimit int, maxLimit int) (int, error) {
 	limit = strings.TrimSpace(limit)
 	if limit == "" {
@@ -1323,6 +1440,11 @@ func deliverFinalDecision(
 	}
 
 	return WebhookDeliverySucceeded, nil, ""
+}
+
+func isWebhookRetryConflict(err error) bool {
+	var appErr *apperrors.AppError
+	return errors.As(err, &appErr) && appErr.Code == apperrors.ErrCodeConflict
 }
 
 func webhookDeliveryOutputFromModel(delivery models.WebhookDelivery) WebhookDeliveryOutput {

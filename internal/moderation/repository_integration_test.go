@@ -281,6 +281,19 @@ func TestGormRepositoryWebhookDeliveryClaimIntegration(t *testing.T) {
 		t.Fatalf("filtered deliveries = %#v, want delivery id %d", filtered, delivery.ID)
 	}
 
+	retryable, err := repository.ListRetryableWebhookDeliveries(
+		ctx,
+		10,
+		3,
+		time.Date(2026, 6, 28, 12, 3, 0, 0, time.UTC),
+	)
+	if err != nil {
+		t.Fatalf("ListRetryableWebhookDeliveries() error = %v", err)
+	}
+	if !containsWebhookDelivery(retryable, delivery.ID) {
+		t.Fatalf("retryable webhook deliveries did not include delivery id %d", delivery.ID)
+	}
+
 	const workers = 8
 	claimedAt := time.Date(2026, 6, 28, 12, 5, 0, 0, time.UTC)
 	var wg sync.WaitGroup
@@ -291,7 +304,7 @@ func TestGormRepositoryWebhookDeliveryClaimIntegration(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			claimed, claimErr := repository.ClaimFailedWebhookDelivery(ctx, delivery.ID, claimedAt)
+			claimed, claimErr := repository.ClaimFailedWebhookDelivery(ctx, delivery.ID, 0, claimedAt)
 			results <- webhookClaimResult{
 				delivery: claimed,
 				err:      claimErr,
@@ -326,6 +339,9 @@ func TestGormRepositoryWebhookDeliveryClaimIntegration(t *testing.T) {
 	}
 	if claimed.Status != string(WebhookDeliveryRetrying) {
 		t.Fatalf("claimed status = %q, want retrying", claimed.Status)
+	}
+	if claimed.AttemptCount != 2 {
+		t.Fatalf("claimed attempt count = %d, want 2", claimed.AttemptCount)
 	}
 	if claimed.HTTPStatus != nil {
 		t.Fatalf("claimed HTTPStatus = %#v, want nil", claimed.HTTPStatus)
@@ -374,15 +390,52 @@ func TestGormRepositoryWebhookDeliveryClaimIntegration(t *testing.T) {
 	if err := db.WithContext(ctx).Create(&staleDelivery).Error; err != nil {
 		t.Fatalf("create stale webhook delivery: %v", err)
 	}
-	reclaimed, err := repository.ClaimFailedWebhookDelivery(ctx, staleDelivery.ID, claimedAt)
+	staleRetryable, err := repository.ListRetryableWebhookDeliveries(
+		ctx,
+		10,
+		3,
+		claimedAt.Add(-webhookRetryLease),
+	)
+	if err != nil {
+		t.Fatalf("ListRetryableWebhookDeliveries() stale retrying error = %v", err)
+	}
+	if !containsWebhookDelivery(staleRetryable, staleDelivery.ID) {
+		t.Fatalf("retryable webhook deliveries did not include stale retrying id %d", staleDelivery.ID)
+	}
+	reclaimed, err := repository.ClaimFailedWebhookDelivery(ctx, staleDelivery.ID, 3, claimedAt)
 	if err != nil {
 		t.Fatalf("ClaimFailedWebhookDelivery() stale retrying error = %v", err)
 	}
 	if reclaimed.Status != string(WebhookDeliveryRetrying) {
 		t.Fatalf("reclaimed status = %q, want retrying", reclaimed.Status)
 	}
+	if reclaimed.AttemptCount != 2 {
+		t.Fatalf("reclaimed attempt count = %d, want 2", reclaimed.AttemptCount)
+	}
 	if reclaimed.ErrorMessage != "" {
 		t.Fatalf("reclaimed ErrorMessage = %q, want empty", reclaimed.ErrorMessage)
+	}
+
+	maxedDelivery := models.WebhookDelivery{
+		DeliveryID:    uuid.New().String(),
+		RequestID:     uuid.New().String(),
+		ClientID:      client.ID,
+		Event:         "moderation.final_decision",
+		Status:        string(WebhookDeliveryFailed),
+		AttemptCount:  3,
+		LastAttemptAt: claimedAt.Add(-time.Minute),
+		ErrorMessage:  "webhook returned status 500",
+		Payload:       `{"event":"moderation.final_decision"}`,
+	}
+	if err := db.WithContext(ctx).Create(&maxedDelivery).Error; err != nil {
+		t.Fatalf("create maxed webhook delivery: %v", err)
+	}
+	_, err = repository.ClaimFailedWebhookDelivery(ctx, maxedDelivery.ID, 3, claimedAt)
+	if err == nil {
+		t.Fatal("ClaimFailedWebhookDelivery() max attempts error = nil, want conflict")
+	}
+	if !strings.Contains(err.Error(), "Webhook delivery is not failed") {
+		t.Fatalf("ClaimFailedWebhookDelivery() max attempts error = %q, want conflict", err.Error())
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"hatesentry/internal/moderation"
 	"hatesentry/internal/queue"
 	"hatesentry/internal/router"
+	"hatesentry/internal/webhooks"
 	"net/http"
 	"os"
 	"os/signal"
@@ -181,6 +182,14 @@ func (a *App) Run() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	webhookRetryService := moderation.NewServiceWithPolicySet(
+		detectionService,
+		moderation.NewGormRepository(database.GetDB()),
+		moderationPolicies,
+		webhooks.NewHTTPDispatcher(),
+	)
+	startWebhookRetryWorker(ctx, a.logger, webhookRetryService, cfg.Moderation.WebhookRetry)
+
 	go func() {
 		a.logger.Info("Starting detection consumer...")
 		if err := a.consumer.Start(ctx); err != nil {
@@ -256,6 +265,74 @@ func moderationPolicySetFromConfig(cfg config.ModerationConfig) (moderation.Poli
 	}
 
 	return moderation.NewPolicySet(defaultPolicy, policies...)
+}
+
+type webhookRetryService interface {
+	RetryFailedWebhookDeliveries(
+		ctx context.Context,
+		input moderation.WebhookRetryInput,
+	) (moderation.WebhookRetryOutput, error)
+}
+
+func startWebhookRetryWorker(
+	ctx context.Context,
+	logger *zap.Logger,
+	service webhookRetryService,
+	cfg config.WebhookRetryConfig,
+) bool {
+	if !cfg.Enabled || service == nil || cfg.Interval <= 0 || cfg.BatchSize <= 0 || cfg.MaxAttempts <= 1 {
+		return false
+	}
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+
+	go func() {
+		ticker := time.NewTicker(cfg.Interval)
+		defer ticker.Stop()
+
+		runWebhookRetryBatch(ctx, logger, service, cfg)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				runWebhookRetryBatch(ctx, logger, service, cfg)
+			}
+		}
+	}()
+
+	return true
+}
+
+func runWebhookRetryBatch(
+	ctx context.Context,
+	logger *zap.Logger,
+	service webhookRetryService,
+	cfg config.WebhookRetryConfig,
+) {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+	output, err := service.RetryFailedWebhookDeliveries(ctx, moderation.WebhookRetryInput{
+		Limit:       cfg.BatchSize,
+		MaxAttempts: cfg.MaxAttempts,
+	})
+	if err != nil {
+		logger.Warn("automatic webhook retry batch failed", zap.Error(err))
+		return
+	}
+	if output.Attempted == 0 && output.Failed == 0 && output.Skipped == 0 {
+		return
+	}
+
+	logger.Info(
+		"automatic webhook retry batch completed",
+		zap.Int("attempted", output.Attempted),
+		zap.Int("succeeded", output.Succeeded),
+		zap.Int("failed", output.Failed),
+		zap.Int("skipped", output.Skipped),
+	)
 }
 
 // initLogger initializes the logger

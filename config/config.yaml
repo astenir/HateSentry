@@ -89,6 +89,11 @@ moderation:
   client_rate_limit:
     limit: 60
     window: 1m
+  webhook_retry:
+    enabled: true
+    interval: 1m
+    batch_size: 10
+    max_attempts: 3
 
 # Logging Configuration
 logging:

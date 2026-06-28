@@ -1094,15 +1094,27 @@ func (r *moderationHandlerRepository) ListWebhookDeliveries(
 	return r.webhookDeliveries, nil
 }
 
+func (r *moderationHandlerRepository) ListRetryableWebhookDeliveries(
+	ctx context.Context,
+	limit int,
+	maxAttempts int,
+	staleRetryingBefore time.Time,
+) ([]models.WebhookDelivery, error) {
+	return []models.WebhookDelivery{}, nil
+}
+
 func (r *moderationHandlerRepository) ClaimFailedWebhookDelivery(
 	ctx context.Context,
 	deliveryID uint,
+	maxAttempts int,
 	attemptedAt time.Time,
 ) (models.WebhookDelivery, error) {
 	r.webhookDeliveryID = deliveryID
 	claimed := r.webhookDelivery
 	claimed.Status = string(moderation.WebhookDeliveryRetrying)
+	claimed.AttemptCount++
 	claimed.LastAttemptAt = attemptedAt
+	r.webhookDelivery = claimed
 	return claimed, nil
 }
 
@@ -1119,7 +1131,6 @@ func (r *moderationHandlerRepository) UpdateWebhookDeliveryAttempt(
 
 	updated := r.webhookDelivery
 	updated.Status = string(status)
-	updated.AttemptCount++
 	updated.LastAttemptAt = attemptedAt
 	updated.HTTPStatus = httpStatus
 	updated.ErrorMessage = errorMessage

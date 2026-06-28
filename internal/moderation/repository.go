@@ -269,10 +269,42 @@ func (r *GormRepository) ListWebhookDeliveries(
 	return deliveries, nil
 }
 
+// ListRetryableWebhookDeliveries returns failed or stale in-flight deliveries eligible for automatic retry.
+func (r *GormRepository) ListRetryableWebhookDeliveries(
+	ctx context.Context,
+	limit int,
+	maxAttempts int,
+	staleRetryingBefore time.Time,
+) ([]models.WebhookDelivery, error) {
+	if r == nil || r.db == nil {
+		return nil, apperrors.ConfigurationError("moderation database is not configured")
+	}
+
+	var deliveries []models.WebhookDelivery
+	err := r.db.WithContext(ctx).
+		Model(&models.WebhookDelivery{}).
+		Where("attempt_count < ?", maxAttempts).
+		Where(
+			"status = ? OR (status = ? AND last_attempt_at < ?)",
+			string(WebhookDeliveryFailed),
+			string(WebhookDeliveryRetrying),
+			staleRetryingBefore,
+		).
+		Order("last_attempt_at ASC").
+		Limit(limit).
+		Find(&deliveries).Error
+	if err != nil {
+		return nil, apperrors.DatabaseError(err, "failed to list retryable webhook deliveries")
+	}
+
+	return deliveries, nil
+}
+
 // ClaimFailedWebhookDelivery atomically reserves one failed delivery for retry.
 func (r *GormRepository) ClaimFailedWebhookDelivery(
 	ctx context.Context,
 	deliveryID uint,
+	maxAttempts int,
 	attemptedAt time.Time,
 ) (models.WebhookDelivery, error) {
 	if r == nil || r.db == nil {
@@ -280,7 +312,7 @@ func (r *GormRepository) ClaimFailedWebhookDelivery(
 	}
 
 	staleRetryingBefore := attemptedAt.Add(-webhookRetryLease)
-	result := r.db.WithContext(ctx).
+	query := r.db.WithContext(ctx).
 		Model(&models.WebhookDelivery{}).
 		Where(
 			"id = ? AND (status = ? OR (status = ? AND last_attempt_at < ?))",
@@ -288,13 +320,18 @@ func (r *GormRepository) ClaimFailedWebhookDelivery(
 			string(WebhookDeliveryFailed),
 			string(WebhookDeliveryRetrying),
 			staleRetryingBefore,
-		).
-		Updates(map[string]interface{}{
-			"status":          string(WebhookDeliveryRetrying),
-			"last_attempt_at": attemptedAt,
-			"http_status":     nil,
-			"error_message":   "",
-		})
+		)
+	if maxAttempts > 0 {
+		query = query.Where("attempt_count < ?", maxAttempts)
+	}
+
+	result := query.Updates(map[string]interface{}{
+		"status":          string(WebhookDeliveryRetrying),
+		"attempt_count":   gorm.Expr("attempt_count + ?", 1),
+		"last_attempt_at": attemptedAt,
+		"http_status":     nil,
+		"error_message":   "",
+	})
 	if result.Error != nil {
 		return models.WebhookDelivery{}, apperrors.DatabaseError(result.Error, "failed to claim webhook delivery")
 	}
@@ -315,7 +352,7 @@ func (r *GormRepository) ClaimFailedWebhookDelivery(
 	return r.GetWebhookDelivery(ctx, deliveryID)
 }
 
-// UpdateWebhookDeliveryAttempt stores the latest retry outcome and increments attempts.
+// UpdateWebhookDeliveryAttempt stores the latest retry outcome after a claimed attempt.
 func (r *GormRepository) UpdateWebhookDeliveryAttempt(
 	ctx context.Context,
 	deliveryID uint,
@@ -343,7 +380,6 @@ func (r *GormRepository) UpdateWebhookDeliveryAttempt(
 		}
 
 		delivery.Status = string(status)
-		delivery.AttemptCount++
 		delivery.LastAttemptAt = attemptedAt
 		delivery.HTTPStatus = httpStatus
 		delivery.ErrorMessage = errorMessage
