@@ -76,6 +76,9 @@ moderation:
     version: "default-v1"
     review_threshold: 0.4
     block_threshold: 0.75
+  client_rate_limit:
+    limit: 60
+    window: 1m
 
 # Logging Configuration
 logging:

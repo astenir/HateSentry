@@ -101,13 +101,19 @@ type DetectionConfig struct {
 }
 
 type ModerationConfig struct {
-	Policy ModerationPolicyConfig `mapstructure:"policy"`
+	Policy          ModerationPolicyConfig    `mapstructure:"policy"`
+	ClientRateLimit ModerationRateLimitConfig `mapstructure:"client_rate_limit"`
 }
 
 type ModerationPolicyConfig struct {
 	Version         string  `mapstructure:"version"`
 	ReviewThreshold float64 `mapstructure:"review_threshold"`
 	BlockThreshold  float64 `mapstructure:"block_threshold"`
+}
+
+type ModerationRateLimitConfig struct {
+	Limit  int           `mapstructure:"limit"`
+	Window time.Duration `mapstructure:"window"`
 }
 
 type LoggingConfig struct {
@@ -128,6 +134,8 @@ func Load(configPath string) (*Config, error) {
 	loader.SetDefault("moderation.policy.version", "default-v1")
 	loader.SetDefault("moderation.policy.review_threshold", 0.4)
 	loader.SetDefault("moderation.policy.block_threshold", 0.75)
+	loader.SetDefault("moderation.client_rate_limit.limit", 60)
+	loader.SetDefault("moderation.client_rate_limit.window", time.Minute)
 
 	if err := loader.ReadInConfig(); err != nil {
 		return nil, errors.ConfigurationError("failed to read config file").WithDetails(err.Error())
@@ -141,8 +149,25 @@ func Load(configPath string) (*Config, error) {
 	if err := applyEnvironmentOverrides(&config); err != nil {
 		return nil, err
 	}
+	if err := validateConfig(&config); err != nil {
+		return nil, err
+	}
 
 	return &config, nil
+}
+
+func validateConfig(config *Config) error {
+	if config.Moderation.ClientRateLimit.Limit < 0 {
+		return errors.ConfigurationError("invalid moderation client rate limit").WithDetails("limit must be zero or greater")
+	}
+	if config.Moderation.ClientRateLimit.Window < 0 {
+		return errors.ConfigurationError("invalid moderation client rate limit").WithDetails("window must be zero or greater")
+	}
+	if config.Moderation.ClientRateLimit.Window > 0 && config.Moderation.ClientRateLimit.Window < time.Second {
+		return errors.ConfigurationError("invalid moderation client rate limit").WithDetails("window must be zero or at least 1s")
+	}
+
+	return nil
 }
 
 func applyEnvironmentOverrides(config *Config) error {
@@ -188,6 +213,12 @@ func applyEnvironmentOverrides(config *Config) error {
 		return err
 	}
 	if err := overrideFloat("MODERATION_BLOCK_THRESHOLD", &config.Moderation.Policy.BlockThreshold); err != nil {
+		return err
+	}
+	if err := overrideInt("MODERATION_CLIENT_RATE_LIMIT", &config.Moderation.ClientRateLimit.Limit); err != nil {
+		return err
+	}
+	if err := overrideDuration("MODERATION_CLIENT_RATE_WINDOW", &config.Moderation.ClientRateLimit.Window); err != nil {
 		return err
 	}
 
@@ -237,6 +268,21 @@ func overrideFloat(name string, target *float64) error {
 	parsed, err := strconv.ParseFloat(value, 64)
 	if err != nil {
 		return errors.ConfigurationError("invalid environment variable").WithDetails(name + " must be a number")
+	}
+
+	*target = parsed
+	return nil
+}
+
+func overrideDuration(name string, target *time.Duration) error {
+	value, ok := os.LookupEnv(name)
+	if !ok {
+		return nil
+	}
+
+	parsed, err := time.ParseDuration(value)
+	if err != nil {
+		return errors.ConfigurationError("invalid environment variable").WithDetails(name + " must be a duration")
 	}
 
 	*target = parsed

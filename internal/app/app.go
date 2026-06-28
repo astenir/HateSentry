@@ -176,6 +176,7 @@ func (a *App) Run() error {
 		rateLimiter,
 		jwtManager,
 		moderationPolicy,
+		cfg.Moderation.ClientRateLimit,
 	)
 	a.router = r
 

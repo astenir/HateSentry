@@ -1,6 +1,8 @@
 package router
 
 import (
+	"context"
+	"errors"
 	"hatesentry/internal/auth"
 	"hatesentry/internal/config"
 	"hatesentry/internal/moderation"
@@ -8,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -30,6 +33,7 @@ func TestSetupRegistersCoreRoutes(t *testing.T) {
 		nil,
 		jwtManager,
 		moderation.DefaultPolicy(),
+		config.ModerationRateLimitConfig{},
 	)
 
 	engine := router.Setup()
@@ -84,6 +88,7 @@ func TestSetupProtectsModerationResultRoute(t *testing.T) {
 		nil,
 		jwtManager,
 		moderation.DefaultPolicy(),
+		config.ModerationRateLimitConfig{},
 	)
 
 	engine := router.Setup()
@@ -119,6 +124,7 @@ func TestSetupProtectsModerationCheckRoute(t *testing.T) {
 		nil,
 		jwtManager,
 		moderation.DefaultPolicy(),
+		config.ModerationRateLimitConfig{},
 	)
 
 	engine := router.Setup()
@@ -150,6 +156,7 @@ func TestSetupProtectsReviewRoutes(t *testing.T) {
 		nil,
 		jwtManager,
 		moderation.DefaultPolicy(),
+		config.ModerationRateLimitConfig{},
 	)
 
 	engine := router.Setup()
@@ -181,6 +188,7 @@ func TestSetupProtectsReviewStatsRoute(t *testing.T) {
 		nil,
 		jwtManager,
 		moderation.DefaultPolicy(),
+		config.ModerationRateLimitConfig{},
 	)
 
 	engine := router.Setup()
@@ -216,6 +224,7 @@ func TestSetupRequiresAdminForReviewRoutes(t *testing.T) {
 		nil,
 		jwtManager,
 		moderation.DefaultPolicy(),
+		config.ModerationRateLimitConfig{},
 	)
 
 	engine := router.Setup()
@@ -262,6 +271,7 @@ func TestSetupRequiresAdminForClientRoutes(t *testing.T) {
 		nil,
 		jwtManager,
 		moderation.DefaultPolicy(),
+		config.ModerationRateLimitConfig{},
 	)
 
 	engine := router.Setup()
@@ -302,6 +312,107 @@ func TestCORSAllowsAPIKeyHeader(t *testing.T) {
 	}
 }
 
+func TestClientRateLimitMiddleware(t *testing.T) {
+	tests := []struct {
+		name       string
+		principal  *auth.APIKeyPrincipal
+		allowed    bool
+		limitError error
+		wantStatus int
+		wantCalled bool
+	}{
+		{
+			name: "allows api key client within limit",
+			principal: &auth.APIKeyPrincipal{
+				ClientID: 42,
+				UserID:   7,
+				Name:     "comments",
+			},
+			allowed:    true,
+			wantStatus: http.StatusOK,
+			wantCalled: true,
+		},
+		{
+			name: "rejects api key client over limit",
+			principal: &auth.APIKeyPrincipal{
+				ClientID: 42,
+				UserID:   7,
+				Name:     "comments",
+			},
+			allowed:    false,
+			wantStatus: http.StatusTooManyRequests,
+			wantCalled: true,
+		},
+		{
+			name:       "skips non api key requests",
+			allowed:    false,
+			wantStatus: http.StatusOK,
+			wantCalled: false,
+		},
+		{
+			name: "fails closed on limiter error",
+			principal: &auth.APIKeyPrincipal{
+				ClientID: 42,
+				UserID:   7,
+				Name:     "comments",
+			},
+			allowed:    true,
+			limitError: errors.New("redis unavailable"),
+			wantStatus: http.StatusInternalServerError,
+			wantCalled: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gin.SetMode(gin.TestMode)
+
+			limiter := &fakeRequestRateLimiter{allowed: tt.allowed, err: tt.limitError}
+			engine := gin.New()
+			engine.Use(func(c *gin.Context) {
+				if tt.principal != nil {
+					c.Set(auth.APIKeyContextKey, *tt.principal)
+				}
+				c.Next()
+			})
+			engine.Use(clientRateLimitMiddleware(
+				limiter,
+				config.ModerationRateLimitConfig{
+					Limit:  3,
+					Window: time.Minute,
+				},
+			))
+			engine.POST("/check", func(c *gin.Context) {
+				c.Status(http.StatusOK)
+			})
+
+			req := httptest.NewRequest(http.MethodPost, "/check", nil)
+			recorder := httptest.NewRecorder()
+
+			engine.ServeHTTP(recorder, req)
+
+			if recorder.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d, body = %s", recorder.Code, tt.wantStatus, recorder.Body.String())
+			}
+			if (limiter.calls > 0) != tt.wantCalled {
+				t.Fatalf("limiter called = %v, want %v", limiter.calls > 0, tt.wantCalled)
+			}
+			if !tt.wantCalled {
+				return
+			}
+			if limiter.key != "moderation:client:42" {
+				t.Fatalf("limiter key = %q, want moderation:client:42", limiter.key)
+			}
+			if limiter.limit != 3 {
+				t.Fatalf("limiter limit = %d, want 3", limiter.limit)
+			}
+			if limiter.window != time.Minute {
+				t.Fatalf("limiter window = %s, want 1m", limiter.window)
+			}
+		})
+	}
+}
+
 func registeredRoutes(engine *gin.Engine) map[string]bool {
 	routes := make(map[string]bool, len(engine.Routes()))
 
@@ -310,4 +421,31 @@ func registeredRoutes(engine *gin.Engine) map[string]bool {
 	}
 
 	return routes
+}
+
+type fakeRequestRateLimiter struct {
+	allowed bool
+	err     error
+	calls   int
+	key     string
+	limit   int
+	window  time.Duration
+}
+
+func (f *fakeRequestRateLimiter) Allow(
+	ctx context.Context,
+	key string,
+	limit int,
+	window time.Duration,
+) (bool, error) {
+	f.calls++
+	f.key = key
+	f.limit = limit
+	f.window = window
+
+	if f.err != nil {
+		return false, f.err
+	}
+
+	return f.allowed, nil
 }

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadOverridesComposeEnvironment(t *testing.T) {
@@ -28,6 +29,8 @@ func TestLoadOverridesComposeEnvironment(t *testing.T) {
 	t.Setenv("MODERATION_POLICY_VERSION", "custom-v1")
 	t.Setenv("MODERATION_REVIEW_THRESHOLD", "0.25")
 	t.Setenv("MODERATION_BLOCK_THRESHOLD", "0.8")
+	t.Setenv("MODERATION_CLIENT_RATE_LIMIT", "25")
+	t.Setenv("MODERATION_CLIENT_RATE_WINDOW", "2m")
 
 	cfg, err := Load(configPath)
 	if err != nil {
@@ -88,6 +91,12 @@ func TestLoadOverridesComposeEnvironment(t *testing.T) {
 	if cfg.Moderation.Policy.BlockThreshold != 0.8 {
 		t.Fatalf("Moderation.Policy.BlockThreshold = %v, want 0.8", cfg.Moderation.Policy.BlockThreshold)
 	}
+	if cfg.Moderation.ClientRateLimit.Limit != 25 {
+		t.Fatalf("Moderation.ClientRateLimit.Limit = %d, want 25", cfg.Moderation.ClientRateLimit.Limit)
+	}
+	if cfg.Moderation.ClientRateLimit.Window != 2*time.Minute {
+		t.Fatalf("Moderation.ClientRateLimit.Window = %s, want 2m", cfg.Moderation.ClientRateLimit.Window)
+	}
 }
 
 func TestLoadRejectsInvalidIntegerEnvironment(t *testing.T) {
@@ -116,6 +125,66 @@ func TestLoadRejectsInvalidFloatEnvironment(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "MODERATION_REVIEW_THRESHOLD must be a number") {
 		t.Fatalf("Load() error = %q, want moderation threshold detail", err.Error())
+	}
+}
+
+func TestLoadRejectsInvalidDurationEnvironment(t *testing.T) {
+	configPath := writeTestConfig(t)
+	t.Setenv("MODERATION_CLIENT_RATE_WINDOW", "not-a-duration")
+
+	_, err := Load(configPath)
+	if err == nil {
+		t.Fatal("Load() error = nil, want invalid environment variable error")
+	}
+	if !strings.Contains(err.Error(), "MODERATION_CLIENT_RATE_WINDOW must be a duration") {
+		t.Fatalf("Load() error = %q, want moderation rate window detail", err.Error())
+	}
+}
+
+func TestLoadRejectsNegativeModerationRateLimit(t *testing.T) {
+	configPath := writeTestConfig(t)
+	t.Setenv("MODERATION_CLIENT_RATE_LIMIT", "-1")
+
+	_, err := Load(configPath)
+	if err == nil {
+		t.Fatal("Load() error = nil, want invalid rate limit error")
+	}
+	if !strings.Contains(err.Error(), "limit must be zero or greater") {
+		t.Fatalf("Load() error = %q, want non-negative limit detail", err.Error())
+	}
+}
+
+func TestLoadRejectsInvalidModerationRateWindow(t *testing.T) {
+	tests := []struct {
+		name       string
+		value      string
+		wantDetail string
+	}{
+		{
+			name:       "negative",
+			value:      "-1s",
+			wantDetail: "window must be zero or greater",
+		},
+		{
+			name:       "sub second positive",
+			value:      "500ms",
+			wantDetail: "window must be zero or at least 1s",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			configPath := writeTestConfig(t)
+			t.Setenv("MODERATION_CLIENT_RATE_WINDOW", tt.value)
+
+			_, err := Load(configPath)
+			if err == nil {
+				t.Fatal("Load() error = nil, want invalid rate window error")
+			}
+			if !strings.Contains(err.Error(), tt.wantDetail) {
+				t.Fatalf("Load() error = %q, want %q", err.Error(), tt.wantDetail)
+			}
+		})
 	}
 }
 
@@ -242,6 +311,9 @@ moderation:
     version: "default-v1"
     review_threshold: 0.4
     block_threshold: 0.75
+  client_rate_limit:
+    limit: 60
+    window: 1m
 logging:
   level: "info"
   format: "json"

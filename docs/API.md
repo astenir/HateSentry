@@ -235,6 +235,8 @@ Content-Type: application/json
 
 使用 API Key 调用时，如果同一客户端重复提交相同 `external_id`，接口会返回既有审核结果，并通过数据库唯一键避免创建重复审核记录。未提供 `external_id` 时，每次调用都会创建新审核记录。
 
+API Key 调用会按客户端 ID 做请求级限流。默认配置为每个客户端每分钟 60 次 `POST /moderation/check`，可通过 `config/config.yaml` 的 `moderation.client_rate_limit` 或环境变量 `MODERATION_CLIENT_RATE_LIMIT`、`MODERATION_CLIENT_RATE_WINDOW` 调整。JWT 操作员调用当前不走这条客户端限流规则。
+
 **响应** (200 OK):
 ```json
 {
@@ -725,7 +727,11 @@ Authorization: Bearer <token>
 **限流错误** (429):
 ```json
 {
-  "error": "Rate limit exceeded"
+  "error": "RATE_LIMIT_EXCEEDED",
+  "code": "RATE_LIMIT_EXCEEDED",
+  "message": "Client rate limit exceeded",
+  "severity": "low",
+  "timestamp": ""
 }
 ```
 
@@ -859,19 +865,12 @@ print(result)
 
 ## 限流规则
 
-- 每个用户每分钟最多 60 个请求
-- 超过限制返回 `429 Too Many Requests`
-- 限流基于 Redis 分布式实现
-
-## 速率限制响应头
-
-当启用速率限制时，响应可能包含以下头：
-
-```
-X-RateLimit-Limit: 60
-X-RateLimit-Remaining: 55
-X-RateLimit-Reset: 1609459200
-```
+- 外部客户端通过 API Key 调用 `POST /moderation/check` 时，按客户端 ID 限流。
+- 默认限制为每个客户端每分钟 60 次，可通过 `moderation.client_rate_limit.limit` 和 `moderation.client_rate_limit.window` 配置。
+- 对应环境变量为 `MODERATION_CLIENT_RATE_LIMIT` 和 `MODERATION_CLIENT_RATE_WINDOW`，例如 `60` 和 `1m`。
+- `limit = 0` 或 `window = 0` 时，该客户端限流中间件不启用；负数无效。正数 `window` 必须不小于 `1s`。
+- 限流基于 Redis 实现；当前版本不返回 `X-RateLimit-*` 响应头。
+- 超过限制返回 `429 Too Many Requests` 和 `RATE_LIMIT_EXCEEDED` 错误码。
 
 ## Webhook 支持
 

@@ -1,15 +1,20 @@
 package router
 
 import (
+	"context"
+	"fmt"
 	"hatesentry/internal/ai"
 	"hatesentry/internal/auth"
 	"hatesentry/internal/cache"
 	"hatesentry/internal/clients"
+	"hatesentry/internal/config"
+	apperrors "hatesentry/internal/errors"
 	"hatesentry/internal/handlers"
 	"hatesentry/internal/moderation"
 	"hatesentry/internal/observability"
 	"hatesentry/internal/queue"
 	"hatesentry/internal/webhooks"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -26,6 +31,11 @@ type Router struct {
 	jwtManager       *auth.JWTManager
 	db               *gorm.DB
 	moderationPolicy moderation.Policy
+	clientRateLimit  config.ModerationRateLimitConfig
+}
+
+type requestRateLimiter interface {
+	Allow(ctx context.Context, key string, limit int, window time.Duration) (bool, error)
 }
 
 // NewRouter creates a new router
@@ -38,6 +48,7 @@ func NewRouter(
 	rateLimiter *cache.RateLimiter,
 	jwtManager *auth.JWTManager,
 	moderationPolicy moderation.Policy,
+	clientRateLimit config.ModerationRateLimitConfig,
 ) *Router {
 	return &Router{
 		engine:           gin.New(),
@@ -49,6 +60,7 @@ func NewRouter(
 		rateLimiter:      rateLimiter,
 		jwtManager:       jwtManager,
 		moderationPolicy: moderationPolicy,
+		clientRateLimit:  clientRateLimit,
 	}
 }
 
@@ -93,6 +105,7 @@ func (r *Router) Setup() *gin.Engine {
 	// Moderation check supports either operator JWT or external client API key.
 	moderationAccess := r.engine.Group("/api/v1/moderation")
 	moderationAccess.Use(r.jwtManager.AuthOrAPIKeyMiddleware(clientRepository))
+	moderationAccess.Use(clientRateLimitMiddleware(r.rateLimiter, r.clientRateLimit))
 	{
 		moderationAccess.POST("/check", moderationHandler.Check)
 	}
@@ -158,6 +171,38 @@ func corsMiddleware() gin.HandlerFunc {
 
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(204)
+			return
+		}
+
+		c.Next()
+	}
+}
+
+func clientRateLimitMiddleware(
+	rateLimiter requestRateLimiter,
+	cfg config.ModerationRateLimitConfig,
+) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		principal, exists := auth.GetAPIKeyPrincipal(c)
+		if !exists {
+			c.Next()
+			return
+		}
+		if cfg.Limit <= 0 || cfg.Window <= 0 || rateLimiter == nil {
+			c.Next()
+			return
+		}
+
+		key := fmt.Sprintf("moderation:client:%d", principal.ClientID)
+		allowed, err := rateLimiter.Allow(c.Request.Context(), key, cfg.Limit, cfg.Window)
+		if err != nil {
+			apperrors.Handle(c, apperrors.Internal("Rate limit check failed").WithDetails(err.Error()))
+			c.Abort()
+			return
+		}
+		if !allowed {
+			apperrors.Handle(c, apperrors.RateLimitExceeded("Client rate limit exceeded"))
+			c.Abort()
 			return
 		}
 
