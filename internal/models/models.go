@@ -20,6 +20,13 @@ type User struct {
 	APIKey    string         `gorm:"uniqueIndex;size:64" json:"api_key"`
 }
 
+// SystemLock stores named database locks for serializing setup workflows.
+type SystemLock struct {
+	Name      string    `gorm:"primaryKey;size:100" json:"name"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 // ClientApplication represents an external application that can call moderation APIs.
 type ClientApplication struct {
 	ID            uint           `gorm:"primarykey" json:"id"`

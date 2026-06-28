@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"context"
 	"crypto/subtle"
+	stderrors "errors"
 	"hatesentry/internal/auth"
 	"hatesentry/internal/config"
 	apperrors "hatesentry/internal/errors"
@@ -13,7 +15,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
+
+const registrationBootstrapLockName = "auth:registration-bootstrap"
 
 // AuthHandler handles authentication requests
 type AuthHandler struct {
@@ -85,16 +90,6 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		return
 	}
 
-	// Check if user already exists
-	var existingUser models.User
-	if err := h.db.Where("username = ? OR email = ?", req.Username, req.Email).First(&existingUser).Error; err == nil {
-		apperrors.RespondWithError(c, apperrors.DuplicateRecord("Username or email already exists"))
-		return
-	} else if err != gorm.ErrRecordNotFound {
-		apperrors.RespondWithError(c, apperrors.DatabaseError(err, "Failed to check existing user"))
-		return
-	}
-
 	// Hash password
 	hashedPassword, err := auth.HashPassword(req.Password)
 	if err != nil {
@@ -102,29 +97,14 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		return
 	}
 
-	// Serialize the bootstrap role decision with creation so concurrent first
-	// registrations in one API process do not both become admins.
+	// The process mutex avoids duplicate local work. The database lock inside
+	// createRegisteredUser serializes the role decision across API processes.
 	h.registrationMu.Lock()
 	defer h.registrationMu.Unlock()
 
-	role, appErr := h.nextRegistrationRole(req)
+	user, appErr := h.createRegisteredUser(c.Request.Context(), req, hashedPassword)
 	if appErr != nil {
 		apperrors.RespondWithError(c, appErr)
-		return
-	}
-
-	// Create user
-	user := models.User{
-		Username: req.Username,
-		Email:    req.Email,
-		Password: hashedPassword,
-		Role:     role,
-		Status:   "active",
-		APIKey:   generateAPIKey(),
-	}
-
-	if err := h.db.Create(&user).Error; err != nil {
-		apperrors.RespondWithError(c, apperrors.DatabaseError(err, "Failed to create user"))
 		return
 	}
 
@@ -270,9 +250,82 @@ func generateAPIKey() string {
 	return "hs_" + uuid.New().String()
 }
 
-func (h *AuthHandler) nextRegistrationRole(req RegisterRequest) (string, *apperrors.AppError) {
+func (h *AuthHandler) createRegisteredUser(
+	ctx context.Context,
+	req RegisterRequest,
+	hashedPassword string,
+) (models.User, *apperrors.AppError) {
+	var user models.User
+	err := h.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if appErr := lockRegistrationBootstrap(tx); appErr != nil {
+			return appErr
+		}
+		if appErr := ensureUserDoesNotExist(tx, req); appErr != nil {
+			return appErr
+		}
+
+		role, appErr := h.nextRegistrationRole(tx, req)
+		if appErr != nil {
+			return appErr
+		}
+
+		user = models.User{
+			Username: req.Username,
+			Email:    req.Email,
+			Password: hashedPassword,
+			Role:     role,
+			Status:   "active",
+			APIKey:   generateAPIKey(),
+		}
+		if err := tx.Create(&user).Error; err != nil {
+			return apperrors.DatabaseError(err, "Failed to create user")
+		}
+
+		return nil
+	})
+	if err != nil {
+		var appErr *apperrors.AppError
+		if stderrors.As(err, &appErr) {
+			return models.User{}, appErr
+		}
+		return models.User{}, apperrors.DatabaseError(err, "Failed to create user")
+	}
+
+	return user, nil
+}
+
+func lockRegistrationBootstrap(tx *gorm.DB) *apperrors.AppError {
+	lock := models.SystemLock{Name: registrationBootstrapLockName}
+	if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&lock).Error; err != nil {
+		return apperrors.DatabaseError(err, "Failed to create registration bootstrap lock")
+	}
+
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("name = ?", registrationBootstrapLockName).
+		First(&lock).Error; err != nil {
+		return apperrors.DatabaseError(err, "Failed to acquire registration bootstrap lock")
+	}
+
+	return nil
+}
+
+func ensureUserDoesNotExist(db *gorm.DB, req RegisterRequest) *apperrors.AppError {
+	var existingUser models.User
+	err := db.Where("username = ? OR email = ?", req.Username, req.Email).
+		First(&existingUser).Error
+	if err == nil {
+		return apperrors.DuplicateRecord("Username or email already exists")
+	}
+	if err != gorm.ErrRecordNotFound {
+		return apperrors.DatabaseError(err, "Failed to check existing user")
+	}
+
+	return nil
+}
+
+func (h *AuthHandler) nextRegistrationRole(db *gorm.DB, req RegisterRequest) (string, *apperrors.AppError) {
 	var userCount int64
-	if err := h.db.Model(&models.User{}).Count(&userCount).Error; err != nil {
+	if err := db.Model(&models.User{}).Count(&userCount).Error; err != nil {
 		return "", apperrors.DatabaseError(err, "Failed to count existing users")
 	}
 
