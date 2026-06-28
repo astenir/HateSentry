@@ -139,6 +139,8 @@ Content-Type: application/json
 }
 ```
 
+空数据库中的第一个注册用户会自动成为 `admin`，用于初始化外部客户端、API Key、审核策略和人工复核管理；后续注册用户默认是 `user`。如果已有用户数据，`make create-user` 不会提升已有或新建用户权限，需要使用已有管理员账号操作管理端接口。
+
 #### 用户登录
 ```http
 POST /api/v1/auth/login
@@ -660,7 +662,7 @@ make health
 make create-user
 ```
 
-创建一个测试用户用于开发测试。
+在空数据库中创建初始管理员用户用于开发测试；如果数据库已有用户，则该命令创建的是普通用户。
 
 ## ✅ 当前状态
 

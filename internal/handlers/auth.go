@@ -5,6 +5,7 @@ import (
 	apperrors "hatesentry/internal/errors"
 	"hatesentry/internal/models"
 	"net/http"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -13,8 +14,9 @@ import (
 
 // AuthHandler handles authentication requests
 type AuthHandler struct {
-	db         *gorm.DB
-	jwtManager *auth.JWTManager
+	db             *gorm.DB
+	jwtManager     *auth.JWTManager
+	registrationMu sync.Mutex
 }
 
 // NewAuthHandler creates a new auth handler
@@ -48,8 +50,8 @@ type LoginRequest struct {
 
 // LoginResponse represents login response
 type LoginResponse struct {
-	Token  string `json:"token"`
-	User   UserInfo `json:"user"`
+	Token string   `json:"token"`
+	User  UserInfo `json:"user"`
 }
 
 // UserInfo represents user information
@@ -85,12 +87,23 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		return
 	}
 
+	// Serialize the bootstrap role decision with creation so concurrent first
+	// registrations in one API process do not both become admins.
+	h.registrationMu.Lock()
+	defer h.registrationMu.Unlock()
+
+	role, appErr := h.nextRegistrationRole()
+	if appErr != nil {
+		apperrors.RespondWithError(c, appErr)
+		return
+	}
+
 	// Create user
 	user := models.User{
 		Username: req.Username,
 		Email:    req.Email,
 		Password: hashedPassword,
-		Role:     "user",
+		Role:     role,
 		Status:   "active",
 		APIKey:   generateAPIKey(),
 	}
@@ -240,4 +253,21 @@ func (h *AuthHandler) RegenerateAPIKey(c *gin.Context) {
 
 func generateAPIKey() string {
 	return "hs_" + uuid.New().String()
+}
+
+func (h *AuthHandler) nextRegistrationRole() (string, *apperrors.AppError) {
+	var userCount int64
+	if err := h.db.Model(&models.User{}).Count(&userCount).Error; err != nil {
+		return "", apperrors.DatabaseError(err, "Failed to count existing users")
+	}
+
+	return registrationRoleForUserCount(userCount), nil
+}
+
+func registrationRoleForUserCount(userCount int64) string {
+	if userCount == 0 {
+		return "admin"
+	}
+
+	return "user"
 }

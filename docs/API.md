@@ -28,6 +28,8 @@
 - `email`: 邮箱地址（有效邮箱格式）
 - `password`: 密码（至少8字符）
 
+空数据库中的第一个注册用户会自动获得 `admin` 角色，用于初始化外部客户端、API Key、Webhook、策略分配和人工复核管理。后续注册用户默认获得 `user` 角色。生产部署时应在创建初始管理员后保护注册入口或按实际运维策略限制账号创建。
+
 **响应** (201 Created):
 ```json
 {
@@ -36,7 +38,7 @@
     "id": 1,
     "username": "johndoe",
     "email": "john@example.com",
-    "role": "user"
+    "role": "admin"
   }
 }
 ```
