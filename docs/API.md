@@ -754,11 +754,19 @@ Authorization: Bearer <admin-token>
 }
 ```
 
-## 检测
+## 旧版检测接口
 
-### 1. 检测仇恨言论
+以下 `/detection/*` 路由仍保留用于兼容早期 hate speech 检测原型。新的文本内容审核接入应优先使用 `POST /moderation/check`，因为该接口会返回 `allow` / `review` / `block` 业务决策，并写入审核、复核、客户端和 Webhook 相关审计记录。
 
-检测文本、图片或混合内容是否包含仇恨言论。
+旧版检测接口不属于当前 MVP 主线：
+
+- 不提供外部客户端 API Key 接入。
+- 不产生 `allow` / `review` / `block` 决策。
+- `image_url` 只进入旧检测请求路径；当前主线不保证真实图片下载、校验或 provider 图片 API 调用。
+- `async` 依赖旧队列发布路径，不作为当前已验证能力。
+- 新集成方不应依赖旧版 `stream` 响应格式。
+
+### 1. 同步文本检测
 
 **端点**: `POST /detection/detect`
 
@@ -770,22 +778,9 @@ Authorization: Bearer <token>
 **请求体**:
 ```json
 {
-  "content": "要检测的文本内容",
-  "image_url": "https://example.com/image.jpg",
-  "async": false,
-  "stream": false
+  "content": "要检测的文本内容"
 }
 ```
-
-**字段说明**:
-- `content`: 文本内容（可选，除非只检测图片）
-- `image_url`: 图片 URL（可选）
-- `async`: 是否异步处理（默认 false）
-- `stream`: 是否流式返回（默认 false）
-
-**注意**: `content` 和 `image_url` 至少需要提供一个。
-
-#### 1.1 同步检测响应
 
 **响应** (200 OK):
 ```json
@@ -794,94 +789,17 @@ Authorization: Bearer <token>
   "request_id": "550e8400-e29b-41d4-a716-446655440000",
   "is_hate_speech": true,
   "confidence": 0.92,
-  "categories": ["Racial/Ethnic discrimination"],
-  "explanation": "This content contains explicit racial hate speech with derogatory language targeting a specific ethnic group.",
-  "model": "gpt-4-vision-preview",
+  "categories": ["harassment"],
+  "explanation": "Provider-generated explanation.",
+  "model": "configured-model",
   "processing_time": 1234,
   "prompt_used": "...",
   "raw_response": "...",
-  "created_at": "2024-01-01T00:00:00Z"
+  "created_at": "2026-06-28T12:00:00Z"
 }
 ```
 
-**字段说明**:
-- `id`: 结果 ID
-- `request_id`: 请求 ID
-- `is_hate_speech`: 是否为仇恨言论
-- `confidence`: 置信度（0.0-1.0）
-- `categories`: 仇恨言论类别列表
-- `explanation`: 详细解释
-- `model`: 使用的模型
-- `processing_time`: 处理时间（毫秒）
-
-#### 1.2 异步检测响应
-
-**响应** (202 Accepted):
-```json
-{
-  "request_id": "550e8400-e29b-41d4-a716-446655440000",
-  "status": "queued",
-  "message": "Detection task queued for processing"
-}
-```
-
-#### 1.3 流式检测响应
-
-**响应类型**: Server-Sent Events (SSE)
-
-**事件类型**:
-1. `start`: 开始检测
-```json
-{
-  "type": "start",
-  "data": {
-    "request_id": "550e8400-e29b-41d4-a716-446655440000"
-  },
-  "progress": 0.0
-}
-```
-
-2. `progress`: 检测进度
-```json
-{
-  "type": "progress",
-  "data": {
-    "content": "分析中..."
-  },
-  "progress": 0.5
-}
-```
-
-3. `result`: 检测结果
-```json
-{
-  "type": "result",
-  "data": {
-    "id": 1,
-    "request_id": "550e8400-e29b-41d4-a716-446655440000",
-    "is_hate_speech": false,
-    "confidence": 0.95,
-    "categories": [],
-    "explanation": "This content does not contain hate speech.",
-    ...
-  },
-  "progress": 1.0
-}
-```
-
-4. `error`: 错误信息
-```json
-{
-  "type": "error",
-  "data": {
-    "error": "Detection failed: ..."
-  }
-}
-```
-
-### 2. 获取检测结果
-
-根据 request_id 获取检测结果。
+### 2. 获取旧版检测结果
 
 **端点**: `GET /detection/result/:request_id`
 
@@ -890,74 +808,13 @@ Authorization: Bearer <token>
 Authorization: Bearer <token>
 ```
 
-**路径参数**:
-- `request_id`: 请求 ID
-
-**响应** (200 OK):
-```json
-{
-  "id": 1,
-  "request_id": "550e8400-e29b-41d4-a716-446655440000",
-  "is_hate_speech": true,
-  "confidence": 0.92,
-  "categories": ["Racial/Ethnic discrimination"],
-  "explanation": "...",
-  "model": "gpt-4-vision-preview",
-  "processing_time": 1234,
-  "created_at": "2024-01-01T00:00:00Z"
-}
-```
-
-**响应** (404 Not Found):
-```json
-{
-  "error": "Result not found"
-}
-```
-
-### 3. 获取检测历史
-
-获取当前用户的检测历史记录。
+### 3. 获取旧版检测历史
 
 **端点**: `GET /detection/history`
 
 **请求头**:
 ```
 Authorization: Bearer <token>
-```
-
-**查询参数**:
-- `page`: 页码（默认 1）
-- `limit`: 每页数量（默认 10）
-
-**响应** (200 OK):
-```json
-{
-  "data": [
-    {
-      "id": 1,
-      "request_id": "550e8400-e29b-41d4-a716-446655440000",
-      "user_id": 1,
-      "content": "检测的文本内容",
-      "image_url": "https://example.com/image.jpg",
-      "content_type": "mixed",
-      "processed": true,
-      "status": "completed",
-      "created_at": "2024-01-01T00:00:00Z",
-      "detection_result": {
-        "id": 1,
-        "request_id": "550e8400-e29b-41d4-a716-446655440000",
-        "is_hate_speech": false,
-        "confidence": 0.95,
-        "categories": [],
-        ...
-      }
-    }
-  ],
-  "total": 100,
-  "page": 1,
-  "limit": 10
-}
 ```
 
 ## 健康检查
@@ -1076,30 +933,34 @@ curl -X POST http://localhost:8080/api/v1/auth/login \
   }'
 ```
 
-#### 文本检测
+#### 文本审核
 ```bash
-curl -X POST http://localhost:8080/api/v1/detection/detect \
+curl -X POST http://localhost:8080/api/v1/moderation/check \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_TOKEN" \
   -d '{
-    "content": "这是要检测的文本内容"
+    "content": "这是要审核的文本内容",
+    "source": "comment",
+    "external_id": "comment_123",
+    "actor_id": "user_456"
   }'
 ```
 
-#### 异步检测
+#### 使用客户端 API Key 提交文本审核
 ```bash
-curl -X POST http://localhost:8080/api/v1/detection/detect \
+curl -X POST http://localhost:8080/api/v1/moderation/check \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "X-API-Key: CLIENT_API_KEY" \
   -d '{
-    "content": "这是要检测的文本内容",
-    "async": true
+    "content": "这是要审核的文本内容",
+    "source": "comment",
+    "external_id": "comment_123"
   }'
 ```
 
-#### 获取检测结果
+#### 获取审核结果
 ```bash
-curl -X GET http://localhost:8080/api/v1/detection/result/REQUEST_ID \
+curl -X GET http://localhost:8080/api/v1/moderation/results/REQUEST_ID \
   -H "Authorization: Bearer YOUR_TOKEN"
 ```
 
@@ -1122,22 +983,26 @@ const login = async () => {
   return data.token;
 };
 
-// 检测仇恨言论
-const detect = async (token, content) => {
-  const response = await fetch('http://localhost:8080/api/v1/detection/detect', {
+// 提交文本审核
+const moderate = async (token, content) => {
+  const response = await fetch('http://localhost:8080/api/v1/moderation/check', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${token}`,
     },
-    body: JSON.stringify({ content }),
+    body: JSON.stringify({
+      content,
+      source: 'comment',
+      external_id: 'comment_123',
+    }),
   });
   return await response.json();
 };
 
 // 使用
 const token = await login();
-const result = await detect(token, '要检测的文本内容');
+const result = await moderate(token, '要审核的文本内容');
 console.log(result);
 ```
 
@@ -1154,21 +1019,25 @@ def login():
     })
     return response.json()['token']
 
-# 检测仇恨言论
-def detect(token, content):
+# 提交文本审核
+def moderate(token, content):
     response = requests.post(
-        'http://localhost:8080/api/v1/detection/detect',
+        'http://localhost:8080/api/v1/moderation/check',
         headers={
             'Content-Type': 'application/json',
             'Authorization': f'Bearer {token}'
         },
-        json={'content': content}
+        json={
+            'content': content,
+            'source': 'comment',
+            'external_id': 'comment_123'
+        }
     )
     return response.json()
 
 # 使用
 token = login()
-result = detect(token, '要检测的文本内容')
+result = moderate(token, '要审核的文本内容')
 print(result)
 ```
 
