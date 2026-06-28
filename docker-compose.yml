@@ -18,7 +18,7 @@ services:
       - RABBITMQ_USERNAME=guest
       - RABBITMQ_PASSWORD=guest
       - ADMIN_BOOTSTRAP_TOKEN=${ADMIN_BOOTSTRAP_TOKEN:-}
-      - JWT_SECRET=your-production-secret-key-change-me
+      - JWT_SECRET=${JWT_SECRET:-dev-jwt-secret-change-me}
       - AI_PROVIDER=${AI_PROVIDER:-openai}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-your-openai-api-key}
       - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}

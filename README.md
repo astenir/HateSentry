@@ -438,7 +438,7 @@ auth:
 
 # JWT 配置
 jwt:
-  secret: "your-secret-key-change-in-production"
+  secret: "dev-jwt-secret-change-me"
   expire_hours: 24
   issuer: "hatesentry"
 
@@ -520,7 +520,7 @@ RABBITMQ_PASSWORD=guest
 ADMIN_BOOTSTRAP_TOKEN=
 
 # JWT
-JWT_SECRET=your-secret-key-change-in-production
+JWT_SECRET=dev-jwt-secret-change-me
 
 # AI 服务
 AI_PROVIDER=openai

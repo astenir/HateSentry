@@ -48,7 +48,7 @@ auth:
 
 # JWT Configuration
 jwt:
-  secret: "your-secret-key-change-in-production"
+  secret: "dev-jwt-secret-change-me"
   expire_hours: 24
   issuer: "hatesentry"
 
