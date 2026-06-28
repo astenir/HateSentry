@@ -14,6 +14,7 @@ import (
 	"hatesentry/internal/observability"
 	"hatesentry/internal/queue"
 	"hatesentry/internal/webhooks"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -36,7 +37,7 @@ type Router struct {
 }
 
 type requestRateLimiter interface {
-	Allow(ctx context.Context, key string, limit int, window time.Duration) (bool, error)
+	AllowWithState(ctx context.Context, key string, limit int, window time.Duration) (cache.RateLimitState, error)
 }
 
 // NewRouter creates a new router
@@ -210,6 +211,7 @@ func corsMiddleware() gin.HandlerFunc {
 		c.Header("Access-Control-Allow-Origin", "*")
 		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, X-API-Key")
+		c.Header("Access-Control-Expose-Headers", "X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset, Retry-After")
 
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(204)
@@ -236,13 +238,15 @@ func clientRateLimitMiddleware(
 		}
 
 		key := fmt.Sprintf("moderation:client:%d", principal.ClientID)
-		allowed, err := rateLimiter.Allow(c.Request.Context(), key, cfg.Limit, cfg.Window)
+		state, err := rateLimiter.AllowWithState(c.Request.Context(), key, cfg.Limit, cfg.Window)
 		if err != nil {
 			apperrors.Handle(c, apperrors.Internal("Rate limit check failed").WithDetails(err.Error()))
 			c.Abort()
 			return
 		}
-		if !allowed {
+		setRateLimitHeaders(c, state)
+		if !state.Allowed {
+			c.Header("Retry-After", strconv.Itoa(rateLimitRetryAfterSeconds(state.RetryAfter)))
 			apperrors.Handle(c, apperrors.RateLimitExceeded("Client rate limit exceeded"))
 			c.Abort()
 			return
@@ -250,6 +254,37 @@ func clientRateLimitMiddleware(
 
 		c.Next()
 	}
+}
+
+func setRateLimitHeaders(c *gin.Context, state cache.RateLimitState) {
+	if !state.Enforced {
+		return
+	}
+
+	c.Header("X-RateLimit-Limit", strconv.Itoa(state.Limit))
+	c.Header("X-RateLimit-Remaining", strconv.Itoa(state.Remaining))
+	c.Header("X-RateLimit-Reset", strconv.FormatInt(rateLimitResetUnixSeconds(state.ResetAt), 10))
+}
+
+func rateLimitRetryAfterSeconds(duration time.Duration) int {
+	if duration <= 0 {
+		return 0
+	}
+
+	return int((duration + time.Second - 1) / time.Second)
+}
+
+func rateLimitResetUnixSeconds(resetAt time.Time) int64 {
+	if resetAt.IsZero() {
+		return 0
+	}
+
+	unix := resetAt.Unix()
+	if resetAt.Nanosecond() > 0 {
+		unix++
+	}
+
+	return unix
 }
 
 // GetEngine returns the gin engine

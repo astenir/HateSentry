@@ -681,7 +681,7 @@ make create-user
 - 管理端审核历史接口需要 JWT 管理员身份，返回最近审核记录，不返回 provider 原始输出。
 - 复核队列和复核处理需要管理员角色，人工处理人会记录为 `reviewer_id`。
 - API Key 客户端重复提交相同 `external_id` 时会复用既有结果；未提供 `external_id` 时每次调用都会创建新记录。
-- API Key 客户端限流依赖 Redis；当前版本未返回 `X-RateLimit-*` 响应头。
+- API Key 客户端限流依赖 Redis；限流检查成功执行时会返回 `X-RateLimit-Limit`、`X-RateLimit-Remaining` 和 `X-RateLimit-Reset`，超限时额外返回 `Retry-After`。
 - 当前版本不会在 API 响应中返回 provider 原始输出；原始输出仅存入审核结果记录用于后续审计。
 
 ## 📝 许可证

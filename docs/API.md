@@ -1087,8 +1087,8 @@ print(result)
 - 默认限制为每个客户端每分钟 60 次，可通过 `moderation.client_rate_limit.limit` 和 `moderation.client_rate_limit.window` 配置。
 - 对应环境变量为 `MODERATION_CLIENT_RATE_LIMIT` 和 `MODERATION_CLIENT_RATE_WINDOW`，例如 `60` 和 `1m`。
 - `limit = 0` 或 `window = 0` 时，该客户端限流中间件不启用；负数无效。正数 `window` 必须不小于 `1s`。
-- 限流基于 Redis 实现；当前版本不返回 `X-RateLimit-*` 响应头。
-- 超过限制返回 `429 Too Many Requests` 和 `RATE_LIMIT_EXCEEDED` 错误码。
+- Redis 限流检查成功执行时，响应会返回 `X-RateLimit-Limit`、`X-RateLimit-Remaining` 和 `X-RateLimit-Reset`。`X-RateLimit-Reset` 是 Unix 秒级时间戳。
+- 超过限制返回 `429 Too Many Requests`、`RATE_LIMIT_EXCEEDED` 错误码和 `Retry-After` 响应头。
 
 ## Webhook 支持
 

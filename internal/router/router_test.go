@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"hatesentry/internal/auth"
+	"hatesentry/internal/cache"
 	"hatesentry/internal/config"
 	"hatesentry/internal/moderation"
 	"net/http"
@@ -429,6 +430,10 @@ func TestCORSAllowsAPIKeyHeader(t *testing.T) {
 	if !strings.Contains(allowedHeaders, "X-API-Key") {
 		t.Fatalf("Access-Control-Allow-Headers = %q, want X-API-Key", allowedHeaders)
 	}
+	exposedHeaders := recorder.Header().Get("Access-Control-Expose-Headers")
+	if !strings.Contains(exposedHeaders, "X-RateLimit-Remaining") {
+		t.Fatalf("Access-Control-Expose-Headers = %q, want X-RateLimit-Remaining", exposedHeaders)
+	}
 }
 
 func TestClientRateLimitMiddleware(t *testing.T) {
@@ -486,7 +491,21 @@ func TestClientRateLimitMiddleware(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			gin.SetMode(gin.TestMode)
 
-			limiter := &fakeRequestRateLimiter{allowed: tt.allowed, err: tt.limitError}
+			limiter := &fakeRequestRateLimiter{
+				state: cache.RateLimitState{
+					Allowed:    tt.allowed,
+					Enforced:   true,
+					Limit:      3,
+					Remaining:  2,
+					ResetAt:    time.Unix(2000, 0),
+					RetryAfter: 15 * time.Second,
+				},
+				err: tt.limitError,
+			}
+			if !tt.allowed {
+				limiter.state.Remaining = 0
+				limiter.state.RetryAfter = 500 * time.Millisecond
+			}
 			engine := gin.New()
 			engine.Use(func(c *gin.Context) {
 				if tt.principal != nil {
@@ -516,6 +535,31 @@ func TestClientRateLimitMiddleware(t *testing.T) {
 			if (limiter.calls > 0) != tt.wantCalled {
 				t.Fatalf("limiter called = %v, want %v", limiter.calls > 0, tt.wantCalled)
 			}
+			if tt.wantCalled && tt.limitError == nil {
+				if got := recorder.Header().Get("X-RateLimit-Limit"); got != "3" {
+					t.Fatalf("X-RateLimit-Limit = %q, want 3", got)
+				}
+				if got := recorder.Header().Get("X-RateLimit-Reset"); got != "2000" {
+					t.Fatalf("X-RateLimit-Reset = %q, want 2000", got)
+				}
+				wantRemaining := "2"
+				if !tt.allowed {
+					wantRemaining = "0"
+				}
+				if got := recorder.Header().Get("X-RateLimit-Remaining"); got != wantRemaining {
+					t.Fatalf("X-RateLimit-Remaining = %q, want %s", got, wantRemaining)
+				}
+			}
+			if tt.wantStatus == http.StatusTooManyRequests {
+				if got := recorder.Header().Get("Retry-After"); got != "1" {
+					t.Fatalf("Retry-After = %q, want 1", got)
+				}
+			}
+			if !tt.wantCalled {
+				if got := recorder.Header().Get("X-RateLimit-Limit"); got != "" {
+					t.Fatalf("X-RateLimit-Limit = %q, want empty", got)
+				}
+			}
 			if !tt.wantCalled {
 				return
 			}
@@ -532,6 +576,23 @@ func TestClientRateLimitMiddleware(t *testing.T) {
 	}
 }
 
+func TestRateLimitHeaderTimeRounding(t *testing.T) {
+	if got := rateLimitRetryAfterSeconds(500 * time.Millisecond); got != 1 {
+		t.Fatalf("rateLimitRetryAfterSeconds(500ms) = %d, want 1", got)
+	}
+	if got := rateLimitRetryAfterSeconds(time.Second); got != 1 {
+		t.Fatalf("rateLimitRetryAfterSeconds(1s) = %d, want 1", got)
+	}
+	if got := rateLimitRetryAfterSeconds(1500 * time.Millisecond); got != 2 {
+		t.Fatalf("rateLimitRetryAfterSeconds(1500ms) = %d, want 2", got)
+	}
+
+	resetAt := time.Unix(2000, int64(500*time.Millisecond))
+	if got := rateLimitResetUnixSeconds(resetAt); got != 2001 {
+		t.Fatalf("rateLimitResetUnixSeconds() = %d, want 2001", got)
+	}
+}
+
 func registeredRoutes(engine *gin.Engine) map[string]bool {
 	routes := make(map[string]bool, len(engine.Routes()))
 
@@ -543,28 +604,28 @@ func registeredRoutes(engine *gin.Engine) map[string]bool {
 }
 
 type fakeRequestRateLimiter struct {
-	allowed bool
-	err     error
-	calls   int
-	key     string
-	limit   int
-	window  time.Duration
+	state  cache.RateLimitState
+	err    error
+	calls  int
+	key    string
+	limit  int
+	window time.Duration
 }
 
-func (f *fakeRequestRateLimiter) Allow(
+func (f *fakeRequestRateLimiter) AllowWithState(
 	ctx context.Context,
 	key string,
 	limit int,
 	window time.Duration,
-) (bool, error) {
+) (cache.RateLimitState, error) {
 	f.calls++
 	f.key = key
 	f.limit = limit
 	f.window = window
 
 	if f.err != nil {
-		return false, f.err
+		return cache.RateLimitState{}, f.err
 	}
 
-	return f.allowed, nil
+	return f.state, nil
 }
