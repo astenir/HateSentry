@@ -100,20 +100,30 @@ services:
       timeout: 5s
       retries: 5
 
-  # Ollama (Optional - for local AI models)
-  # ollama:
-  #   image: ollama/ollama:latest
-  #   container_name: hatesentry-ollama
-  #   ports:
-  #     - "11434:11434"
-  #   volumes:
-  #     - ollama-data:/root/.ollama
-  #   networks:
-  #     - hatesentry-network
-  #   restart: unless-stopped
-  #   # Uncomment and customize to pull the model configured by OLLAMA_MODEL.
-  #   command: >
-  #     sh -c "ollama serve & sleep 5 && ollama pull llama3 && wait"
+  # Optional local AI provider. Enable with:
+  # COMPOSE_PROFILES=ollama AI_PROVIDER=ollama docker compose up -d --build
+  ollama:
+    profiles:
+      - ollama
+    image: ollama/ollama:latest
+    container_name: hatesentry-ollama
+    ports:
+      - "11434:11434"
+    environment:
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3}
+    volumes:
+      - ollama-data:/root/.ollama
+    networks:
+      - hatesentry-network
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      'set -e; ollama serve & until ollama list >/dev/null 2>&1; do sleep 1; done; ollama pull "$${OLLAMA_MODEL:-llama3}"; wait'
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
 
 volumes:
   mysql-data:
