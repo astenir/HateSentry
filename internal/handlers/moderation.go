@@ -60,3 +60,28 @@ func (h *ModerationHandler) Check(c *gin.Context) {
 
 	c.JSON(http.StatusOK, result)
 }
+
+// GetResult retrieves a stored moderation result for the authenticated user.
+func (h *ModerationHandler) GetResult(c *gin.Context) {
+	claims, exists := auth.GetClaims(c)
+	if !exists {
+		apperrors.RespondWithError(c, apperrors.Unauthorized("User not authenticated"))
+		return
+	}
+	if h.service == nil {
+		apperrors.RespondWithError(c, apperrors.ConfigurationError("moderation service is not configured"))
+		return
+	}
+
+	result, err := h.service.GetResult(
+		c.Request.Context(),
+		claims.UserID,
+		c.Param("request_id"),
+	)
+	if err != nil {
+		apperrors.Handle(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, result)
+}

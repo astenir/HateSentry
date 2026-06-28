@@ -105,6 +105,7 @@ func (r *Router) Setup() *gin.Engine {
 		moderation := protected.Group("/moderation")
 		{
 			moderation.POST("/check", moderationHandler.Check)
+			moderation.GET("/results/:request_id", moderationHandler.GetResult)
 		}
 	}
 

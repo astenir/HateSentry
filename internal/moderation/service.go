@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -13,10 +14,11 @@ import (
 )
 
 const (
-	defaultSource     = "api"
-	maxContentLength  = 10000
-	maxSourceLength   = 50
-	maxMetadataLength = 128
+	defaultSource      = "api"
+	maxContentLength   = 10000
+	maxRequestIDLength = 64
+	maxSourceLength    = 50
+	maxMetadataLength  = 128
 )
 
 // Analyzer classifies text and returns a normalized provider suggestion.
@@ -27,6 +29,13 @@ type Analyzer interface {
 // Repository persists moderation audit records.
 type Repository interface {
 	SaveCheck(ctx context.Context, request *models.ModerationRequest, result *models.ModerationResult) error
+	GetResult(ctx context.Context, userID uint, requestID string) (StoredResult, error)
+}
+
+// StoredResult is the repository representation of a persisted moderation check.
+type StoredResult struct {
+	Request models.ModerationRequest
+	Result  models.ModerationResult
 }
 
 // Service coordinates provider analysis, policy decisions, and persistence.
@@ -62,6 +71,24 @@ type CheckOutput struct {
 	Labels        []string `json:"labels"`
 	Reason        string   `json:"reason"`
 	PolicyVersion string   `json:"policy_version"`
+}
+
+// ResultOutput is the stable public representation of a stored moderation result.
+type ResultOutput struct {
+	RequestID     string    `json:"request_id"`
+	Content       string    `json:"content"`
+	Source        string    `json:"source"`
+	ExternalID    string    `json:"external_id,omitempty"`
+	ActorID       string    `json:"actor_id,omitempty"`
+	Status        string    `json:"status"`
+	Provider      string    `json:"provider"`
+	Model         string    `json:"model"`
+	Decision      Decision  `json:"decision"`
+	RiskScore     float64   `json:"risk_score"`
+	Labels        []string  `json:"labels"`
+	Reason        string    `json:"reason"`
+	PolicyVersion string    `json:"policy_version"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 // Check performs a synchronous text moderation workflow and stores audit records.
@@ -129,6 +156,52 @@ func (s *Service) Check(ctx context.Context, input CheckInput) (CheckOutput, err
 	}, nil
 }
 
+// GetResult retrieves a stored moderation result owned by the authenticated user.
+func (s *Service) GetResult(ctx context.Context, userID uint, requestID string) (ResultOutput, error) {
+	requestID = strings.TrimSpace(requestID)
+	if userID == 0 {
+		return ResultOutput{}, apperrors.Unauthorized("User not authenticated")
+	}
+	if requestID == "" {
+		return ResultOutput{}, apperrors.ValidationError("request_id is required")
+	}
+	if len(requestID) > maxRequestIDLength {
+		return ResultOutput{}, apperrors.ValidationError(
+			fmt.Sprintf("request_id must not exceed %d characters", maxRequestIDLength),
+		)
+	}
+	if s.repository == nil {
+		return ResultOutput{}, apperrors.ConfigurationError("moderation repository is not configured")
+	}
+
+	stored, err := s.repository.GetResult(ctx, userID, requestID)
+	if err != nil {
+		return ResultOutput{}, err
+	}
+
+	labels, err := decodeLabels(stored.Result.Labels)
+	if err != nil {
+		return ResultOutput{}, err
+	}
+
+	return ResultOutput{
+		RequestID:     stored.Request.RequestID,
+		Content:       stored.Request.Content,
+		Source:        stored.Request.Source,
+		ExternalID:    stored.Request.ExternalID,
+		ActorID:       stored.Request.ActorID,
+		Status:        stored.Request.Status,
+		Provider:      stored.Result.Provider,
+		Model:         stored.Result.Model,
+		Decision:      Decision(stored.Result.Decision),
+		RiskScore:     stored.Result.RiskScore,
+		Labels:        labels,
+		Reason:        stored.Result.Reason,
+		PolicyVersion: stored.Result.PolicyVersion,
+		CreatedAt:     stored.Result.CreatedAt,
+	}, nil
+}
+
 func validateCheckInput(input CheckInput) (CheckInput, error) {
 	input.Content = strings.TrimSpace(input.Content)
 	input.Source = strings.TrimSpace(input.Source)
@@ -166,4 +239,16 @@ func validateCheckInput(input CheckInput) (CheckInput, error) {
 	}
 
 	return input, nil
+}
+
+func decodeLabels(labelsJSON string) ([]string, error) {
+	labels := []string{}
+	if strings.TrimSpace(labelsJSON) == "" {
+		return labels, nil
+	}
+	if err := json.Unmarshal([]byte(labelsJSON), &labels); err != nil {
+		return nil, apperrors.Internal("failed to decode moderation labels").WithDetails(err.Error())
+	}
+
+	return labels, nil
 }

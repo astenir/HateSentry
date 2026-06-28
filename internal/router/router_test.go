@@ -3,6 +3,8 @@ package router
 import (
 	"hatesentry/internal/auth"
 	"hatesentry/internal/config"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -41,6 +43,7 @@ func TestSetupRegistersCoreRoutes(t *testing.T) {
 		"GET /api/v1/detection/result/:id",
 		"GET /api/v1/detection/history",
 		"POST /api/v1/moderation/check",
+		"GET /api/v1/moderation/results/:request_id",
 		"GET /metrics",
 	}
 
@@ -50,6 +53,40 @@ func TestSetupRegistersCoreRoutes(t *testing.T) {
 				t.Fatalf("route %q is not registered", route)
 			}
 		})
+	}
+}
+
+func TestSetupProtectsModerationResultRoute(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	jwtManager := auth.NewJWTManager(&config.JWTConfig{
+		Secret:      "test-secret",
+		ExpireHours: 1,
+		Issuer:      "hatesentry-test",
+	})
+
+	router := NewRouter(
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		jwtManager,
+	)
+
+	engine := router.Setup()
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/moderation/results/request-123",
+		nil,
+	)
+	recorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", recorder.Code)
 	}
 }
 

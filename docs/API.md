@@ -181,6 +181,37 @@ Content-Type: application/json
 
 接口响应不会返回 provider 原始输出；原始输出仅作为审核记录存储，便于后续审计。
 
+### 2. 获取文本审核结果
+
+根据 `request_id` 查询当前用户拥有的文本审核记录。接口返回审核结果和基础审计元数据，但不会返回 provider 原始输出。
+
+**端点**: `GET /moderation/results/:request_id`
+
+**请求头**:
+```
+Authorization: Bearer <token>
+```
+
+**响应** (200 OK):
+```json
+{
+  "request_id": "550e8400-e29b-41d4-a716-446655440000",
+  "content": "user submitted text",
+  "source": "comment",
+  "external_id": "comment_123",
+  "actor_id": "user_456",
+  "status": "completed",
+  "provider": "openai",
+  "model": "gpt-4",
+  "decision": "review",
+  "risk_score": 0.6,
+  "labels": ["harassment", "identity_attack"],
+  "reason": "Brief explanation suitable for operators",
+  "policy_version": "default-v1",
+  "created_at": "2026-06-28T10:30:00Z"
+}
+```
+
 ## 检测
 
 ### 1. 检测仇恨言论

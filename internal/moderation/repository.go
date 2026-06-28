@@ -2,6 +2,7 @@ package moderation
 
 import (
 	"context"
+	stderrors "errors"
 
 	apperrors "hatesentry/internal/errors"
 	"hatesentry/internal/models"
@@ -43,4 +44,38 @@ func (r *GormRepository) SaveCheck(
 	}
 
 	return nil
+}
+
+// GetResult retrieves a user-owned moderation request and result pair.
+func (r *GormRepository) GetResult(ctx context.Context, userID uint, requestID string) (StoredResult, error) {
+	if r == nil || r.db == nil {
+		return StoredResult{}, apperrors.ConfigurationError("moderation database is not configured")
+	}
+
+	var request models.ModerationRequest
+	if err := userScopedResultQuery(r.db.WithContext(ctx), userID, requestID).
+		First(&request).Error; err != nil {
+		if stderrors.Is(err, gorm.ErrRecordNotFound) {
+			return StoredResult{}, apperrors.RecordNotFound("Moderation result not found")
+		}
+		return StoredResult{}, apperrors.DatabaseError(err, "failed to retrieve moderation request")
+	}
+
+	var result models.ModerationResult
+	if err := userScopedResultQuery(r.db.WithContext(ctx), userID, requestID).
+		First(&result).Error; err != nil {
+		if stderrors.Is(err, gorm.ErrRecordNotFound) {
+			return StoredResult{}, apperrors.RecordNotFound("Moderation result not found")
+		}
+		return StoredResult{}, apperrors.DatabaseError(err, "failed to retrieve moderation result")
+	}
+
+	return StoredResult{
+		Request: request,
+		Result:  result,
+	}, nil
+}
+
+func userScopedResultQuery(db *gorm.DB, userID uint, requestID string) *gorm.DB {
+	return db.Where("user_id = ? AND request_id = ?", userID, requestID)
 }

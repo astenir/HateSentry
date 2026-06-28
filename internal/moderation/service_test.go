@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"hatesentry/internal/models"
 )
@@ -159,6 +160,104 @@ func TestServiceCheckRejectsInvalidInput(t *testing.T) {
 	}
 }
 
+func TestServiceGetResultReturnsStoredRecord(t *testing.T) {
+	createdAt := time.Date(2026, 6, 28, 10, 30, 0, 0, time.UTC)
+	service := NewService(fakeAnalyzer{}, &fakeRepository{
+		stored: StoredResult{
+			Request: models.ModerationRequest{
+				RequestID:  "request-123",
+				UserID:     7,
+				Content:    "stored content",
+				Source:     "comment",
+				ExternalID: "comment_123",
+				ActorID:    "user_456",
+				Status:     "completed",
+			},
+			Result: models.ModerationResult{
+				RequestID:     "request-123",
+				UserID:        7,
+				Provider:      "test-provider",
+				Model:         "test-model",
+				RawOutput:     `{"risk_score":0.6,"labels":["harassment"],"reason":"Contains abusive language."}`,
+				RiskScore:     0.6,
+				Labels:        `["harassment"]`,
+				Decision:      string(DecisionReview),
+				Reason:        "Contains abusive language.",
+				PolicyVersion: "default-v1",
+				CreatedAt:     createdAt,
+			},
+		},
+	}, DefaultPolicy())
+
+	output, err := service.GetResult(context.Background(), 7, " request-123 ")
+	if err != nil {
+		t.Fatalf("GetResult() error = %v", err)
+	}
+
+	if output.RequestID != "request-123" {
+		t.Fatalf("RequestID = %q, want request-123", output.RequestID)
+	}
+	if output.Content != "stored content" {
+		t.Fatalf("Content = %q, want stored content", output.Content)
+	}
+	if output.Decision != DecisionReview {
+		t.Fatalf("Decision = %q, want review", output.Decision)
+	}
+	if !equalStrings(output.Labels, []string{"harassment"}) {
+		t.Fatalf("Labels = %#v, want harassment", output.Labels)
+	}
+	if !output.CreatedAt.Equal(createdAt) {
+		t.Fatalf("CreatedAt = %v, want %v", output.CreatedAt, createdAt)
+	}
+	repository := service.repository.(*fakeRepository)
+	if repository.userID != 7 {
+		t.Fatalf("repository userID = %d, want 7", repository.userID)
+	}
+	if repository.requestID != "request-123" {
+		t.Fatalf("repository requestID = %q, want request-123", repository.requestID)
+	}
+}
+
+func TestServiceGetResultRejectsInvalidInput(t *testing.T) {
+	service := NewService(fakeAnalyzer{}, &fakeRepository{}, DefaultPolicy())
+
+	tests := []struct {
+		name      string
+		userID    uint
+		requestID string
+		wantErr   string
+	}{
+		{
+			name:      "missing user",
+			requestID: "request-123",
+			wantErr:   "User not authenticated",
+		},
+		{
+			name:    "missing request id",
+			userID:  7,
+			wantErr: "request_id is required",
+		},
+		{
+			name:      "request id too long",
+			userID:    7,
+			requestID: strings.Repeat("a", maxRequestIDLength+1),
+			wantErr:   "request_id must not exceed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := service.GetResult(context.Background(), tt.userID, tt.requestID)
+			if err == nil {
+				t.Fatal("GetResult() error = nil, want error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("GetResult() error = %q, want %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
 type fakeAnalyzer struct {
 	suggestion ProviderSuggestion
 	provider   ProviderInfo
@@ -173,9 +272,12 @@ func (a fakeAnalyzer) AnalyzeText(ctx context.Context, content string) (Provider
 }
 
 type fakeRepository struct {
-	request *models.ModerationRequest
-	result  *models.ModerationResult
-	err     error
+	request   *models.ModerationRequest
+	result    *models.ModerationResult
+	stored    StoredResult
+	userID    uint
+	requestID string
+	err       error
 }
 
 func (r *fakeRepository) SaveCheck(
@@ -192,4 +294,13 @@ func (r *fakeRepository) SaveCheck(
 	r.request = &copiedRequest
 	r.result = &copiedResult
 	return nil
+}
+
+func (r *fakeRepository) GetResult(ctx context.Context, userID uint, requestID string) (StoredResult, error) {
+	if r.err != nil {
+		return StoredResult{}, r.err
+	}
+	r.userID = userID
+	r.requestID = requestID
+	return r.stored, nil
 }
