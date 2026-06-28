@@ -22,16 +22,16 @@ import (
 
 // Router represents the HTTP router
 type Router struct {
-	engine           *gin.Engine
-	detectionService *ai.DetectionService
-	publisher        queue.Publisher
-	rabbitMQManager  *queue.RabbitMQManager
-	cache            *cache.DetectionCache
-	rateLimiter      *cache.RateLimiter
-	jwtManager       *auth.JWTManager
-	db               *gorm.DB
-	moderationPolicy moderation.Policy
-	clientRateLimit  config.ModerationRateLimitConfig
+	engine             *gin.Engine
+	detectionService   *ai.DetectionService
+	publisher          queue.Publisher
+	rabbitMQManager    *queue.RabbitMQManager
+	cache              *cache.DetectionCache
+	rateLimiter        *cache.RateLimiter
+	jwtManager         *auth.JWTManager
+	db                 *gorm.DB
+	moderationPolicies moderation.PolicySet
+	clientRateLimit    config.ModerationRateLimitConfig
 }
 
 type requestRateLimiter interface {
@@ -50,17 +50,47 @@ func NewRouter(
 	moderationPolicy moderation.Policy,
 	clientRateLimit config.ModerationRateLimitConfig,
 ) *Router {
+	policies, err := moderation.NewPolicySet(moderationPolicy)
+	if err != nil {
+		policies = moderation.PolicySet{}
+	}
+
+	return NewRouterWithPolicies(
+		db,
+		detectionService,
+		publisher,
+		rabbitMQManager,
+		cache,
+		rateLimiter,
+		jwtManager,
+		policies,
+		clientRateLimit,
+	)
+}
+
+// NewRouterWithPolicies creates a router with a configured moderation policy registry.
+func NewRouterWithPolicies(
+	db *gorm.DB,
+	detectionService *ai.DetectionService,
+	publisher queue.Publisher,
+	rabbitMQManager *queue.RabbitMQManager,
+	cache *cache.DetectionCache,
+	rateLimiter *cache.RateLimiter,
+	jwtManager *auth.JWTManager,
+	moderationPolicies moderation.PolicySet,
+	clientRateLimit config.ModerationRateLimitConfig,
+) *Router {
 	return &Router{
-		engine:           gin.New(),
-		db:               db,
-		detectionService: detectionService,
-		publisher:        publisher,
-		rabbitMQManager:  rabbitMQManager,
-		cache:            cache,
-		rateLimiter:      rateLimiter,
-		jwtManager:       jwtManager,
-		moderationPolicy: moderationPolicy,
-		clientRateLimit:  clientRateLimit,
+		engine:             gin.New(),
+		db:                 db,
+		detectionService:   detectionService,
+		publisher:          publisher,
+		rabbitMQManager:    rabbitMQManager,
+		cache:              cache,
+		rateLimiter:        rateLimiter,
+		jwtManager:         jwtManager,
+		moderationPolicies: moderationPolicies,
+		clientRateLimit:    clientRateLimit,
 	}
 }
 
@@ -74,7 +104,7 @@ func (r *Router) Setup() *gin.Engine {
 
 	// Handlers
 	clientRepository := clients.NewGormRepository(r.db)
-	clientService := clients.NewService(clientRepository)
+	clientService := clients.NewServiceWithPolicyValidator(clientRepository, r.moderationPolicies)
 	clientHandler := handlers.NewClientHandler(clientService)
 	authHandler := handlers.NewAuthHandler(r.db, r.jwtManager)
 	detectionHandler := handlers.NewDetectionHandler(
@@ -85,10 +115,10 @@ func (r *Router) Setup() *gin.Engine {
 		r.rateLimiter,
 		r.jwtManager,
 	)
-	moderationService := moderation.NewService(
+	moderationService := moderation.NewServiceWithPolicySet(
 		r.detectionService,
 		moderation.NewGormRepository(r.db),
-		r.moderationPolicy,
+		r.moderationPolicies,
 		webhooks.NewHTTPDispatcher(),
 	)
 	moderationHandler := handlers.NewModerationHandler(moderationService)

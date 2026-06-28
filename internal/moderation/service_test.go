@@ -95,7 +95,14 @@ func TestServiceCheckPersistsDecision(t *testing.T) {
 }
 
 func TestServiceCheckPersistsClientID(t *testing.T) {
-	repository := &fakeRepository{}
+	repository := &fakeRepository{
+		webhookClient: models.ClientApplication{
+			ID:     11,
+			UserID: 7,
+			Name:   "blog-comments",
+		},
+		webhookClientFound: true,
+	}
 	service := NewService(
 		fakeAnalyzer{
 			suggestion: ProviderSuggestion{
@@ -218,6 +225,12 @@ func TestServiceCheckReturnsExistingResultAfterDuplicateIdempotencySave(t *testi
 			},
 		},
 		clientResultFoundAfterSave: true,
+		webhookClient: models.ClientApplication{
+			ID:     11,
+			UserID: 7,
+			Name:   "blog-comments",
+		},
+		webhookClientFound: true,
 	}
 	service := NewService(
 		fakeAnalyzer{
@@ -261,6 +274,7 @@ func TestServiceCheckDispatchesWebhookForAutomaticFinalDecision(t *testing.T) {
 	repository := &fakeRepository{
 		webhookClient: models.ClientApplication{
 			ID:            11,
+			UserID:        7,
 			WebhookURL:    "https://example.com/moderation/webhook",
 			WebhookSecret: "whsec_test",
 		},
@@ -329,6 +343,7 @@ func TestServiceCheckDoesNotDispatchWebhookForReviewDecision(t *testing.T) {
 	repository := &fakeRepository{
 		webhookClient: models.ClientApplication{
 			ID:            11,
+			UserID:        7,
 			WebhookURL:    "https://example.com/moderation/webhook",
 			WebhookSecret: "whsec_test",
 		},
@@ -369,6 +384,7 @@ func TestServiceCheckDoesNotFailWhenWebhookDispatchFails(t *testing.T) {
 	repository := &fakeRepository{
 		webhookClient: models.ClientApplication{
 			ID:            11,
+			UserID:        7,
 			WebhookURL:    "https://example.com/moderation/webhook",
 			WebhookSecret: "whsec_test",
 		},
@@ -418,6 +434,7 @@ func TestServiceCheckRecordsWebhookDeliveryAfterRequestCancel(t *testing.T) {
 		afterSaveCheck: cancel,
 		webhookClient: models.ClientApplication{
 			ID:            11,
+			UserID:        7,
 			WebhookURL:    "https://example.com/moderation/webhook",
 			WebhookSecret: "whsec_test",
 		},
@@ -561,6 +578,126 @@ func TestServiceCheckUsesConfiguredPolicy(t *testing.T) {
 	}
 	if repository.result.PolicyVersion != "custom-v1" {
 		t.Fatalf("persisted PolicyVersion = %q, want custom-v1", repository.result.PolicyVersion)
+	}
+}
+
+func TestServiceCheckUsesClientPolicyVersion(t *testing.T) {
+	repository := &fakeRepository{
+		webhookClient: models.ClientApplication{
+			ID:            11,
+			UserID:        1,
+			Name:          "blog-comments",
+			PolicyVersion: "strict-v1",
+		},
+		webhookClientFound: true,
+	}
+	strictPolicy, err := NewPolicy("strict-v1", 0.2, 0.5)
+	if err != nil {
+		t.Fatalf("NewPolicy() error = %v", err)
+	}
+	policies, err := NewPolicySet(DefaultPolicy(), strictPolicy)
+	if err != nil {
+		t.Fatalf("NewPolicySet() error = %v", err)
+	}
+	service := NewServiceWithPolicySet(
+		fakeAnalyzer{
+			suggestion: ProviderSuggestion{
+				RiskScore: 0.6,
+				Labels:    []string{"harassment"},
+				Reason:    "Contains abusive language.",
+				RawOutput: `{"risk_score":0.6,"labels":["harassment"],"reason":"Contains abusive language."}`,
+			},
+			provider: ProviderInfo{Provider: "test", Model: "model"},
+		},
+		repository,
+		policies,
+	)
+
+	output, err := service.Check(context.Background(), CheckInput{
+		UserID:   1,
+		ClientID: 11,
+		Content:  "hello",
+	})
+	if err != nil {
+		t.Fatalf("Check() error = %v", err)
+	}
+	if repository.clientID != 11 {
+		t.Fatalf("client id lookup = %d, want 11", repository.clientID)
+	}
+	if output.Decision != DecisionBlock {
+		t.Fatalf("Decision = %q, want block", output.Decision)
+	}
+	if output.PolicyVersion != "strict-v1" {
+		t.Fatalf("PolicyVersion = %q, want strict-v1", output.PolicyVersion)
+	}
+	if repository.result.PolicyVersion != "strict-v1" {
+		t.Fatalf("persisted PolicyVersion = %q, want strict-v1", repository.result.PolicyVersion)
+	}
+}
+
+func TestServiceCheckRejectsUnknownClientPolicyVersion(t *testing.T) {
+	analyzerCalls := 0
+	repository := &fakeRepository{
+		webhookClient: models.ClientApplication{
+			ID:            11,
+			UserID:        1,
+			Name:          "blog-comments",
+			PolicyVersion: "missing-v1",
+		},
+		webhookClientFound: true,
+	}
+	service := NewService(
+		fakeAnalyzer{calls: &analyzerCalls},
+		repository,
+		DefaultPolicy(),
+	)
+
+	_, err := service.Check(context.Background(), CheckInput{
+		UserID:   1,
+		ClientID: 11,
+		Content:  "hello",
+	})
+	if err == nil {
+		t.Fatal("Check() error = nil, want unknown policy error")
+	}
+	if !strings.Contains(err.Error(), `policy_version "missing-v1" is not configured`) {
+		t.Fatalf("Check() error = %q, want unknown policy detail", err.Error())
+	}
+	if analyzerCalls != 0 {
+		t.Fatalf("analyzer calls = %d, want 0", analyzerCalls)
+	}
+}
+
+func TestServiceCheckRejectsClientOwnedByAnotherUser(t *testing.T) {
+	analyzerCalls := 0
+	repository := &fakeRepository{
+		webhookClient: models.ClientApplication{
+			ID:            11,
+			UserID:        99,
+			Name:          "blog-comments",
+			PolicyVersion: "default-v1",
+		},
+		webhookClientFound: true,
+	}
+	service := NewService(
+		fakeAnalyzer{calls: &analyzerCalls},
+		repository,
+		DefaultPolicy(),
+	)
+
+	_, err := service.Check(context.Background(), CheckInput{
+		UserID:   1,
+		ClientID: 11,
+		Content:  "hello",
+	})
+	if err == nil {
+		t.Fatal("Check() error = nil, want client ownership error")
+	}
+	if !strings.Contains(err.Error(), "Client not found") {
+		t.Fatalf("Check() error = %q, want client not found", err.Error())
+	}
+	if analyzerCalls != 0 {
+		t.Fatalf("analyzer calls = %d, want 0", analyzerCalls)
 	}
 }
 

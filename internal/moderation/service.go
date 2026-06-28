@@ -141,7 +141,7 @@ type WebhookDeliveryFilter struct {
 type Service struct {
 	analyzer          Analyzer
 	repository        Repository
-	policy            Policy
+	policies          PolicySet
 	webhookDispatcher webhooks.Dispatcher
 }
 
@@ -152,6 +152,21 @@ func NewService(
 	policy Policy,
 	webhookDispatchers ...webhooks.Dispatcher,
 ) *Service {
+	policies, err := NewPolicySet(policy)
+	if err != nil {
+		policies = PolicySet{defaultPolicy: policy}
+	}
+
+	return NewServiceWithPolicySet(analyzer, repository, policies, webhookDispatchers...)
+}
+
+// NewServiceWithPolicySet creates a moderation service with multiple configured policies.
+func NewServiceWithPolicySet(
+	analyzer Analyzer,
+	repository Repository,
+	policies PolicySet,
+	webhookDispatchers ...webhooks.Dispatcher,
+) *Service {
 	var webhookDispatcher webhooks.Dispatcher
 	if len(webhookDispatchers) > 0 {
 		webhookDispatcher = webhookDispatchers[0]
@@ -160,7 +175,7 @@ func NewService(
 	return &Service{
 		analyzer:          analyzer,
 		repository:        repository,
-		policy:            policy,
+		policies:          policies,
 		webhookDispatcher: webhookDispatcher,
 	}
 }
@@ -313,12 +328,17 @@ func (s *Service) Check(ctx context.Context, input CheckInput) (CheckOutput, err
 	}
 	idempotencyKey := clientExternalIDIdempotencyKey(normalized.ClientID, normalized.ExternalID)
 
+	policy, err := s.policyForCheck(ctx, normalized.UserID, normalized.ClientID)
+	if err != nil {
+		return CheckOutput{}, err
+	}
+
 	suggestion, provider, err := s.analyzer.AnalyzeText(ctx, normalized.Content)
 	if err != nil {
 		return CheckOutput{}, err
 	}
 
-	decision, err := s.policy.Decide(suggestion)
+	decision, err := policy.Decide(suggestion)
 	if err != nil {
 		return CheckOutput{}, apperrors.ValidationError("invalid moderation policy input").WithDetails(err.Error())
 	}
@@ -394,6 +414,30 @@ func (s *Service) Check(ctx context.Context, input CheckInput) (CheckOutput, err
 		Reason:        decision.Reason,
 		PolicyVersion: decision.PolicyVersion,
 	}, nil
+}
+
+func (s *Service) policyForCheck(ctx context.Context, userID uint, clientID uint) (Policy, error) {
+	if clientID == 0 {
+		return s.policies.PolicyForVersion("")
+	}
+
+	client, found, err := s.repository.GetClient(ctx, clientID)
+	if err != nil {
+		return Policy{}, err
+	}
+	if !found {
+		return Policy{}, apperrors.RecordNotFound("Client not found")
+	}
+	if client.UserID != userID {
+		return Policy{}, apperrors.RecordNotFound("Client not found")
+	}
+
+	policy, err := s.policies.PolicyForVersion(client.PolicyVersion)
+	if err != nil {
+		return Policy{}, apperrors.ValidationError("invalid moderation policy input").WithDetails(err.Error())
+	}
+
+	return policy, nil
 }
 
 // GetResult retrieves a stored moderation result owned by the authenticated user.

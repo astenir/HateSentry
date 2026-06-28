@@ -12,7 +12,9 @@ import (
 
 func TestServiceCreateClientStoresHashedAPIKey(t *testing.T) {
 	repository := &fakeRepository{}
-	service := NewService(repository)
+	service := NewServiceWithPolicyValidator(repository, fakePolicyValidator{
+		allowed: map[string]bool{"default-v1": true},
+	})
 
 	output, err := service.CreateClient(context.Background(), CreateInput{
 		UserID:        42,
@@ -59,6 +61,31 @@ func TestServiceCreateClientStoresHashedAPIKey(t *testing.T) {
 	}
 	if repository.client.WebhookSecret != output.WebhookSecret {
 		t.Fatal("persisted WebhookSecret does not match returned secret")
+	}
+	if repository.client.PolicyVersion != "default-v1" {
+		t.Fatalf("PolicyVersion = %q, want default-v1", repository.client.PolicyVersion)
+	}
+}
+
+func TestServiceCreateClientRejectsUnknownPolicyVersion(t *testing.T) {
+	repository := &fakeRepository{}
+	service := NewServiceWithPolicyValidator(repository, fakePolicyValidator{
+		allowed: map[string]bool{"default-v1": true},
+	})
+
+	_, err := service.CreateClient(context.Background(), CreateInput{
+		UserID:        42,
+		Name:          "blog",
+		PolicyVersion: "missing-v1",
+	})
+	if err == nil {
+		t.Fatal("CreateClient() error = nil, want policy validation error")
+	}
+	if !strings.Contains(err.Error(), "invalid policy_version") {
+		t.Fatalf("CreateClient() error = %q, want invalid policy_version", err.Error())
+	}
+	if repository.client != nil {
+		t.Fatal("client should not be persisted for unknown policy_version")
 	}
 }
 
@@ -426,6 +453,24 @@ type fakeRepository struct {
 	rotatedAPIKeyHash   string
 	rotatedAPIKeyPrefix string
 	err                 error
+}
+
+type fakePolicyValidator struct {
+	allowed map[string]bool
+}
+
+func (v fakePolicyValidator) ValidatePolicyVersion(version string) error {
+	if v.allowed[version] {
+		return nil
+	}
+
+	return errString("policy_version " + version + " is not configured")
+}
+
+type errString string
+
+func (e errString) Error() string {
+	return string(e)
 }
 
 func (r *fakeRepository) CreateClient(ctx context.Context, client *models.ClientApplication) error {

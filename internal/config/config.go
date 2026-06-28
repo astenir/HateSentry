@@ -102,6 +102,7 @@ type DetectionConfig struct {
 
 type ModerationConfig struct {
 	Policy          ModerationPolicyConfig    `mapstructure:"policy"`
+	Policies        []ModerationPolicyConfig  `mapstructure:"policies"`
 	ClientRateLimit ModerationRateLimitConfig `mapstructure:"client_rate_limit"`
 }
 

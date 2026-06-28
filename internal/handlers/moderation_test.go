@@ -21,7 +21,14 @@ import (
 func TestModerationHandlerCheck(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	repository := &moderationHandlerRepository{}
+	repository := &moderationHandlerRepository{
+		webhookClient: models.ClientApplication{
+			ID:     11,
+			UserID: 42,
+			Name:   "blog",
+		},
+		webhookClientFound: true,
+	}
 	service := moderation.NewService(
 		moderationHandlerAnalyzer{},
 		repository,
@@ -77,7 +84,14 @@ func TestModerationHandlerCheck(t *testing.T) {
 func TestModerationHandlerCheckAcceptsAPIKeyPrincipal(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	repository := &moderationHandlerRepository{}
+	repository := &moderationHandlerRepository{
+		webhookClient: models.ClientApplication{
+			ID:     11,
+			UserID: 42,
+			Name:   "blog",
+		},
+		webhookClientFound: true,
+	}
 	handler := NewModerationHandler(moderation.NewService(
 		moderationHandlerAnalyzer{},
 		repository,

@@ -79,6 +79,57 @@ func TestNewPolicyValidatesConfiguredPolicy(t *testing.T) {
 	}
 }
 
+func TestPolicySetResolvesConfiguredVersions(t *testing.T) {
+	defaultPolicy := DefaultPolicy()
+	strictPolicy, err := NewPolicy("strict-v1", 0.2, 0.5)
+	if err != nil {
+		t.Fatalf("NewPolicy() error = %v", err)
+	}
+	policies, err := NewPolicySet(defaultPolicy, strictPolicy)
+	if err != nil {
+		t.Fatalf("NewPolicySet() error = %v", err)
+	}
+
+	resolvedDefault, err := policies.PolicyForVersion("")
+	if err != nil {
+		t.Fatalf("PolicyForVersion(default) error = %v", err)
+	}
+	if resolvedDefault.Version != "default-v1" {
+		t.Fatalf("default policy = %q, want default-v1", resolvedDefault.Version)
+	}
+
+	resolvedStrict, err := policies.PolicyForVersion(" strict-v1 ")
+	if err != nil {
+		t.Fatalf("PolicyForVersion(strict) error = %v", err)
+	}
+	if resolvedStrict.BlockThreshold != 0.5 {
+		t.Fatalf("strict block threshold = %v, want 0.5", resolvedStrict.BlockThreshold)
+	}
+}
+
+func TestPolicySetRejectsDuplicateAndUnknownVersions(t *testing.T) {
+	defaultPolicy := DefaultPolicy()
+	duplicatePolicy, err := NewPolicy("default-v1", 0.2, 0.5)
+	if err != nil {
+		t.Fatalf("NewPolicy() error = %v", err)
+	}
+	if _, err := NewPolicySet(defaultPolicy, duplicatePolicy); err == nil {
+		t.Fatal("NewPolicySet() error = nil, want duplicate policy error")
+	}
+
+	policies, err := NewPolicySet(defaultPolicy)
+	if err != nil {
+		t.Fatalf("NewPolicySet() error = %v", err)
+	}
+	_, err = policies.PolicyForVersion("missing-v1")
+	if err == nil {
+		t.Fatal("PolicyForVersion() error = nil, want unknown policy error")
+	}
+	if !strings.Contains(err.Error(), `policy_version "missing-v1" is not configured`) {
+		t.Fatalf("PolicyForVersion() error = %q, want unknown policy detail", err.Error())
+	}
+}
+
 func TestPolicyValidateRejectsInvalidThresholds(t *testing.T) {
 	tests := []struct {
 		name    string

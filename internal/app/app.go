@@ -99,11 +99,7 @@ func (a *App) Run() error {
 	}
 	a.config = cfg
 
-	moderationPolicy, err := moderation.NewPolicy(
-		cfg.Moderation.Policy.Version,
-		cfg.Moderation.Policy.ReviewThreshold,
-		cfg.Moderation.Policy.BlockThreshold,
-	)
+	moderationPolicies, err := moderationPolicySetFromConfig(cfg.Moderation)
 	if err != nil {
 		return errors.ConfigurationError("invalid moderation policy").WithDetails(err.Error())
 	}
@@ -167,7 +163,7 @@ func (a *App) Run() error {
 	a.consumer = queue.NewConsumer(rabbitMQManager, a)
 
 	// Initialize router
-	r := router.NewRouter(
+	r := router.NewRouterWithPolicies(
 		database.GetDB(),
 		detectionService,
 		publisher,
@@ -175,7 +171,7 @@ func (a *App) Run() error {
 		detectionCache,
 		rateLimiter,
 		jwtManager,
-		moderationPolicy,
+		moderationPolicies,
 		cfg.Moderation.ClientRateLimit,
 	)
 	a.router = r
@@ -233,6 +229,32 @@ func (a *App) Run() error {
 
 	a.logger.Info("Server exited")
 	return nil
+}
+
+func moderationPolicySetFromConfig(cfg config.ModerationConfig) (moderation.PolicySet, error) {
+	defaultPolicy, err := moderation.NewPolicy(
+		cfg.Policy.Version,
+		cfg.Policy.ReviewThreshold,
+		cfg.Policy.BlockThreshold,
+	)
+	if err != nil {
+		return moderation.PolicySet{}, err
+	}
+
+	policies := make([]moderation.Policy, 0, len(cfg.Policies))
+	for _, policyConfig := range cfg.Policies {
+		policy, err := moderation.NewPolicy(
+			policyConfig.Version,
+			policyConfig.ReviewThreshold,
+			policyConfig.BlockThreshold,
+		)
+		if err != nil {
+			return moderation.PolicySet{}, err
+		}
+		policies = append(policies, policy)
+	}
+
+	return moderation.NewPolicySet(defaultPolicy, policies...)
 }
 
 // initLogger initializes the logger

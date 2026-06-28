@@ -397,6 +397,10 @@ moderation:
     version: "default-v1"
     review_threshold: 0.4
     block_threshold: 0.75
+  policies:
+    - version: "strict-v1"
+      review_threshold: 0.2
+      block_threshold: 0.5
   client_rate_limit:
     limit: 60
     window: 1m
@@ -605,6 +609,7 @@ make create-user
 - 外部客户端状态管理：`POST /api/v1/admin/clients/:id/deactivate`、`POST /api/v1/admin/clients/:id/activate`。
 - 外部客户端 API Key 轮换：`POST /api/v1/admin/clients/:id/api-key/rotate`。
 - API Key 文本审核接入：`X-API-Key` + `POST /api/v1/moderation/check`。
+- 外部客户端策略分配：客户端 `policy_version` 会选择 `moderation.policy` 或 `moderation.policies` 中的已配置策略版本。
 - 同一客户端的 `external_id` 幂等查询。
 - API Key 客户端限流：`POST /api/v1/moderation/check` 默认按客户端 ID 每分钟 60 次。
 - 基础 Webhook 最终决策回调：向客户端 HTTPS `webhook_url` 同步单次发送 `allow` / `block` 或人工复核后的最终决策，并使用 HMAC-SHA256 签名。

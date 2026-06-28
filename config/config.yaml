@@ -76,6 +76,10 @@ moderation:
     version: "default-v1"
     review_threshold: 0.4
     block_threshold: 0.75
+  policies:
+    - version: "strict-v1"
+      review_threshold: 0.2
+      block_threshold: 0.5
   client_rate_limit:
     limit: 60
     window: 1m

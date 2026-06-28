@@ -13,6 +13,12 @@ type Policy struct {
 	BlockThreshold  float64
 }
 
+// PolicySet resolves policy versions to concrete threshold policies.
+type PolicySet struct {
+	defaultPolicy Policy
+	policies      map[string]Policy
+}
+
 // DefaultPolicy returns the first-version text moderation policy.
 func DefaultPolicy() Policy {
 	return Policy{
@@ -34,6 +40,52 @@ func NewPolicy(version string, reviewThreshold, blockThreshold float64) (Policy,
 	}
 
 	return policy, nil
+}
+
+// NewPolicySet validates and indexes the default policy plus optional named policies.
+func NewPolicySet(defaultPolicy Policy, policies ...Policy) (PolicySet, error) {
+	if err := defaultPolicy.Validate(); err != nil {
+		return PolicySet{}, err
+	}
+
+	registered := map[string]Policy{
+		defaultPolicy.Version: defaultPolicy,
+	}
+	for _, policy := range policies {
+		if err := policy.Validate(); err != nil {
+			return PolicySet{}, err
+		}
+		if _, exists := registered[policy.Version]; exists {
+			return PolicySet{}, fmt.Errorf("duplicate policy version %q", policy.Version)
+		}
+		registered[policy.Version] = policy
+	}
+
+	return PolicySet{
+		defaultPolicy: defaultPolicy,
+		policies:      registered,
+	}, nil
+}
+
+// PolicyForVersion returns the default policy for an empty version, or a configured policy version.
+func (ps PolicySet) PolicyForVersion(version string) (Policy, error) {
+	version = strings.TrimSpace(version)
+	if version == "" {
+		return ps.defaultPolicy, nil
+	}
+
+	policy, exists := ps.policies[version]
+	if !exists {
+		return Policy{}, fmt.Errorf("policy_version %q is not configured", version)
+	}
+
+	return policy, nil
+}
+
+// ValidatePolicyVersion verifies that a client policy assignment can resolve at runtime.
+func (ps PolicySet) ValidatePolicyVersion(version string) error {
+	_, err := ps.PolicyForVersion(version)
+	return err
 }
 
 // Decide returns the allow/review/block action for a parsed provider suggestion.

@@ -99,6 +99,45 @@ func TestLoadOverridesComposeEnvironment(t *testing.T) {
 	}
 }
 
+func TestLoadReadsModerationPolicyProfiles(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	configContent := `
+moderation:
+  policy:
+    version: "default-v1"
+    review_threshold: 0.4
+    block_threshold: 0.75
+  policies:
+    - version: "strict-v1"
+      review_threshold: 0.2
+      block_threshold: 0.5
+    - version: "lenient-v1"
+      review_threshold: 0.6
+      block_threshold: 0.9
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0o600); err != nil {
+		t.Fatalf("write test config: %v", err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if len(cfg.Moderation.Policies) != 2 {
+		t.Fatalf("Moderation.Policies = %d, want 2", len(cfg.Moderation.Policies))
+	}
+	if cfg.Moderation.Policies[0].Version != "strict-v1" {
+		t.Fatalf("first policy version = %q, want strict-v1", cfg.Moderation.Policies[0].Version)
+	}
+	if cfg.Moderation.Policies[0].BlockThreshold != 0.5 {
+		t.Fatalf("strict block threshold = %v, want 0.5", cfg.Moderation.Policies[0].BlockThreshold)
+	}
+	if cfg.Moderation.Policies[1].Version != "lenient-v1" {
+		t.Fatalf("second policy version = %q, want lenient-v1", cfg.Moderation.Policies[1].Version)
+	}
+}
+
 func TestLoadRejectsInvalidIntegerEnvironment(t *testing.T) {
 	configPath := writeTestConfig(t)
 	t.Setenv("DB_PORT", "not-a-port")

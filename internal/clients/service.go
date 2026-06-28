@@ -30,14 +30,31 @@ type Repository interface {
 	RotateClientAPIKey(ctx context.Context, clientID uint, apiKeyHash string, apiKeyPrefix string) (models.ClientApplication, error)
 }
 
+// PolicyVersionValidator verifies configured moderation policy assignments.
+type PolicyVersionValidator interface {
+	ValidatePolicyVersion(version string) error
+}
+
 // Service manages external application clients.
 type Service struct {
-	repository Repository
+	repository      Repository
+	policyValidator PolicyVersionValidator
 }
 
 // NewService creates a client management service.
 func NewService(repository Repository) *Service {
 	return &Service{repository: repository}
+}
+
+// NewServiceWithPolicyValidator creates a client service with policy assignment validation.
+func NewServiceWithPolicyValidator(
+	repository Repository,
+	policyValidator PolicyVersionValidator,
+) *Service {
+	return &Service{
+		repository:      repository,
+		policyValidator: policyValidator,
+	}
 }
 
 // CreateInput is the admin request to create an external client.
@@ -94,6 +111,11 @@ func (s *Service) CreateClient(ctx context.Context, input CreateInput) (CreateOu
 	normalized, err := validateCreateInput(input)
 	if err != nil {
 		return CreateOutput{}, err
+	}
+	if s.policyValidator != nil && normalized.PolicyVersion != "" {
+		if err := s.policyValidator.ValidatePolicyVersion(normalized.PolicyVersion); err != nil {
+			return CreateOutput{}, apperrors.ValidationError("invalid policy_version").WithDetails(err.Error())
+		}
 	}
 
 	apiKey, err := auth.GenerateAPIKey()
