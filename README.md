@@ -4,7 +4,7 @@
 ![License](https://img.shields.io/badge/License-MIT-blue.svg)
 ![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?style=flat&logo=docker)
 
-HateSentry 是一个基于 Golang 的企业级实时仇恨言论和多模态内容检测系统，集成大语言模型和深度学习技术，提供高精度、高可用的内容安全解决方案。
+HateSentry 是一个基于 Go 的内容安全检测服务，面向仇恨言论识别场景，集成 AI 模型调用、JWT 认证、异步任务队列、多级缓存、结构化日志和 Prometheus 监控等后端能力。
 
 ## ✨ 特性
 
