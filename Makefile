@@ -1,4 +1,4 @@
-.PHONY: all build run clean test test-integration deps docker-build docker-up docker-down docker-logs verify-compose smoke-moderation install-deps
+.PHONY: all build run clean test test-integration deps docker-build docker-up docker-down docker-logs verify-compose smoke-moderation smoke-mvp-local install-deps
 
 # Variables
 BINARY_NAME=hatesentry
@@ -122,6 +122,11 @@ test-metrics:
 smoke-moderation:
 	@echo "Running external client moderation smoke workflow..."
 	@python3 scripts/smoke_moderation_workflow.py
+
+# Run a self-contained local MVP smoke workflow with a temporary database and OpenAI-compatible stub
+smoke-mvp-local:
+	@echo "Running local text moderation MVP smoke workflow..."
+	@python3 scripts/smoke_mvp_local.py
 
 # Install development tools
 install-deps:

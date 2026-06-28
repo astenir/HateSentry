@@ -676,6 +676,15 @@ make verify-compose
 
 该命令会构建并启动 Compose 服务，然后等待 `GET /api/v1/health` 返回健康状态。健康响应需要确认 API 服务、MySQL、Redis 和 RabbitMQ 都可达。
 
+### 验证本地 MVP 闭环（无需真实 OpenAI Key）
+```bash
+make smoke-mvp-local
+```
+
+该命令会启动 MySQL、Redis 和 RabbitMQ 依赖服务，创建临时 MySQL 数据库，启动一个仅用于本地验证的 OpenAI 兼容 stub，然后在临时端口运行 HateSentry API，并调用下面的外部客户端 smoke workflow。它会覆盖管理员自举、客户端 API Key、文本审核、`external_id` 幂等、结果查询、`review` 复核和复核后的最终结果查询。测试结束后会关闭临时 API 进程并删除临时数据库。
+
+这个 stub 只用于本地端到端验证现有 OpenAI provider 接入路径，不是生产 provider，也不代表真实模型质量。需要验证真实 provider 时，仍应配置真实 OpenAI Key 或 Ollama 后运行 `make smoke-moderation`。
+
 ### 验证外部客户端审核闭环
 ```bash
 # 脚本会先读取仓库根目录 .env，再读取当前 shell 环境变量。

@@ -16,6 +16,9 @@ logs/
 # Go
 *.mod.sum
 
+# Python
+__pycache__/
+
 # IDE
 .idea/
 .vscode/
