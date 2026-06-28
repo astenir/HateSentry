@@ -19,7 +19,8 @@
 {
   "username": "johndoe",
   "email": "john@example.com",
-  "password": "password123"
+  "password": "password123",
+  "admin_bootstrap_token": "one-time-bootstrap-secret"
 }
 ```
 
@@ -27,8 +28,9 @@
 - `username`: 用户名（3-50字符）
 - `email`: 邮箱地址（有效邮箱格式）
 - `password`: 密码（至少8字符）
+- `admin_bootstrap_token`: 仅在空数据库中创建第一个管理员时需要，必须匹配服务端 `auth.admin_bootstrap_token` 或 `ADMIN_BOOTSTRAP_TOKEN`
 
-空数据库中的第一个注册用户会自动获得 `admin` 角色，用于初始化外部客户端、API Key、Webhook、策略分配和人工复核管理。后续注册用户默认获得 `user` 角色。生产部署时应在创建初始管理员后保护注册入口或按实际运维策略限制账号创建。
+空数据库中的第一个注册用户只有在 `admin_bootstrap_token` 校验通过时才会获得 `admin` 角色，用于初始化外部客户端、API Key、Webhook、策略分配和人工复核管理；缺少或错误 token 的空库注册请求会被拒绝。后续注册用户默认获得 `user` 角色，不需要也不会使用该 token。生产部署时应使用高熵临时 token，创建初始管理员后移除或清空服务端 token，并按实际运维策略限制账号创建。
 
 **响应** (201 Created):
 ```json
@@ -921,7 +923,8 @@ curl -X POST http://localhost:8080/api/v1/auth/register \
   -d '{
     "username": "testuser",
     "email": "test@example.com",
-    "password": "password123"
+    "password": "password123",
+    "admin_bootstrap_token": "only-required-for-first-admin"
   }'
 ```
 

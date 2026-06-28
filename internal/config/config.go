@@ -15,6 +15,7 @@ type Config struct {
 	Database   DatabaseConfig   `mapstructure:"database"`
 	Redis      RedisConfig      `mapstructure:"redis"`
 	RabbitMQ   RabbitMQConfig   `mapstructure:"rabbitmq"`
+	Auth       AuthConfig       `mapstructure:"auth"`
 	JWT        JWTConfig        `mapstructure:"jwt"`
 	AI         AIConfig         `mapstructure:"ai"`
 	Detection  DetectionConfig  `mapstructure:"detection"`
@@ -62,6 +63,10 @@ type RabbitMQConfig struct {
 	Queue      string `mapstructure:"queue"`
 	Exchange   string `mapstructure:"exchange"`
 	RoutingKey string `mapstructure:"routing_key"`
+}
+
+type AuthConfig struct {
+	AdminBootstrapToken string `mapstructure:"admin_bootstrap_token"`
 }
 
 type JWTConfig struct {
@@ -185,6 +190,7 @@ func applyEnvironmentOverrides(config *Config) error {
 	overrideString("RABBITMQ_QUEUE", &config.RabbitMQ.Queue)
 	overrideString("RABBITMQ_EXCHANGE", &config.RabbitMQ.Exchange)
 	overrideString("RABBITMQ_ROUTING_KEY", &config.RabbitMQ.RoutingKey)
+	overrideString("ADMIN_BOOTSTRAP_TOKEN", &config.Auth.AdminBootstrapToken)
 	if err := overrideRequiredString("JWT_SECRET", &config.JWT.Secret); err != nil {
 		return err
 	}

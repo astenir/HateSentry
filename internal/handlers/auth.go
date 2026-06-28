@@ -1,10 +1,13 @@
 package handlers
 
 import (
+	"crypto/subtle"
 	"hatesentry/internal/auth"
+	"hatesentry/internal/config"
 	apperrors "hatesentry/internal/errors"
 	"hatesentry/internal/models"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/gin-gonic/gin"
@@ -14,24 +17,36 @@ import (
 
 // AuthHandler handles authentication requests
 type AuthHandler struct {
-	db             *gorm.DB
-	jwtManager     *auth.JWTManager
-	registrationMu sync.Mutex
+	db                  *gorm.DB
+	jwtManager          *auth.JWTManager
+	adminBootstrapToken string
+	registrationMu      sync.Mutex
 }
 
 // NewAuthHandler creates a new auth handler
 func NewAuthHandler(db *gorm.DB, jwtManager *auth.JWTManager) *AuthHandler {
+	return NewAuthHandlerWithConfig(db, jwtManager, config.AuthConfig{})
+}
+
+// NewAuthHandlerWithConfig creates a new auth handler with auth configuration.
+func NewAuthHandlerWithConfig(
+	db *gorm.DB,
+	jwtManager *auth.JWTManager,
+	authConfig config.AuthConfig,
+) *AuthHandler {
 	return &AuthHandler{
-		db:         db,
-		jwtManager: jwtManager,
+		db:                  db,
+		jwtManager:          jwtManager,
+		adminBootstrapToken: authConfig.AdminBootstrapToken,
 	}
 }
 
 // RegisterRequest represents registration request
 type RegisterRequest struct {
-	Username string `json:"username" binding:"required,min=3,max=50"`
-	Email    string `json:"email" binding:"required,email"`
-	Password string `json:"password" binding:"required,min=8"`
+	Username            string `json:"username" binding:"required,min=3,max=50"`
+	Email               string `json:"email" binding:"required,email"`
+	Password            string `json:"password" binding:"required,min=8"`
+	AdminBootstrapToken string `json:"admin_bootstrap_token,omitempty"`
 }
 
 // LoginRequest represents login request
@@ -92,7 +107,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 	h.registrationMu.Lock()
 	defer h.registrationMu.Unlock()
 
-	role, appErr := h.nextRegistrationRole()
+	role, appErr := h.nextRegistrationRole(req)
 	if appErr != nil {
 		apperrors.RespondWithError(c, appErr)
 		return
@@ -255,13 +270,21 @@ func generateAPIKey() string {
 	return "hs_" + uuid.New().String()
 }
 
-func (h *AuthHandler) nextRegistrationRole() (string, *apperrors.AppError) {
+func (h *AuthHandler) nextRegistrationRole(req RegisterRequest) (string, *apperrors.AppError) {
 	var userCount int64
 	if err := h.db.Model(&models.User{}).Count(&userCount).Error; err != nil {
 		return "", apperrors.DatabaseError(err, "Failed to count existing users")
 	}
 
-	return registrationRoleForUserCount(userCount), nil
+	role := registrationRoleForUserCount(userCount)
+	if role != "admin" {
+		return role, nil
+	}
+	if !validAdminBootstrapToken(req.AdminBootstrapToken, h.adminBootstrapToken) {
+		return "", apperrors.Forbidden("Valid admin bootstrap token is required to create the initial admin")
+	}
+
+	return role, nil
 }
 
 func registrationRoleForUserCount(userCount int64) string {
@@ -270,4 +293,12 @@ func registrationRoleForUserCount(userCount int64) string {
 	}
 
 	return "user"
+}
+
+func validAdminBootstrapToken(providedToken, configuredToken string) bool {
+	if strings.TrimSpace(configuredToken) == "" {
+		return false
+	}
+
+	return subtle.ConstantTimeCompare([]byte(providedToken), []byte(configuredToken)) == 1
 }

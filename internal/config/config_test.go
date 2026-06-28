@@ -23,6 +23,7 @@ func TestLoadOverridesComposeEnvironment(t *testing.T) {
 	t.Setenv("RABBITMQ_PORT", "5673")
 	t.Setenv("RABBITMQ_USERNAME", "queue_user")
 	t.Setenv("RABBITMQ_PASSWORD", "queue_password")
+	t.Setenv("ADMIN_BOOTSTRAP_TOKEN", "bootstrap_secret")
 	t.Setenv("JWT_SECRET", "jwt_secret")
 	t.Setenv("OPENAI_API_KEY", "openai_secret")
 	t.Setenv("OLLAMA_BASE_URL", "http://ollama:11434")
@@ -72,6 +73,9 @@ func TestLoadOverridesComposeEnvironment(t *testing.T) {
 	}
 	if cfg.RabbitMQ.Password != "queue_password" {
 		t.Fatalf("RabbitMQ.Password = %q, want queue_password", cfg.RabbitMQ.Password)
+	}
+	if cfg.Auth.AdminBootstrapToken != "bootstrap_secret" {
+		t.Fatalf("Auth.AdminBootstrapToken = %q, want bootstrap_secret", cfg.Auth.AdminBootstrapToken)
 	}
 	if cfg.JWT.Secret != "jwt_secret" {
 		t.Fatalf("JWT.Secret = %q, want jwt_secret", cfg.JWT.Secret)
@@ -321,6 +325,8 @@ rabbitmq:
   queue: "detection_tasks"
   exchange: "hatesentry"
   routing_key: "detection"
+auth:
+  admin_bootstrap_token: ""
 jwt:
   secret: "file_secret"
   expire_hours: 24

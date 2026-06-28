@@ -40,6 +40,12 @@ rabbitmq:
   exchange: "hatesentry"
   routing_key: "detection"
 
+# Auth Configuration
+auth:
+  # Required in the registration request only when creating the first admin user.
+  # Keep empty until intentionally bootstrapping a fresh deployment.
+  admin_bootstrap_token: ""
+
 # JWT Configuration
 jwt:
   secret: "your-secret-key-change-in-production"

@@ -32,6 +32,7 @@ type Router struct {
 	rateLimiter        *cache.RateLimiter
 	jwtManager         *auth.JWTManager
 	db                 *gorm.DB
+	authConfig         config.AuthConfig
 	moderationPolicies moderation.PolicySet
 	clientRateLimit    config.ModerationRateLimitConfig
 }
@@ -97,6 +98,11 @@ func NewRouterWithPolicies(
 	}
 }
 
+// SetAuthConfig configures auth behavior that is not part of JWT validation.
+func (r *Router) SetAuthConfig(authConfig config.AuthConfig) {
+	r.authConfig = authConfig
+}
+
 // Setup sets up all routes
 func (r *Router) Setup() *gin.Engine {
 	// Middleware
@@ -109,7 +115,7 @@ func (r *Router) Setup() *gin.Engine {
 	clientRepository := clients.NewGormRepository(r.db)
 	clientService := clients.NewServiceWithPolicyValidator(clientRepository, r.moderationPolicies)
 	clientHandler := handlers.NewClientHandler(clientService)
-	authHandler := handlers.NewAuthHandler(r.db, r.jwtManager)
+	authHandler := handlers.NewAuthHandlerWithConfig(r.db, r.jwtManager, r.authConfig)
 	detectionHandler := handlers.NewDetectionHandler(
 		r.db,
 		r.detectionService,

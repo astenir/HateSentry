@@ -174,6 +174,7 @@ func (a *App) Run() error {
 		moderationPolicies,
 		cfg.Moderation.ClientRateLimit,
 	)
+	r.SetAuthConfig(cfg.Auth)
 	a.router = r
 
 	// Start consumer in background

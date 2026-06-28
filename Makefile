@@ -85,10 +85,11 @@ migrate-up:
 
 # Create sample user
 create-user:
-	@echo "Creating sample user..."
+	@[ -n "$$ADMIN_BOOTSTRAP_TOKEN" ] || (echo "ADMIN_BOOTSTRAP_TOKEN is required for initial admin bootstrap" && exit 1)
+	@echo "Creating initial admin user..."
 	@curl -X POST http://localhost:8080/api/v1/auth/register \
 		-H "Content-Type: application/json" \
-		-d '{"username":"admin","email":"admin@example.com","password":"password123"}'
+		-d "{\"username\":\"admin\",\"email\":\"admin@example.com\",\"password\":\"password123\",\"admin_bootstrap_token\":\"$$ADMIN_BOOTSTRAP_TOKEN\"}"
 
 # Health check
 health:
