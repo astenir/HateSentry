@@ -9,6 +9,16 @@ const (
 	DecisionBlock  Decision = "block"
 )
 
+// ReviewStatus is the operator workflow state for a review case.
+type ReviewStatus string
+
+const (
+	ReviewStatusPending  ReviewStatus = "pending"
+	ReviewStatusApproved ReviewStatus = "approved"
+	ReviewStatusRejected ReviewStatus = "rejected"
+	ReviewStatusMistake  ReviewStatus = "mistake"
+)
+
 var supportedLabels = map[string]bool{
 	"hate":            true,
 	"harassment":      true,

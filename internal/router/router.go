@@ -110,6 +110,16 @@ func (r *Router) Setup() *gin.Engine {
 			moderation.POST("/check", moderationHandler.Check)
 			moderation.GET("/results/:request_id", moderationHandler.GetResult)
 		}
+
+		// Reviews
+		reviews := protected.Group("/reviews")
+		reviews.Use(r.jwtManager.RequireRole("admin"))
+		{
+			reviews.GET("", moderationHandler.ListReviewCases)
+			reviews.POST("/:id/approve", moderationHandler.ApproveReviewCase)
+			reviews.POST("/:id/reject", moderationHandler.RejectReviewCase)
+			reviews.POST("/:id/mark-mistake", moderationHandler.MarkReviewMistake)
+		}
 	}
 
 	// Admin routes

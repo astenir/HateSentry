@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,6 +20,7 @@ const (
 	maxRequestIDLength = 64
 	maxSourceLength    = 50
 	maxMetadataLength  = 128
+	maxReviewNotesLen  = 2000
 )
 
 // Analyzer classifies text and returns a normalized provider suggestion.
@@ -28,12 +30,34 @@ type Analyzer interface {
 
 // Repository persists moderation audit records.
 type Repository interface {
-	SaveCheck(ctx context.Context, request *models.ModerationRequest, result *models.ModerationResult) error
+	SaveCheck(
+		ctx context.Context,
+		request *models.ModerationRequest,
+		result *models.ModerationResult,
+		reviewCase *models.ReviewCase,
+	) error
 	GetResult(ctx context.Context, userID uint, requestID string) (StoredResult, error)
+	ListReviewCases(ctx context.Context, status ReviewStatus) ([]StoredReviewCase, error)
+	FinalizeReviewCase(
+		ctx context.Context,
+		caseID uint,
+		reviewerID uint,
+		status ReviewStatus,
+		finalDecision Decision,
+		notes string,
+		reviewedAt time.Time,
+	) (StoredReviewCase, error)
 }
 
 // StoredResult is the repository representation of a persisted moderation check.
 type StoredResult struct {
+	Request models.ModerationRequest
+	Result  models.ModerationResult
+}
+
+// StoredReviewCase is the repository representation of a persisted review case.
+type StoredReviewCase struct {
+	Case    models.ReviewCase
 	Request models.ModerationRequest
 	Result  models.ModerationResult
 }
@@ -91,6 +115,28 @@ type ResultOutput struct {
 	CreatedAt     time.Time `json:"created_at"`
 }
 
+// ReviewCaseOutput is the public representation of a review queue item.
+type ReviewCaseOutput struct {
+	ID             uint         `json:"id"`
+	RequestID      string       `json:"request_id"`
+	UserID         uint         `json:"user_id"`
+	Content        string       `json:"content"`
+	Source         string       `json:"source"`
+	ExternalID     string       `json:"external_id,omitempty"`
+	ActorID        string       `json:"actor_id,omitempty"`
+	Status         ReviewStatus `json:"status"`
+	PolicyDecision Decision     `json:"policy_decision"`
+	FinalDecision  Decision     `json:"final_decision,omitempty"`
+	RiskScore      float64      `json:"risk_score"`
+	Labels         []string     `json:"labels"`
+	Reason         string       `json:"reason"`
+	PolicyVersion  string       `json:"policy_version"`
+	ReviewerID     *uint        `json:"reviewer_id,omitempty"`
+	ReviewNotes    string       `json:"review_notes,omitempty"`
+	ReviewedAt     *time.Time   `json:"reviewed_at,omitempty"`
+	CreatedAt      time.Time    `json:"created_at"`
+}
+
 // Check performs a synchronous text moderation workflow and stores audit records.
 func (s *Service) Check(ctx context.Context, input CheckInput) (CheckOutput, error) {
 	normalized, err := validateCheckInput(input)
@@ -141,8 +187,16 @@ func (s *Service) Check(ctx context.Context, input CheckInput) (CheckOutput, err
 		Reason:        decision.Reason,
 		PolicyVersion: decision.PolicyVersion,
 	}
+	var reviewCase *models.ReviewCase
+	if decision.Decision == DecisionReview {
+		reviewCase = &models.ReviewCase{
+			RequestID: requestID,
+			UserID:    normalized.UserID,
+			Status:    string(ReviewStatusPending),
+		}
+	}
 
-	if err := s.repository.SaveCheck(ctx, request, result); err != nil {
+	if err := s.repository.SaveCheck(ctx, request, result, reviewCase); err != nil {
 		return CheckOutput{}, err
 	}
 
@@ -202,6 +256,135 @@ func (s *Service) GetResult(ctx context.Context, userID uint, requestID string) 
 	}, nil
 }
 
+// ListReviewCases returns moderation review cases for an authenticated operator.
+func (s *Service) ListReviewCases(ctx context.Context, reviewerID uint, status string) ([]ReviewCaseOutput, error) {
+	if reviewerID == 0 {
+		return nil, apperrors.Unauthorized("User not authenticated")
+	}
+	if s.repository == nil {
+		return nil, apperrors.ConfigurationError("moderation repository is not configured")
+	}
+
+	reviewStatus, err := normalizeReviewStatus(status)
+	if err != nil {
+		return nil, err
+	}
+
+	storedCases, err := s.repository.ListReviewCases(ctx, reviewStatus)
+	if err != nil {
+		return nil, err
+	}
+
+	output := make([]ReviewCaseOutput, 0, len(storedCases))
+	for _, stored := range storedCases {
+		item, err := mapReviewCaseOutput(stored)
+		if err != nil {
+			return nil, err
+		}
+		output = append(output, item)
+	}
+
+	return output, nil
+}
+
+// ApproveReviewCase finalizes a pending case as allowed by human review.
+func (s *Service) ApproveReviewCase(
+	ctx context.Context,
+	caseID string,
+	reviewerID uint,
+	notes string,
+) (ReviewCaseOutput, error) {
+	return s.finalizeReviewCase(
+		ctx,
+		caseID,
+		reviewerID,
+		ReviewStatusApproved,
+		DecisionAllow,
+		notes,
+	)
+}
+
+// RejectReviewCase finalizes a pending case as blocked by human review.
+func (s *Service) RejectReviewCase(
+	ctx context.Context,
+	caseID string,
+	reviewerID uint,
+	notes string,
+) (ReviewCaseOutput, error) {
+	return s.finalizeReviewCase(
+		ctx,
+		caseID,
+		reviewerID,
+		ReviewStatusRejected,
+		DecisionBlock,
+		notes,
+	)
+}
+
+// MarkReviewMistake finalizes a pending case and records that policy/provider handling was mistaken.
+func (s *Service) MarkReviewMistake(
+	ctx context.Context,
+	caseID string,
+	reviewerID uint,
+	finalDecision Decision,
+	notes string,
+) (ReviewCaseOutput, error) {
+	if finalDecision != DecisionAllow && finalDecision != DecisionBlock {
+		return ReviewCaseOutput{}, apperrors.ValidationError("final_decision must be allow or block")
+	}
+
+	return s.finalizeReviewCase(
+		ctx,
+		caseID,
+		reviewerID,
+		ReviewStatusMistake,
+		finalDecision,
+		notes,
+	)
+}
+
+func (s *Service) finalizeReviewCase(
+	ctx context.Context,
+	caseID string,
+	reviewerID uint,
+	status ReviewStatus,
+	finalDecision Decision,
+	notes string,
+) (ReviewCaseOutput, error) {
+	if reviewerID == 0 {
+		return ReviewCaseOutput{}, apperrors.Unauthorized("User not authenticated")
+	}
+	if s.repository == nil {
+		return ReviewCaseOutput{}, apperrors.ConfigurationError("moderation repository is not configured")
+	}
+
+	parsedCaseID, err := parseReviewCaseID(caseID)
+	if err != nil {
+		return ReviewCaseOutput{}, err
+	}
+	notes = strings.TrimSpace(notes)
+	if len(notes) > maxReviewNotesLen {
+		return ReviewCaseOutput{}, apperrors.ValidationError(
+			fmt.Sprintf("review notes must not exceed %d characters", maxReviewNotesLen),
+		)
+	}
+
+	stored, err := s.repository.FinalizeReviewCase(
+		ctx,
+		parsedCaseID,
+		reviewerID,
+		status,
+		finalDecision,
+		notes,
+		time.Now().UTC(),
+	)
+	if err != nil {
+		return ReviewCaseOutput{}, err
+	}
+
+	return mapReviewCaseOutput(stored)
+}
+
 func validateCheckInput(input CheckInput) (CheckInput, error) {
 	input.Content = strings.TrimSpace(input.Content)
 	input.Source = strings.TrimSpace(input.Source)
@@ -239,6 +422,71 @@ func validateCheckInput(input CheckInput) (CheckInput, error) {
 	}
 
 	return input, nil
+}
+
+func normalizeReviewStatus(status string) (ReviewStatus, error) {
+	status = strings.TrimSpace(status)
+	if status == "" {
+		return ReviewStatusPending, nil
+	}
+
+	reviewStatus := ReviewStatus(status)
+	if !isSupportedReviewStatus(reviewStatus) {
+		return "", apperrors.ValidationError("status must be pending, approved, rejected, or mistake")
+	}
+
+	return reviewStatus, nil
+}
+
+func isSupportedReviewStatus(status ReviewStatus) bool {
+	switch status {
+	case ReviewStatusPending, ReviewStatusApproved, ReviewStatusRejected, ReviewStatusMistake:
+		return true
+	default:
+		return false
+	}
+}
+
+func parseReviewCaseID(caseID string) (uint, error) {
+	caseID = strings.TrimSpace(caseID)
+	if caseID == "" {
+		return 0, apperrors.ValidationError("review case id is required")
+	}
+
+	parsed, err := strconv.ParseUint(caseID, 10, 0)
+	if err != nil || parsed == 0 {
+		return 0, apperrors.ValidationError("review case id must be a positive integer")
+	}
+
+	return uint(parsed), nil
+}
+
+func mapReviewCaseOutput(stored StoredReviewCase) (ReviewCaseOutput, error) {
+	labels, err := decodeLabels(stored.Result.Labels)
+	if err != nil {
+		return ReviewCaseOutput{}, err
+	}
+
+	return ReviewCaseOutput{
+		ID:             stored.Case.ID,
+		RequestID:      stored.Case.RequestID,
+		UserID:         stored.Case.UserID,
+		Content:        stored.Request.Content,
+		Source:         stored.Request.Source,
+		ExternalID:     stored.Request.ExternalID,
+		ActorID:        stored.Request.ActorID,
+		Status:         ReviewStatus(stored.Case.Status),
+		PolicyDecision: Decision(stored.Result.Decision),
+		FinalDecision:  Decision(stored.Case.FinalDecision),
+		RiskScore:      stored.Result.RiskScore,
+		Labels:         labels,
+		Reason:         stored.Result.Reason,
+		PolicyVersion:  stored.Result.PolicyVersion,
+		ReviewerID:     stored.Case.ReviewerID,
+		ReviewNotes:    stored.Case.ReviewNotes,
+		ReviewedAt:     stored.Case.ReviewedAt,
+		CreatedAt:      stored.Case.CreatedAt,
+	}, nil
 }
 
 func decodeLabels(labelsJSON string) ([]string, error) {

@@ -214,6 +214,132 @@ Authorization: Bearer <token>
 }
 ```
 
+## 人工复核
+
+当文本审核的服务端策略决策为 `review` 时，系统会自动创建一条复核记录。复核记录保存人工最终决策，不会覆盖原始 AI 建议或服务端策略决策。
+
+当前复核接口使用 JWT 认证，并要求当前登录用户具备 `admin` 角色。复核记录保留原提交用户 ID，人工处理人会记录为 `reviewer_id`。
+
+### 1. 查询复核队列
+
+**端点**: `GET /reviews?status=pending`
+
+**请求头**:
+```
+Authorization: Bearer <admin-token>
+```
+
+**查询参数**:
+- `status`: 可选，支持 `pending`、`approved`、`rejected`、`mistake`。为空时默认查询 `pending`。
+
+**响应** (200 OK):
+```json
+{
+  "items": [
+    {
+      "id": 3,
+      "request_id": "550e8400-e29b-41d4-a716-446655440000",
+      "user_id": 7,
+      "content": "user submitted text",
+      "source": "comment",
+      "external_id": "comment_123",
+      "actor_id": "user_456",
+      "status": "pending",
+      "policy_decision": "review",
+      "risk_score": 0.6,
+      "labels": ["harassment"],
+      "reason": "Brief explanation suitable for operators",
+      "policy_version": "default-v1",
+      "created_at": "2026-06-28T11:00:00Z"
+    }
+  ]
+}
+```
+
+### 2. 通过复核
+
+将待复核内容标记为可发布，人工最终决策为 `allow`。
+
+**端点**: `POST /reviews/:id/approve`
+
+**请求头**:
+```
+Authorization: Bearer <admin-token>
+Content-Type: application/json
+```
+
+**请求体**:
+```json
+{
+  "notes": "内容可发布"
+}
+```
+
+**响应** (200 OK):
+```json
+{
+  "id": 3,
+  "request_id": "550e8400-e29b-41d4-a716-446655440000",
+  "user_id": 7,
+  "content": "user submitted text",
+  "source": "comment",
+  "status": "approved",
+  "policy_decision": "review",
+  "final_decision": "allow",
+  "risk_score": 0.6,
+  "labels": ["harassment"],
+  "reason": "Brief explanation suitable for operators",
+  "policy_version": "default-v1",
+  "reviewer_id": 42,
+  "review_notes": "内容可发布",
+  "reviewed_at": "2026-06-28T11:05:00Z",
+  "created_at": "2026-06-28T11:00:00Z"
+}
+```
+
+### 3. 拒绝复核
+
+将待复核内容标记为应拦截，人工最终决策为 `block`。
+
+**端点**: `POST /reviews/:id/reject`
+
+**请求头**:
+```
+Authorization: Bearer <admin-token>
+Content-Type: application/json
+```
+
+**请求体**:
+```json
+{
+  "notes": "内容需要拦截"
+}
+```
+
+响应字段与通过复核一致，其中 `status` 为 `rejected`，`final_decision` 为 `block`。
+
+### 4. 标记误判
+
+将待复核内容标记为策略或 provider 处理误判，同时记录人工最终决策。`final_decision` 必须是 `allow` 或 `block`。
+
+**端点**: `POST /reviews/:id/mark-mistake`
+
+**请求头**:
+```
+Authorization: Bearer <admin-token>
+Content-Type: application/json
+```
+
+**请求体**:
+```json
+{
+  "final_decision": "allow",
+  "notes": "策略过于保守"
+}
+```
+
+响应字段与通过复核一致，其中 `status` 为 `mistake`。
+
 ## 检测
 
 ### 1. 检测仇恨言论

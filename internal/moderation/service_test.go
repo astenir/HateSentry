@@ -59,6 +59,9 @@ func TestServiceCheckPersistsDecision(t *testing.T) {
 	if repository.result == nil {
 		t.Fatal("result was not persisted")
 	}
+	if repository.reviewCase != nil {
+		t.Fatal("review case was created for a block decision")
+	}
 	if repository.request.RequestID != output.RequestID {
 		t.Fatalf("persisted request id = %q, want %q", repository.request.RequestID, output.RequestID)
 	}
@@ -84,6 +87,47 @@ func TestServiceCheckPersistsDecision(t *testing.T) {
 	}
 	if !equalStrings(persistedLabels, output.Labels) {
 		t.Fatalf("persisted labels = %#v, want %#v", persistedLabels, output.Labels)
+	}
+}
+
+func TestServiceCheckCreatesReviewCaseForReviewDecision(t *testing.T) {
+	repository := &fakeRepository{}
+	service := NewService(
+		fakeAnalyzer{
+			suggestion: ProviderSuggestion{
+				RiskScore: 0.6,
+				Labels:    []string{"harassment"},
+				Reason:    "Needs operator review.",
+				RawOutput: `{"risk_score":0.6,"labels":["harassment"],"reason":"Needs operator review."}`,
+			},
+			provider: ProviderInfo{Provider: "test-provider", Model: "test-model"},
+		},
+		repository,
+		DefaultPolicy(),
+	)
+
+	output, err := service.Check(context.Background(), CheckInput{
+		UserID:  7,
+		Content: "review this text",
+	})
+	if err != nil {
+		t.Fatalf("Check() error = %v", err)
+	}
+
+	if output.Decision != DecisionReview {
+		t.Fatalf("Decision = %q, want review", output.Decision)
+	}
+	if repository.reviewCase == nil {
+		t.Fatal("review case was not created")
+	}
+	if repository.reviewCase.RequestID != output.RequestID {
+		t.Fatalf("review case request id = %q, want %q", repository.reviewCase.RequestID, output.RequestID)
+	}
+	if repository.reviewCase.UserID != 7 {
+		t.Fatalf("review case user id = %d, want 7", repository.reviewCase.UserID)
+	}
+	if repository.reviewCase.Status != string(ReviewStatusPending) {
+		t.Fatalf("review case status = %q, want pending", repository.reviewCase.Status)
 	}
 }
 
@@ -297,6 +341,139 @@ func TestServiceGetResultRejectsInvalidInput(t *testing.T) {
 	}
 }
 
+func TestServiceListReviewCasesDefaultsToPending(t *testing.T) {
+	createdAt := time.Date(2026, 6, 28, 11, 0, 0, 0, time.UTC)
+	service := NewService(fakeAnalyzer{}, &fakeRepository{
+		reviewCases: []StoredReviewCase{
+			{
+				Case: models.ReviewCase{
+					ID:        3,
+					RequestID: "request-123",
+					UserID:    7,
+					Status:    string(ReviewStatusPending),
+					CreatedAt: createdAt,
+				},
+				Request: models.ModerationRequest{
+					RequestID: "request-123",
+					UserID:    7,
+					Content:   "stored content",
+					Source:    "comment",
+				},
+				Result: models.ModerationResult{
+					RequestID:     "request-123",
+					UserID:        7,
+					RiskScore:     0.6,
+					Labels:        `["harassment"]`,
+					Decision:      string(DecisionReview),
+					Reason:        "Needs operator review.",
+					PolicyVersion: "default-v1",
+				},
+			},
+		},
+	}, DefaultPolicy())
+
+	output, err := service.ListReviewCases(context.Background(), 7, "")
+	if err != nil {
+		t.Fatalf("ListReviewCases() error = %v", err)
+	}
+
+	if len(output) != 1 {
+		t.Fatalf("len(output) = %d, want 1", len(output))
+	}
+	if output[0].ID != 3 {
+		t.Fatalf("ID = %d, want 3", output[0].ID)
+	}
+	if output[0].Status != ReviewStatusPending {
+		t.Fatalf("Status = %q, want pending", output[0].Status)
+	}
+	if output[0].PolicyDecision != DecisionReview {
+		t.Fatalf("PolicyDecision = %q, want review", output[0].PolicyDecision)
+	}
+	if !equalStrings(output[0].Labels, []string{"harassment"}) {
+		t.Fatalf("Labels = %#v, want harassment", output[0].Labels)
+	}
+
+	repository := service.repository.(*fakeRepository)
+	if repository.reviewStatus != ReviewStatusPending {
+		t.Fatalf("repository status = %q, want pending", repository.reviewStatus)
+	}
+}
+
+func TestServiceReviewActionsFinalizePendingCase(t *testing.T) {
+	createdAt := time.Date(2026, 6, 28, 11, 0, 0, 0, time.UTC)
+	repository := &fakeRepository{
+		finalized: StoredReviewCase{
+			Case: models.ReviewCase{
+				ID:            3,
+				RequestID:     "request-123",
+				UserID:        7,
+				Status:        string(ReviewStatusApproved),
+				FinalDecision: string(DecisionAllow),
+				ReviewNotes:   "looks safe",
+				CreatedAt:     createdAt,
+			},
+			Request: models.ModerationRequest{
+				RequestID: "request-123",
+				UserID:    7,
+				Content:   "stored content",
+				Source:    "comment",
+			},
+			Result: models.ModerationResult{
+				RequestID:     "request-123",
+				UserID:        7,
+				RiskScore:     0.6,
+				Labels:        `["harassment"]`,
+				Decision:      string(DecisionReview),
+				Reason:        "Needs operator review.",
+				PolicyVersion: "default-v1",
+			},
+		},
+	}
+	service := NewService(fakeAnalyzer{}, repository, DefaultPolicy())
+
+	output, err := service.ApproveReviewCase(context.Background(), " 3 ", 9, " looks safe ")
+	if err != nil {
+		t.Fatalf("ApproveReviewCase() error = %v", err)
+	}
+
+	if output.Status != ReviewStatusApproved {
+		t.Fatalf("Status = %q, want approved", output.Status)
+	}
+	if output.FinalDecision != DecisionAllow {
+		t.Fatalf("FinalDecision = %q, want allow", output.FinalDecision)
+	}
+	if repository.caseID != 3 {
+		t.Fatalf("caseID = %d, want 3", repository.caseID)
+	}
+	if repository.reviewerID != 9 {
+		t.Fatalf("reviewerID = %d, want 9", repository.reviewerID)
+	}
+	if repository.finalStatus != ReviewStatusApproved {
+		t.Fatalf("final status = %q, want approved", repository.finalStatus)
+	}
+	if repository.finalDecision != DecisionAllow {
+		t.Fatalf("final decision = %q, want allow", repository.finalDecision)
+	}
+	if repository.notes != "looks safe" {
+		t.Fatalf("notes = %q, want trimmed notes", repository.notes)
+	}
+	if repository.reviewedAt.IsZero() {
+		t.Fatal("reviewedAt was not set")
+	}
+}
+
+func TestServiceMarkReviewMistakeRequiresFinalDecision(t *testing.T) {
+	service := NewService(fakeAnalyzer{}, &fakeRepository{}, DefaultPolicy())
+
+	_, err := service.MarkReviewMistake(context.Background(), "3", 7, DecisionReview, "")
+	if err == nil {
+		t.Fatal("MarkReviewMistake() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "final_decision must be allow or block") {
+		t.Fatalf("MarkReviewMistake() error = %q, want final_decision validation", err.Error())
+	}
+}
+
 type fakeAnalyzer struct {
 	suggestion ProviderSuggestion
 	provider   ProviderInfo
@@ -311,18 +488,29 @@ func (a fakeAnalyzer) AnalyzeText(ctx context.Context, content string) (Provider
 }
 
 type fakeRepository struct {
-	request   *models.ModerationRequest
-	result    *models.ModerationResult
-	stored    StoredResult
-	userID    uint
-	requestID string
-	err       error
+	request       *models.ModerationRequest
+	result        *models.ModerationResult
+	reviewCase    *models.ReviewCase
+	stored        StoredResult
+	reviewCases   []StoredReviewCase
+	finalized     StoredReviewCase
+	userID        uint
+	requestID     string
+	reviewStatus  ReviewStatus
+	caseID        uint
+	reviewerID    uint
+	finalStatus   ReviewStatus
+	finalDecision Decision
+	notes         string
+	reviewedAt    time.Time
+	err           error
 }
 
 func (r *fakeRepository) SaveCheck(
 	ctx context.Context,
 	request *models.ModerationRequest,
 	result *models.ModerationResult,
+	reviewCase *models.ReviewCase,
 ) error {
 	if r.err != nil {
 		return r.err
@@ -332,6 +520,10 @@ func (r *fakeRepository) SaveCheck(
 	copiedResult := *result
 	r.request = &copiedRequest
 	r.result = &copiedResult
+	if reviewCase != nil {
+		copiedReviewCase := *reviewCase
+		r.reviewCase = &copiedReviewCase
+	}
 	return nil
 }
 
@@ -342,4 +534,36 @@ func (r *fakeRepository) GetResult(ctx context.Context, userID uint, requestID s
 	r.userID = userID
 	r.requestID = requestID
 	return r.stored, nil
+}
+
+func (r *fakeRepository) ListReviewCases(
+	ctx context.Context,
+	status ReviewStatus,
+) ([]StoredReviewCase, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	r.reviewStatus = status
+	return r.reviewCases, nil
+}
+
+func (r *fakeRepository) FinalizeReviewCase(
+	ctx context.Context,
+	caseID uint,
+	reviewerID uint,
+	status ReviewStatus,
+	finalDecision Decision,
+	notes string,
+	reviewedAt time.Time,
+) (StoredReviewCase, error) {
+	if r.err != nil {
+		return StoredReviewCase{}, r.err
+	}
+	r.caseID = caseID
+	r.reviewerID = reviewerID
+	r.finalStatus = status
+	r.finalDecision = finalDecision
+	r.notes = notes
+	r.reviewedAt = reviewedAt
+	return r.finalized, nil
 }

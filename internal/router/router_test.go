@@ -46,6 +46,10 @@ func TestSetupRegistersCoreRoutes(t *testing.T) {
 		"GET /api/v1/detection/history",
 		"POST /api/v1/moderation/check",
 		"GET /api/v1/moderation/results/:request_id",
+		"GET /api/v1/reviews",
+		"POST /api/v1/reviews/:id/approve",
+		"POST /api/v1/reviews/:id/reject",
+		"POST /api/v1/reviews/:id/mark-mistake",
 		"GET /metrics",
 	}
 
@@ -90,6 +94,73 @@ func TestSetupProtectsModerationResultRoute(t *testing.T) {
 
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", recorder.Code)
+	}
+}
+
+func TestSetupProtectsReviewRoutes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	jwtManager := auth.NewJWTManager(&config.JWTConfig{
+		Secret:      "test-secret",
+		ExpireHours: 1,
+		Issuer:      "hatesentry-test",
+	})
+
+	router := NewRouter(
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		jwtManager,
+		moderation.DefaultPolicy(),
+	)
+
+	engine := router.Setup()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/reviews", nil)
+	recorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", recorder.Code)
+	}
+}
+
+func TestSetupRequiresAdminForReviewRoutes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	jwtManager := auth.NewJWTManager(&config.JWTConfig{
+		Secret:      "test-secret",
+		ExpireHours: 1,
+		Issuer:      "hatesentry-test",
+	})
+	token, err := jwtManager.GenerateToken(7, "submitter", "user")
+	if err != nil {
+		t.Fatalf("GenerateToken() error = %v", err)
+	}
+
+	router := NewRouter(
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		jwtManager,
+		moderation.DefaultPolicy(),
+	)
+
+	engine := router.Setup()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/reviews", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	recorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", recorder.Code)
 	}
 }
 

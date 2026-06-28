@@ -32,7 +32,7 @@ func TestModerationHandlerCheck(t *testing.T) {
 		c.Set(auth.UserContextKey, &auth.Claims{
 			UserID:   42,
 			Username: "reviewer",
-			Role:     "user",
+			Role:     "admin",
 		})
 		handler.Check(c)
 	})
@@ -139,7 +139,7 @@ func TestModerationHandlerGetResult(t *testing.T) {
 		c.Set(auth.UserContextKey, &auth.Claims{
 			UserID:   42,
 			Username: "reviewer",
-			Role:     "user",
+			Role:     "admin",
 		})
 		handler.GetResult(c)
 	})
@@ -199,6 +199,166 @@ func TestModerationHandlerGetResultRequiresUser(t *testing.T) {
 	}
 }
 
+func TestModerationHandlerListReviewCases(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	repository := &moderationHandlerRepository{
+		reviewCases: []moderation.StoredReviewCase{
+			{
+				Case: models.ReviewCase{
+					ID:        3,
+					RequestID: "request-123",
+					UserID:    42,
+					Status:    string(moderation.ReviewStatusPending),
+					CreatedAt: time.Date(2026, 6, 28, 11, 0, 0, 0, time.UTC),
+				},
+				Request: models.ModerationRequest{
+					RequestID: "request-123",
+					UserID:    42,
+					Content:   "stored content",
+					Source:    "comment",
+				},
+				Result: models.ModerationResult{
+					RequestID:     "request-123",
+					UserID:        42,
+					RiskScore:     0.6,
+					Labels:        `["harassment"]`,
+					Decision:      string(moderation.DecisionReview),
+					Reason:        "Needs operator review.",
+					PolicyVersion: "default-v1",
+				},
+			},
+		},
+	}
+	handler := NewModerationHandler(moderation.NewService(
+		moderationHandlerAnalyzer{},
+		repository,
+		moderation.DefaultPolicy(),
+	))
+
+	engine := gin.New()
+	engine.GET("/api/v1/reviews", func(c *gin.Context) {
+		c.Set(auth.UserContextKey, &auth.Claims{
+			UserID:   42,
+			Username: "reviewer",
+			Role:     "admin",
+		})
+		handler.ListReviewCases(c)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/reviews?status=pending", nil)
+	recorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "raw_output") {
+		t.Fatalf("response leaked raw output: %s", recorder.Body.String())
+	}
+
+	var response struct {
+		Items []moderation.ReviewCaseOutput `json:"items"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(response.Items) != 1 {
+		t.Fatalf("len(items) = %d, want 1", len(response.Items))
+	}
+	if response.Items[0].ID != 3 {
+		t.Fatalf("ID = %d, want 3", response.Items[0].ID)
+	}
+	if response.Items[0].Status != moderation.ReviewStatusPending {
+		t.Fatalf("Status = %q, want pending", response.Items[0].Status)
+	}
+	if repository.reviewStatus != moderation.ReviewStatusPending {
+		t.Fatalf("repository status = %q, want pending", repository.reviewStatus)
+	}
+}
+
+func TestModerationHandlerApproveReviewCase(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	reviewerID := uint(42)
+	repository := &moderationHandlerRepository{
+		finalized: moderation.StoredReviewCase{
+			Case: models.ReviewCase{
+				ID:            3,
+				RequestID:     "request-123",
+				UserID:        42,
+				Status:        string(moderation.ReviewStatusApproved),
+				ReviewerID:    &reviewerID,
+				FinalDecision: string(moderation.DecisionAllow),
+				ReviewNotes:   "looks safe",
+				CreatedAt:     time.Date(2026, 6, 28, 11, 0, 0, 0, time.UTC),
+			},
+			Request: models.ModerationRequest{
+				RequestID: "request-123",
+				UserID:    42,
+				Content:   "stored content",
+				Source:    "comment",
+			},
+			Result: models.ModerationResult{
+				RequestID:     "request-123",
+				UserID:        42,
+				RiskScore:     0.6,
+				Labels:        `["harassment"]`,
+				Decision:      string(moderation.DecisionReview),
+				Reason:        "Needs operator review.",
+				PolicyVersion: "default-v1",
+			},
+		},
+	}
+	handler := NewModerationHandler(moderation.NewService(
+		moderationHandlerAnalyzer{},
+		repository,
+		moderation.DefaultPolicy(),
+	))
+
+	engine := gin.New()
+	engine.POST("/api/v1/reviews/:id/approve", func(c *gin.Context) {
+		c.Set(auth.UserContextKey, &auth.Claims{
+			UserID:   42,
+			Username: "reviewer",
+			Role:     "admin",
+		})
+		handler.ApproveReviewCase(c)
+	})
+
+	body := `{"notes":" looks safe "}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/reviews/3/approve", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	var response moderation.ReviewCaseOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Status != moderation.ReviewStatusApproved {
+		t.Fatalf("Status = %q, want approved", response.Status)
+	}
+	if response.FinalDecision != moderation.DecisionAllow {
+		t.Fatalf("FinalDecision = %q, want allow", response.FinalDecision)
+	}
+	if repository.caseID != 3 {
+		t.Fatalf("caseID = %d, want 3", repository.caseID)
+	}
+	if repository.reviewerID != 42 {
+		t.Fatalf("reviewerID = %d, want 42", repository.reviewerID)
+	}
+	if repository.notes != "looks safe" {
+		t.Fatalf("notes = %q, want trimmed notes", repository.notes)
+	}
+}
+
 type moderationHandlerAnalyzer struct{}
 
 func (a moderationHandlerAnalyzer) AnalyzeText(
@@ -219,22 +379,37 @@ func (a moderationHandlerAnalyzer) AnalyzeText(
 }
 
 type moderationHandlerRepository struct {
-	request   *models.ModerationRequest
-	result    *models.ModerationResult
-	stored    moderation.StoredResult
-	userID    uint
-	requestID string
+	request       *models.ModerationRequest
+	result        *models.ModerationResult
+	reviewCase    *models.ReviewCase
+	stored        moderation.StoredResult
+	reviewCases   []moderation.StoredReviewCase
+	finalized     moderation.StoredReviewCase
+	userID        uint
+	requestID     string
+	reviewStatus  moderation.ReviewStatus
+	caseID        uint
+	reviewerID    uint
+	finalStatus   moderation.ReviewStatus
+	finalDecision moderation.Decision
+	notes         string
+	reviewedAt    time.Time
 }
 
 func (r *moderationHandlerRepository) SaveCheck(
 	ctx context.Context,
 	request *models.ModerationRequest,
 	result *models.ModerationResult,
+	reviewCase *models.ReviewCase,
 ) error {
 	copiedRequest := *request
 	copiedResult := *result
 	r.request = &copiedRequest
 	r.result = &copiedResult
+	if reviewCase != nil {
+		copiedReviewCase := *reviewCase
+		r.reviewCase = &copiedReviewCase
+	}
 	return nil
 }
 
@@ -246,4 +421,30 @@ func (r *moderationHandlerRepository) GetResult(
 	r.userID = userID
 	r.requestID = requestID
 	return r.stored, nil
+}
+
+func (r *moderationHandlerRepository) ListReviewCases(
+	ctx context.Context,
+	status moderation.ReviewStatus,
+) ([]moderation.StoredReviewCase, error) {
+	r.reviewStatus = status
+	return r.reviewCases, nil
+}
+
+func (r *moderationHandlerRepository) FinalizeReviewCase(
+	ctx context.Context,
+	caseID uint,
+	reviewerID uint,
+	status moderation.ReviewStatus,
+	finalDecision moderation.Decision,
+	notes string,
+	reviewedAt time.Time,
+) (moderation.StoredReviewCase, error) {
+	r.caseID = caseID
+	r.reviewerID = reviewerID
+	r.finalStatus = status
+	r.finalDecision = finalDecision
+	r.notes = notes
+	r.reviewedAt = reviewedAt
+	return r.finalized, nil
 }

@@ -84,6 +84,7 @@ func AutoMigrate() error {
 		&models.DetectionResult{},
 		&models.ModerationRequest{},
 		&models.ModerationResult{},
+		&models.ReviewCase{},
 		&models.DetectionStats{},
 		&models.AuditLog{},
 	)

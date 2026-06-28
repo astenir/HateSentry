@@ -87,6 +87,21 @@ type ModerationResult struct {
 	PolicyVersion string         `gorm:"size:50;not null;index" json:"policy_version"`
 }
 
+// ReviewCase tracks human review for moderation results that need operator judgment.
+type ReviewCase struct {
+	ID            uint           `gorm:"primarykey" json:"id"`
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
+	DeletedAt     gorm.DeletedAt `gorm:"index" json:"-"`
+	RequestID     string         `gorm:"uniqueIndex;size:64;not null" json:"request_id"`
+	UserID        uint           `gorm:"not null;index" json:"user_id"`
+	Status        string         `gorm:"size:20;not null;index;default:'pending'" json:"status"`
+	ReviewerID    *uint          `gorm:"index" json:"reviewer_id,omitempty"`
+	FinalDecision string         `gorm:"size:20;index" json:"final_decision,omitempty"`
+	ReviewNotes   string         `gorm:"type:text" json:"review_notes,omitempty"`
+	ReviewedAt    *time.Time     `gorm:"index" json:"reviewed_at,omitempty"`
+}
+
 // DetectionStats represents detection statistics
 type DetectionStats struct {
 	ID            uint           `gorm:"primarykey" json:"id"`
