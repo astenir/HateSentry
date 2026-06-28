@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -129,6 +130,177 @@ func TestGormRepositoryReviewWorkflowIntegration(t *testing.T) {
 	}
 }
 
+func TestGormRepositoryWebhookDeliveryClaimIntegration(t *testing.T) {
+	dsn := os.Getenv("HATESENTRY_TEST_DSN")
+	if strings.TrimSpace(dsn) == "" {
+		t.Skip("HATESENTRY_TEST_DSN is required for integration repository tests")
+	}
+
+	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+	if err := db.AutoMigrate(
+		&models.User{},
+		&models.ClientApplication{},
+		&models.WebhookDelivery{},
+	); err != nil {
+		t.Fatalf("auto migrate test database: %v", err)
+	}
+
+	repository := NewGormRepository(db)
+	ctx := context.Background()
+	user := createIntegrationUser(t, ctx, db, "webhook-claim")
+	client := models.ClientApplication{
+		UserID:        user.ID,
+		Name:          "Webhook Claim Test",
+		APIKeyHash:    uuid.New().String(),
+		APIKeyPrefix:  "hs_test",
+		Status:        "active",
+		WebhookURL:    "https://example.com/moderation/webhook",
+		WebhookSecret: "whsec_test",
+	}
+	if err := db.WithContext(ctx).Create(&client).Error; err != nil {
+		t.Fatalf("create client application: %v", err)
+	}
+
+	requestID := uuid.New().String()
+	httpStatus := 500
+	delivery := models.WebhookDelivery{
+		DeliveryID:    uuid.New().String(),
+		RequestID:     requestID,
+		ClientID:      client.ID,
+		Event:         "moderation.final_decision",
+		Status:        string(WebhookDeliveryFailed),
+		AttemptCount:  1,
+		LastAttemptAt: time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC),
+		HTTPStatus:    &httpStatus,
+		ErrorMessage:  "webhook returned status 500",
+		Payload:       `{"event":"moderation.final_decision","request_id":"` + requestID + `"}`,
+	}
+	if err := db.WithContext(ctx).Create(&delivery).Error; err != nil {
+		t.Fatalf("create webhook delivery: %v", err)
+	}
+
+	t.Cleanup(func() {
+		db.Unscoped().Where("client_id = ?", client.ID).Delete(&models.WebhookDelivery{})
+		db.Unscoped().Delete(&models.ClientApplication{}, client.ID)
+		db.Unscoped().Delete(&models.User{}, user.ID)
+	})
+
+	listed, err := repository.ListWebhookDeliveries(ctx, WebhookDeliveryFailed, 10)
+	if err != nil {
+		t.Fatalf("ListWebhookDeliveries() error = %v", err)
+	}
+	if !containsWebhookDelivery(listed, delivery.ID) {
+		t.Fatalf("failed webhook deliveries did not include delivery id %d", delivery.ID)
+	}
+
+	const workers = 8
+	claimedAt := time.Date(2026, 6, 28, 12, 5, 0, 0, time.UTC)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	results := make(chan webhookClaimResult, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			claimed, claimErr := repository.ClaimFailedWebhookDelivery(ctx, delivery.ID, claimedAt)
+			results <- webhookClaimResult{
+				delivery: claimed,
+				err:      claimErr,
+			}
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+	close(results)
+
+	successes := 0
+	conflicts := 0
+	var claimed models.WebhookDelivery
+	for result := range results {
+		if result.err == nil {
+			successes++
+			claimed = result.delivery
+			continue
+		}
+		if strings.Contains(result.err.Error(), "Webhook delivery is not failed") {
+			conflicts++
+			continue
+		}
+		t.Fatalf("ClaimFailedWebhookDelivery() unexpected error = %v", result.err)
+	}
+	if successes != 1 {
+		t.Fatalf("successful claims = %d, want 1", successes)
+	}
+	if conflicts != workers-1 {
+		t.Fatalf("conflicting claims = %d, want %d", conflicts, workers-1)
+	}
+	if claimed.Status != string(WebhookDeliveryRetrying) {
+		t.Fatalf("claimed status = %q, want retrying", claimed.Status)
+	}
+	if claimed.HTTPStatus != nil {
+		t.Fatalf("claimed HTTPStatus = %#v, want nil", claimed.HTTPStatus)
+	}
+	if claimed.ErrorMessage != "" {
+		t.Fatalf("claimed ErrorMessage = %q, want empty", claimed.ErrorMessage)
+	}
+
+	successStatus := 204
+	updatedAt := claimedAt.Add(time.Minute)
+	updated, err := repository.UpdateWebhookDeliveryAttempt(
+		ctx,
+		delivery.ID,
+		WebhookDeliverySucceeded,
+		&successStatus,
+		"",
+		updatedAt,
+	)
+	if err != nil {
+		t.Fatalf("UpdateWebhookDeliveryAttempt() error = %v", err)
+	}
+	if updated.Status != string(WebhookDeliverySucceeded) {
+		t.Fatalf("updated status = %q, want succeeded", updated.Status)
+	}
+	if updated.AttemptCount != 2 {
+		t.Fatalf("updated attempt count = %d, want 2", updated.AttemptCount)
+	}
+	if updated.HTTPStatus == nil || *updated.HTTPStatus != successStatus {
+		t.Fatalf("updated HTTPStatus = %#v, want %d", updated.HTTPStatus, successStatus)
+	}
+	if updated.ErrorMessage != "" {
+		t.Fatalf("updated ErrorMessage = %q, want empty", updated.ErrorMessage)
+	}
+
+	staleDelivery := models.WebhookDelivery{
+		DeliveryID:    uuid.New().String(),
+		RequestID:     uuid.New().String(),
+		ClientID:      client.ID,
+		Event:         "moderation.final_decision",
+		Status:        string(WebhookDeliveryRetrying),
+		AttemptCount:  1,
+		LastAttemptAt: claimedAt.Add(-webhookRetryLease - time.Second),
+		ErrorMessage:  "retry interrupted",
+		Payload:       `{"event":"moderation.final_decision"}`,
+	}
+	if err := db.WithContext(ctx).Create(&staleDelivery).Error; err != nil {
+		t.Fatalf("create stale webhook delivery: %v", err)
+	}
+	reclaimed, err := repository.ClaimFailedWebhookDelivery(ctx, staleDelivery.ID, claimedAt)
+	if err != nil {
+		t.Fatalf("ClaimFailedWebhookDelivery() stale retrying error = %v", err)
+	}
+	if reclaimed.Status != string(WebhookDeliveryRetrying) {
+		t.Fatalf("reclaimed status = %q, want retrying", reclaimed.Status)
+	}
+	if reclaimed.ErrorMessage != "" {
+		t.Fatalf("reclaimed ErrorMessage = %q, want empty", reclaimed.ErrorMessage)
+	}
+}
+
 func TestGormRepositoryGetStatsIntegration(t *testing.T) {
 	dsn := os.Getenv("HATESENTRY_TEST_DSN")
 	if strings.TrimSpace(dsn) == "" {
@@ -236,12 +408,27 @@ func containsReviewCase(cases []StoredReviewCase, requestID string) bool {
 	return false
 }
 
+func containsWebhookDelivery(deliveries []models.WebhookDelivery, id uint) bool {
+	for _, delivery := range deliveries {
+		if delivery.ID == id {
+			return true
+		}
+	}
+
+	return false
+}
+
 type statsSeed struct {
 	suffix        string
 	decision      Decision
 	reviewStatus  ReviewStatus
 	finalDecision Decision
 	softDeleted   bool
+}
+
+type webhookClaimResult struct {
+	delivery models.WebhookDelivery
+	err      error
 }
 
 func createIntegrationUser(t *testing.T, ctx context.Context, db *gorm.DB, suffix string) models.User {

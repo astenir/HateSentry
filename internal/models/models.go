@@ -125,6 +125,25 @@ type ReviewCase struct {
 	ReviewedAt    *time.Time     `gorm:"index" json:"reviewed_at,omitempty"`
 }
 
+// WebhookDelivery stores latest callback status and retry count for a final decision.
+type WebhookDelivery struct {
+	ID            uint              `gorm:"primarykey" json:"id"`
+	CreatedAt     time.Time         `json:"created_at"`
+	UpdatedAt     time.Time         `json:"updated_at"`
+	DeletedAt     gorm.DeletedAt    `gorm:"index" json:"-"`
+	DeliveryID    string            `gorm:"uniqueIndex;size:64;not null" json:"delivery_id"`
+	RequestID     string            `gorm:"size:64;not null;index" json:"request_id"`
+	ClientID      uint              `gorm:"not null;index" json:"client_id"`
+	Client        ClientApplication `gorm:"foreignKey:ClientID" json:"client,omitempty"`
+	Event         string            `gorm:"size:100;not null" json:"event"`
+	Status        string            `gorm:"size:20;not null;index" json:"status"`
+	AttemptCount  int               `gorm:"not null;default:1" json:"attempt_count"`
+	LastAttemptAt time.Time         `gorm:"index" json:"last_attempt_at"`
+	HTTPStatus    *int              `gorm:"column:http_status" json:"http_status,omitempty"`
+	ErrorMessage  string            `gorm:"type:text" json:"error_message,omitempty"`
+	Payload       string            `gorm:"type:longtext;not null" json:"-"`
+}
+
 // DetectionStats represents detection statistics
 type DetectionStats struct {
 	ID            uint           `gorm:"primarykey" json:"id"`

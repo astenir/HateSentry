@@ -150,6 +150,159 @@ func (r *GormRepository) GetClient(ctx context.Context, clientID uint) (models.C
 	return client, true, nil
 }
 
+// SaveWebhookDelivery records one webhook final-decision delivery attempt.
+func (r *GormRepository) SaveWebhookDelivery(ctx context.Context, delivery *models.WebhookDelivery) error {
+	if r == nil || r.db == nil {
+		return apperrors.ConfigurationError("moderation database is not configured")
+	}
+	if err := r.db.WithContext(ctx).Create(delivery).Error; err != nil {
+		return apperrors.DatabaseError(err, "failed to save webhook delivery")
+	}
+
+	return nil
+}
+
+// GetWebhookDelivery retrieves a persisted webhook delivery by database ID.
+func (r *GormRepository) GetWebhookDelivery(ctx context.Context, deliveryID uint) (models.WebhookDelivery, error) {
+	if r == nil || r.db == nil {
+		return models.WebhookDelivery{}, apperrors.ConfigurationError("moderation database is not configured")
+	}
+
+	var delivery models.WebhookDelivery
+	err := r.db.WithContext(ctx).
+		Where("id = ?", deliveryID).
+		First(&delivery).Error
+	if err != nil {
+		if stderrors.Is(err, gorm.ErrRecordNotFound) {
+			return models.WebhookDelivery{}, apperrors.RecordNotFound("Webhook delivery not found")
+		}
+		return models.WebhookDelivery{}, apperrors.DatabaseError(err, "failed to retrieve webhook delivery")
+	}
+
+	return delivery, nil
+}
+
+// ListWebhookDeliveries returns recent webhook delivery records for operators.
+func (r *GormRepository) ListWebhookDeliveries(
+	ctx context.Context,
+	status WebhookDeliveryStatus,
+	limit int,
+) ([]models.WebhookDelivery, error) {
+	if r == nil || r.db == nil {
+		return nil, apperrors.ConfigurationError("moderation database is not configured")
+	}
+
+	query := r.db.WithContext(ctx).Model(&models.WebhookDelivery{})
+	if status != "" {
+		query = query.Where("status = ?", string(status))
+	}
+	if limit > 0 {
+		query = query.Limit(limit)
+	}
+
+	var deliveries []models.WebhookDelivery
+	if err := query.Order("updated_at DESC").Find(&deliveries).Error; err != nil {
+		return nil, apperrors.DatabaseError(err, "failed to list webhook deliveries")
+	}
+
+	return deliveries, nil
+}
+
+// ClaimFailedWebhookDelivery atomically reserves one failed delivery for retry.
+func (r *GormRepository) ClaimFailedWebhookDelivery(
+	ctx context.Context,
+	deliveryID uint,
+	attemptedAt time.Time,
+) (models.WebhookDelivery, error) {
+	if r == nil || r.db == nil {
+		return models.WebhookDelivery{}, apperrors.ConfigurationError("moderation database is not configured")
+	}
+
+	staleRetryingBefore := attemptedAt.Add(-webhookRetryLease)
+	result := r.db.WithContext(ctx).
+		Model(&models.WebhookDelivery{}).
+		Where(
+			"id = ? AND (status = ? OR (status = ? AND last_attempt_at < ?))",
+			deliveryID,
+			string(WebhookDeliveryFailed),
+			string(WebhookDeliveryRetrying),
+			staleRetryingBefore,
+		).
+		Updates(map[string]interface{}{
+			"status":          string(WebhookDeliveryRetrying),
+			"last_attempt_at": attemptedAt,
+			"http_status":     nil,
+			"error_message":   "",
+		})
+	if result.Error != nil {
+		return models.WebhookDelivery{}, apperrors.DatabaseError(result.Error, "failed to claim webhook delivery")
+	}
+	if result.RowsAffected != 1 {
+		var delivery models.WebhookDelivery
+		err := r.db.WithContext(ctx).
+			Where("id = ?", deliveryID).
+			First(&delivery).Error
+		if err != nil {
+			if stderrors.Is(err, gorm.ErrRecordNotFound) {
+				return models.WebhookDelivery{}, apperrors.RecordNotFound("Webhook delivery not found")
+			}
+			return models.WebhookDelivery{}, apperrors.DatabaseError(err, "failed to retrieve webhook delivery")
+		}
+		return models.WebhookDelivery{}, apperrors.Conflict("Webhook delivery is not failed")
+	}
+
+	return r.GetWebhookDelivery(ctx, deliveryID)
+}
+
+// UpdateWebhookDeliveryAttempt stores the latest retry outcome and increments attempts.
+func (r *GormRepository) UpdateWebhookDeliveryAttempt(
+	ctx context.Context,
+	deliveryID uint,
+	status WebhookDeliveryStatus,
+	httpStatus *int,
+	errorMessage string,
+	attemptedAt time.Time,
+) (models.WebhookDelivery, error) {
+	if r == nil || r.db == nil {
+		return models.WebhookDelivery{}, apperrors.ConfigurationError("moderation database is not configured")
+	}
+
+	var updated models.WebhookDelivery
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var delivery models.WebhookDelivery
+		err := tx.
+			Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ?", deliveryID).
+			First(&delivery).Error
+		if err != nil {
+			if stderrors.Is(err, gorm.ErrRecordNotFound) {
+				return apperrors.RecordNotFound("Webhook delivery not found")
+			}
+			return err
+		}
+
+		delivery.Status = string(status)
+		delivery.AttemptCount++
+		delivery.LastAttemptAt = attemptedAt
+		delivery.HTTPStatus = httpStatus
+		delivery.ErrorMessage = errorMessage
+
+		if err := tx.Save(&delivery).Error; err != nil {
+			return err
+		}
+		updated = delivery
+		return nil
+	})
+	if err != nil {
+		if _, ok := err.(*apperrors.AppError); ok {
+			return models.WebhookDelivery{}, err
+		}
+		return models.WebhookDelivery{}, apperrors.DatabaseError(err, "failed to update webhook delivery")
+	}
+
+	return updated, nil
+}
+
 // GetStats returns aggregate moderation and review workflow counts.
 func (r *GormRepository) GetStats(ctx context.Context) (StoredStats, error) {
 	if r == nil || r.db == nil {

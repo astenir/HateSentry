@@ -154,6 +154,8 @@ func (r *Router) Setup() *gin.Engine {
 	{
 		admin.POST("/clients", clientHandler.Create)
 		admin.GET("/clients", clientHandler.List)
+		admin.GET("/webhook-deliveries", moderationHandler.ListWebhookDeliveries)
+		admin.POST("/webhook-deliveries/:id/retry", moderationHandler.RetryWebhookDelivery)
 	}
 
 	// Register metrics endpoint

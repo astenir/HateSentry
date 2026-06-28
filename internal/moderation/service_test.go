@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -309,6 +310,18 @@ func TestServiceCheckDispatchesWebhookForAutomaticFinalDecision(t *testing.T) {
 	if payload.ExternalID != "comment_123" || payload.ActorID != "user_456" {
 		t.Fatalf("payload metadata = %#v", payload)
 	}
+	if repository.webhookDelivery == nil {
+		t.Fatal("webhook delivery was not persisted")
+	}
+	if repository.webhookDelivery.Status != string(WebhookDeliverySucceeded) {
+		t.Fatalf("webhook delivery status = %q, want succeeded", repository.webhookDelivery.Status)
+	}
+	if repository.webhookDelivery.DeliveryID == "" {
+		t.Fatal("webhook delivery id is empty")
+	}
+	if repository.webhookDelivery.DeliveryID != payload.DeliveryID {
+		t.Fatalf("persisted delivery id = %q, want payload delivery id %q", repository.webhookDelivery.DeliveryID, payload.DeliveryID)
+	}
 }
 
 func TestServiceCheckDoesNotDispatchWebhookForReviewDecision(t *testing.T) {
@@ -385,6 +398,61 @@ func TestServiceCheckDoesNotFailWhenWebhookDispatchFails(t *testing.T) {
 
 	if output.Decision != DecisionBlock {
 		t.Fatalf("Decision = %q, want block", output.Decision)
+	}
+	if repository.webhookDelivery == nil {
+		t.Fatal("webhook delivery failure was not persisted")
+	}
+	if repository.webhookDelivery.Status != string(WebhookDeliveryFailed) {
+		t.Fatalf("webhook delivery status = %q, want failed", repository.webhookDelivery.Status)
+	}
+	if !strings.Contains(repository.webhookDelivery.ErrorMessage, "webhook unavailable") {
+		t.Fatalf("webhook delivery error = %q, want dispatch failure", repository.webhookDelivery.ErrorMessage)
+	}
+}
+
+func TestServiceCheckRecordsWebhookDeliveryAfterRequestCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	dispatcher := &fakeWebhookDispatcher{}
+	repository := &fakeRepository{
+		afterSaveCheck: cancel,
+		webhookClient: models.ClientApplication{
+			ID:            11,
+			WebhookURL:    "https://example.com/moderation/webhook",
+			WebhookSecret: "whsec_test",
+		},
+		webhookClientFound: true,
+	}
+	service := NewService(
+		fakeAnalyzer{
+			suggestion: ProviderSuggestion{
+				RiskScore: 0.8,
+				Labels:    []string{"hate"},
+				Reason:    "Policy threshold exceeded.",
+			},
+		},
+		repository,
+		DefaultPolicy(),
+		dispatcher,
+	)
+
+	_, err := service.Check(ctx, CheckInput{
+		UserID:   7,
+		ClientID: 11,
+		Content:  "block this text",
+	})
+	if err != nil {
+		t.Fatalf("Check() error = %v", err)
+	}
+
+	if dispatcher.dispatchContextErr != nil {
+		t.Fatalf("dispatch context err = %v, want nil", dispatcher.dispatchContextErr)
+	}
+	if repository.webhookDeliverySaveContextErr != nil {
+		t.Fatalf("save delivery context err = %v, want nil", repository.webhookDeliverySaveContextErr)
+	}
+	if repository.webhookDelivery == nil {
+		t.Fatal("webhook delivery was not persisted")
 	}
 }
 
@@ -873,6 +941,285 @@ func TestServiceReviewActionsDispatchWebhookWithHumanFinalDecision(t *testing.T)
 	if payload.ReviewStatus != string(ReviewStatusApproved) {
 		t.Fatalf("webhook ReviewStatus = %q, want approved", payload.ReviewStatus)
 	}
+	if repository.webhookDelivery == nil {
+		t.Fatal("webhook delivery was not persisted")
+	}
+	if repository.webhookDelivery.Status != string(WebhookDeliverySucceeded) {
+		t.Fatalf("webhook delivery status = %q, want succeeded", repository.webhookDelivery.Status)
+	}
+}
+
+func TestServiceRetryWebhookDelivery(t *testing.T) {
+	payload := webhooks.FinalDecisionPayload{
+		Event:         "moderation.final_decision",
+		RequestID:     "request-123",
+		ClientID:      11,
+		ExternalID:    "comment_123",
+		Decision:      string(DecisionBlock),
+		RiskScore:     0.8,
+		Labels:        []string{"hate"},
+		Reason:        "Policy threshold exceeded.",
+		PolicyVersion: "default-v1",
+	}
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("encode payload: %v", err)
+	}
+
+	dispatcher := &fakeWebhookDispatcher{}
+	repository := &fakeRepository{
+		webhookClient: models.ClientApplication{
+			ID:            11,
+			WebhookURL:    "https://example.com/moderation/webhook",
+			WebhookSecret: "whsec_test",
+		},
+		webhookClientFound: true,
+		webhookDeliveryStored: models.WebhookDelivery{
+			ID:            5,
+			DeliveryID:    "delivery-123",
+			RequestID:     "request-123",
+			ClientID:      11,
+			Event:         "moderation.final_decision",
+			Status:        string(WebhookDeliveryFailed),
+			AttemptCount:  1,
+			LastAttemptAt: time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC),
+			ErrorMessage:  "webhook returned status 500",
+			Payload:       string(payloadJSON),
+		},
+	}
+	service := NewService(fakeAnalyzer{}, repository, DefaultPolicy(), dispatcher)
+
+	output, err := service.RetryWebhookDelivery(context.Background(), 9, "5")
+	if err != nil {
+		t.Fatalf("RetryWebhookDelivery() error = %v", err)
+	}
+
+	if output.Status != WebhookDeliverySucceeded {
+		t.Fatalf("Status = %q, want succeeded", output.Status)
+	}
+	if output.AttemptCount != 2 {
+		t.Fatalf("AttemptCount = %d, want 2", output.AttemptCount)
+	}
+	if repository.webhookDeliveryID != 5 {
+		t.Fatalf("delivery id = %d, want 5", repository.webhookDeliveryID)
+	}
+	if repository.webhookDeliveryStatus != WebhookDeliverySucceeded {
+		t.Fatalf("retry status = %q, want succeeded", repository.webhookDeliveryStatus)
+	}
+	if len(dispatcher.payloads) != 1 {
+		t.Fatalf("dispatches = %d, want 1", len(dispatcher.payloads))
+	}
+	if dispatcher.payloads[0].DeliveryID != "delivery-123" {
+		t.Fatalf("retry delivery id = %q, want stored delivery id", dispatcher.payloads[0].DeliveryID)
+	}
+}
+
+func TestServiceListWebhookDeliveries(t *testing.T) {
+	repository := &fakeRepository{
+		webhookDeliveries: []models.WebhookDelivery{
+			{
+				ID:            5,
+				DeliveryID:    "delivery-123",
+				RequestID:     "request-123",
+				ClientID:      11,
+				Event:         "moderation.final_decision",
+				Status:        string(WebhookDeliveryFailed),
+				AttemptCount:  2,
+				LastAttemptAt: time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC),
+			},
+		},
+	}
+	service := NewService(fakeAnalyzer{}, repository, DefaultPolicy())
+
+	output, err := service.ListWebhookDeliveries(context.Background(), 9, "failed", "25")
+	if err != nil {
+		t.Fatalf("ListWebhookDeliveries() error = %v", err)
+	}
+
+	if repository.webhookDeliveryListStatus != WebhookDeliveryFailed {
+		t.Fatalf("status filter = %q, want failed", repository.webhookDeliveryListStatus)
+	}
+	if repository.webhookDeliveryListLimit != 25 {
+		t.Fatalf("limit = %d, want 25", repository.webhookDeliveryListLimit)
+	}
+	if len(output.Items) != 1 {
+		t.Fatalf("items = %d, want 1", len(output.Items))
+	}
+	if output.Items[0].ID != 5 {
+		t.Fatalf("item id = %d, want 5", output.Items[0].ID)
+	}
+}
+
+func TestServiceListWebhookDeliveriesValidatesFilters(t *testing.T) {
+	service := NewService(fakeAnalyzer{}, &fakeRepository{}, DefaultPolicy())
+
+	tests := []struct {
+		name   string
+		status string
+		limit  string
+	}{
+		{
+			name:   "invalid status",
+			status: "pending",
+		},
+		{
+			name:  "invalid limit",
+			limit: "0",
+		},
+		{
+			name:  "excessive limit",
+			limit: "101",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := service.ListWebhookDeliveries(context.Background(), 9, tt.status, tt.limit)
+			if err == nil {
+				t.Fatal("ListWebhookDeliveries() error = nil, want validation error")
+			}
+		})
+	}
+}
+
+func TestServiceRetryWebhookDeliveryRecordsOutcomeAfterRequestCancel(t *testing.T) {
+	payload := webhooks.FinalDecisionPayload{
+		Event:         "moderation.final_decision",
+		RequestID:     "request-123",
+		ClientID:      11,
+		Decision:      string(DecisionBlock),
+		RiskScore:     0.8,
+		Labels:        []string{"hate"},
+		Reason:        "Policy threshold exceeded.",
+		PolicyVersion: "default-v1",
+	}
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("encode payload: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	dispatcher := &fakeWebhookDispatcher{
+		afterDispatch: cancel,
+	}
+	repository := &fakeRepository{
+		webhookClient: models.ClientApplication{
+			ID:            11,
+			WebhookURL:    "https://example.com/moderation/webhook",
+			WebhookSecret: "whsec_test",
+		},
+		webhookClientFound: true,
+		webhookDeliveryStored: models.WebhookDelivery{
+			ID:            5,
+			DeliveryID:    "delivery-123",
+			RequestID:     "request-123",
+			ClientID:      11,
+			Event:         "moderation.final_decision",
+			Status:        string(WebhookDeliveryFailed),
+			AttemptCount:  1,
+			LastAttemptAt: time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC),
+			ErrorMessage:  "webhook returned status 500",
+			Payload:       string(payloadJSON),
+		},
+	}
+	service := NewService(fakeAnalyzer{}, repository, DefaultPolicy(), dispatcher)
+
+	output, err := service.RetryWebhookDelivery(ctx, 9, "5")
+	if err != nil {
+		t.Fatalf("RetryWebhookDelivery() error = %v", err)
+	}
+
+	if output.Status != WebhookDeliverySucceeded {
+		t.Fatalf("Status = %q, want succeeded", output.Status)
+	}
+	if repository.webhookDeliveryUpdateContextErr != nil {
+		t.Fatalf("update context err = %v, want nil", repository.webhookDeliveryUpdateContextErr)
+	}
+	if dispatcher.DispatchCount() != 1 {
+		t.Fatalf("webhook dispatches = %d, want 1", dispatcher.DispatchCount())
+	}
+}
+
+func TestServiceRetryWebhookDeliveryClaimsFailedDeliveryOnce(t *testing.T) {
+	payload := webhooks.FinalDecisionPayload{
+		Event:         "moderation.final_decision",
+		RequestID:     "request-123",
+		ClientID:      11,
+		Decision:      string(DecisionBlock),
+		RiskScore:     0.8,
+		Labels:        []string{"hate"},
+		Reason:        "Policy threshold exceeded.",
+		PolicyVersion: "default-v1",
+	}
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("encode payload: %v", err)
+	}
+
+	dispatcher := &fakeWebhookDispatcher{}
+	repository := &fakeRepository{
+		claimWebhookDeliveryOnce: true,
+		webhookClient: models.ClientApplication{
+			ID:            11,
+			WebhookURL:    "https://example.com/moderation/webhook",
+			WebhookSecret: "whsec_test",
+		},
+		webhookClientFound: true,
+		webhookDeliveryStored: models.WebhookDelivery{
+			ID:            5,
+			DeliveryID:    "delivery-123",
+			RequestID:     "request-123",
+			ClientID:      11,
+			Event:         "moderation.final_decision",
+			Status:        string(WebhookDeliveryFailed),
+			AttemptCount:  1,
+			LastAttemptAt: time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC),
+			ErrorMessage:  "webhook returned status 500",
+			Payload:       string(payloadJSON),
+		},
+	}
+	service := NewService(fakeAnalyzer{}, repository, DefaultPolicy(), dispatcher)
+
+	const workers = 8
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	errs := make(chan error, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := service.RetryWebhookDelivery(context.Background(), 9, "5")
+			errs <- err
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	successes := 0
+	conflicts := 0
+	for err := range errs {
+		if err == nil {
+			successes++
+			continue
+		}
+		if strings.Contains(err.Error(), "Webhook delivery is not failed") {
+			conflicts++
+		}
+	}
+
+	if successes != 1 {
+		t.Fatalf("successful retries = %d, want 1", successes)
+	}
+	if conflicts != workers-1 {
+		t.Fatalf("conflicting retries = %d, want %d", conflicts, workers-1)
+	}
+	if dispatcher.DispatchCount() != 1 {
+		t.Fatalf("webhook dispatches = %d, want 1", dispatcher.DispatchCount())
+	}
 }
 
 func TestServiceMarkReviewMistakeRequiresFinalDecision(t *testing.T) {
@@ -905,32 +1252,48 @@ func (a fakeAnalyzer) AnalyzeText(ctx context.Context, content string) (Provider
 }
 
 type fakeRepository struct {
-	request                    *models.ModerationRequest
-	result                     *models.ModerationResult
-	reviewCase                 *models.ReviewCase
-	stored                     StoredResult
-	clientStored               StoredResult
-	clientResultFound          bool
-	clientResultFoundAfterSave bool
-	findClientExternalIDCalls  int
-	webhookClient              models.ClientApplication
-	webhookClientFound         bool
-	reviewCases                []StoredReviewCase
-	finalized                  StoredReviewCase
-	stats                      StoredStats
-	userID                     uint
-	clientID                   uint
-	externalID                 string
-	requestID                  string
-	reviewStatus               ReviewStatus
-	caseID                     uint
-	reviewerID                 uint
-	finalStatus                ReviewStatus
-	finalDecision              Decision
-	notes                      string
-	reviewedAt                 time.Time
-	err                        error
-	saveErr                    error
+	mu                              sync.Mutex
+	request                         *models.ModerationRequest
+	result                          *models.ModerationResult
+	reviewCase                      *models.ReviewCase
+	webhookDelivery                 *models.WebhookDelivery
+	webhookDeliveryStored           models.WebhookDelivery
+	webhookDeliveries               []models.WebhookDelivery
+	claimWebhookDeliveryOnce        bool
+	webhookDeliveryClaimed          bool
+	stored                          StoredResult
+	clientStored                    StoredResult
+	clientResultFound               bool
+	clientResultFoundAfterSave      bool
+	findClientExternalIDCalls       int
+	webhookClient                   models.ClientApplication
+	webhookClientFound              bool
+	reviewCases                     []StoredReviewCase
+	finalized                       StoredReviewCase
+	stats                           StoredStats
+	userID                          uint
+	clientID                        uint
+	externalID                      string
+	requestID                       string
+	reviewStatus                    ReviewStatus
+	caseID                          uint
+	webhookDeliveryID               uint
+	webhookDeliveryStatus           WebhookDeliveryStatus
+	webhookDeliveryHTTPStatus       *int
+	webhookDeliveryError            string
+	webhookDeliveryAttemptedAt      time.Time
+	webhookDeliveryUpdateContextErr error
+	webhookDeliverySaveContextErr   error
+	webhookDeliveryListStatus       WebhookDeliveryStatus
+	webhookDeliveryListLimit        int
+	afterSaveCheck                  func()
+	reviewerID                      uint
+	finalStatus                     ReviewStatus
+	finalDecision                   Decision
+	notes                           string
+	reviewedAt                      time.Time
+	err                             error
+	saveErr                         error
 }
 
 func (r *fakeRepository) SaveCheck(
@@ -953,6 +1316,9 @@ func (r *fakeRepository) SaveCheck(
 	if reviewCase != nil {
 		copiedReviewCase := *reviewCase
 		r.reviewCase = &copiedReviewCase
+	}
+	if r.afterSaveCheck != nil {
+		r.afterSaveCheck()
 	}
 	return nil
 }
@@ -992,6 +1358,107 @@ func (r *fakeRepository) GetClient(
 	}
 	r.clientID = clientID
 	return r.webhookClient, r.webhookClientFound, nil
+}
+
+func (r *fakeRepository) SaveWebhookDelivery(
+	ctx context.Context,
+	delivery *models.WebhookDelivery,
+) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.err != nil {
+		return r.err
+	}
+	copiedDelivery := *delivery
+	r.webhookDelivery = &copiedDelivery
+	r.webhookDeliverySaveContextErr = ctx.Err()
+	return nil
+}
+
+func (r *fakeRepository) ListWebhookDeliveries(
+	ctx context.Context,
+	status WebhookDeliveryStatus,
+	limit int,
+) ([]models.WebhookDelivery, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.err != nil {
+		return nil, r.err
+	}
+	r.webhookDeliveryListStatus = status
+	r.webhookDeliveryListLimit = limit
+	return r.webhookDeliveries, nil
+}
+
+func (r *fakeRepository) ClaimFailedWebhookDelivery(
+	ctx context.Context,
+	deliveryID uint,
+	attemptedAt time.Time,
+) (models.WebhookDelivery, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.err != nil {
+		return models.WebhookDelivery{}, r.err
+	}
+	r.webhookDeliveryID = deliveryID
+	if r.claimWebhookDeliveryOnce {
+		if r.webhookDeliveryClaimed {
+			return models.WebhookDelivery{}, apperrors.Conflict("Webhook delivery is not failed")
+		}
+		r.webhookDeliveryClaimed = true
+	}
+
+	claimed := r.webhookDeliveryStored
+	claimed.Status = string(WebhookDeliveryRetrying)
+	claimed.LastAttemptAt = attemptedAt
+	return claimed, nil
+}
+
+func (r *fakeRepository) GetWebhookDelivery(
+	ctx context.Context,
+	deliveryID uint,
+) (models.WebhookDelivery, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.err != nil {
+		return models.WebhookDelivery{}, r.err
+	}
+	r.webhookDeliveryID = deliveryID
+	return r.webhookDeliveryStored, nil
+}
+
+func (r *fakeRepository) UpdateWebhookDeliveryAttempt(
+	ctx context.Context,
+	deliveryID uint,
+	status WebhookDeliveryStatus,
+	httpStatus *int,
+	errorMessage string,
+	attemptedAt time.Time,
+) (models.WebhookDelivery, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.err != nil {
+		return models.WebhookDelivery{}, r.err
+	}
+	r.webhookDeliveryID = deliveryID
+	r.webhookDeliveryStatus = status
+	r.webhookDeliveryHTTPStatus = httpStatus
+	r.webhookDeliveryError = errorMessage
+	r.webhookDeliveryAttemptedAt = attemptedAt
+	r.webhookDeliveryUpdateContextErr = ctx.Err()
+
+	updated := r.webhookDeliveryStored
+	updated.Status = string(status)
+	updated.AttemptCount++
+	updated.LastAttemptAt = attemptedAt
+	updated.HTTPStatus = httpStatus
+	updated.ErrorMessage = errorMessage
+	return updated, nil
 }
 
 func (r *fakeRepository) ListReviewCases(
@@ -1038,9 +1505,12 @@ func uintPtr(value uint) *uint {
 }
 
 type fakeWebhookDispatcher struct {
-	clients  []models.ClientApplication
-	payloads []webhooks.FinalDecisionPayload
-	err      error
+	mu                 sync.Mutex
+	clients            []models.ClientApplication
+	payloads           []webhooks.FinalDecisionPayload
+	err                error
+	afterDispatch      func()
+	dispatchContextErr error
 }
 
 func (d *fakeWebhookDispatcher) DispatchFinalDecision(
@@ -1048,10 +1518,24 @@ func (d *fakeWebhookDispatcher) DispatchFinalDecision(
 	client models.ClientApplication,
 	payload webhooks.FinalDecisionPayload,
 ) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
 	if d.err != nil {
 		return d.err
 	}
+	d.dispatchContextErr = ctx.Err()
 	d.clients = append(d.clients, client)
 	d.payloads = append(d.payloads, payload)
+	if d.afterDispatch != nil {
+		d.afterDispatch()
+	}
 	return nil
+}
+
+func (d *fakeWebhookDispatcher) DispatchCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	return len(d.payloads)
 }

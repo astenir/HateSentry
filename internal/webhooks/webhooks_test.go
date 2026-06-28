@@ -3,6 +3,7 @@ package webhooks
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -116,8 +117,8 @@ func TestHTTPDispatcherDispatchFinalDecision(t *testing.T) {
 		if r.Header.Get(headerEvent) != "moderation.final_decision" {
 			t.Fatalf("%s = %q", headerEvent, r.Header.Get(headerEvent))
 		}
-		if r.Header.Get(headerDelivery) == "" {
-			t.Fatalf("%s is empty", headerDelivery)
+		if r.Header.Get(headerDelivery) != "delivery-123" {
+			t.Fatalf("%s = %q, want delivery-123", headerDelivery, r.Header.Get(headerDelivery))
 		}
 		if r.Header.Get(headerTimestamp) != "1782633600" {
 			t.Fatalf("%s = %q, want 1782633600", headerTimestamp, r.Header.Get(headerTimestamp))
@@ -156,6 +157,7 @@ func TestHTTPDispatcherDispatchFinalDecision(t *testing.T) {
 		WebhookURL:    "https://example.com/moderation/webhook",
 		WebhookSecret: "whsec_test",
 	}, FinalDecisionPayload{
+		DeliveryID:    "delivery-123",
 		Event:         "moderation.final_decision",
 		RequestID:     "request-123",
 		ClientID:      11,
@@ -203,6 +205,13 @@ func TestHTTPDispatcherReturnsErrorForNonSuccessStatus(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "status 500") {
 		t.Fatalf("DispatchFinalDecision() error = %q, want status 500", err.Error())
+	}
+	var deliveryErr *DeliveryError
+	if !errors.As(err, &deliveryErr) {
+		t.Fatalf("DispatchFinalDecision() error type = %T, want DeliveryError", err)
+	}
+	if deliveryErr.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("DeliveryError status = %d, want 500", deliveryErr.StatusCode)
 	}
 }
 

@@ -19,6 +19,15 @@ const (
 	ReviewStatusMistake  ReviewStatus = "mistake"
 )
 
+// WebhookDeliveryStatus is the persisted status of a final-decision callback.
+type WebhookDeliveryStatus string
+
+const (
+	WebhookDeliverySucceeded WebhookDeliveryStatus = "succeeded"
+	WebhookDeliveryFailed    WebhookDeliveryStatus = "failed"
+	WebhookDeliveryRetrying  WebhookDeliveryStatus = "retrying"
+)
+
 var supportedLabels = map[string]bool{
 	"hate":            true,
 	"harassment":      true,

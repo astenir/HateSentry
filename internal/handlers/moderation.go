@@ -161,6 +161,57 @@ func (h *ModerationHandler) GetReviewStats(c *gin.Context) {
 	c.JSON(http.StatusOK, stats)
 }
 
+// ListWebhookDeliveries lists recent final-decision webhook delivery records.
+func (h *ModerationHandler) ListWebhookDeliveries(c *gin.Context) {
+	claims, exists := auth.GetClaims(c)
+	if !exists {
+		apperrors.RespondWithError(c, apperrors.Unauthorized("User not authenticated"))
+		return
+	}
+	if h.service == nil {
+		apperrors.RespondWithError(c, apperrors.ConfigurationError("moderation service is not configured"))
+		return
+	}
+
+	result, err := h.service.ListWebhookDeliveries(
+		c.Request.Context(),
+		claims.UserID,
+		c.Query("status"),
+		c.Query("limit"),
+	)
+	if err != nil {
+		apperrors.Handle(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
+// RetryWebhookDelivery retries a failed final-decision webhook delivery.
+func (h *ModerationHandler) RetryWebhookDelivery(c *gin.Context) {
+	claims, exists := auth.GetClaims(c)
+	if !exists {
+		apperrors.RespondWithError(c, apperrors.Unauthorized("User not authenticated"))
+		return
+	}
+	if h.service == nil {
+		apperrors.RespondWithError(c, apperrors.ConfigurationError("moderation service is not configured"))
+		return
+	}
+
+	result, err := h.service.RetryWebhookDelivery(
+		c.Request.Context(),
+		claims.UserID,
+		c.Param("id"),
+	)
+	if err != nil {
+		apperrors.Handle(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
 // ApproveReviewCase finalizes a review case as allowed.
 func (h *ModerationHandler) ApproveReviewCase(c *gin.Context) {
 	h.finalizeReviewCase(c, func(

@@ -581,6 +581,7 @@ make create-user
 - 同一客户端的 `external_id` 幂等查询。
 - API Key 客户端限流：`POST /api/v1/moderation/check` 默认按客户端 ID 每分钟 60 次。
 - 基础 Webhook 最终决策回调：向客户端 HTTPS `webhook_url` 同步单次发送 `allow` / `block` 或人工复核后的最终决策，并使用 HMAC-SHA256 签名。
+- Webhook 最新投递状态、尝试次数持久化、管理端查询和失败手动重试：`GET /api/v1/admin/webhook-deliveries`、`POST /api/v1/admin/webhook-deliveries/:id/retry`。
 - 服务端策略决策：`allow`、`review`、`block`。
 - 可配置策略阈值和策略版本。
 - 审核请求与结果持久化。
@@ -592,7 +593,7 @@ make create-user
 
 - 旧版 `/api/v1/detection/*` 路由仍存在，但不是新的产品主线。
 - Redis 缓存、RabbitMQ 队列和 Prometheus 监控相关代码已存在，但完整异步审核工作流、批量审核状态查询、真实图片审核和高并发承诺还没有作为 MVP 完成。
-- Webhook 当前为同步单次尝试，暂未实现异步重试队列；管理界面仍在路线图中。
+- Webhook 当前为同步单次尝试，已记录最新投递状态和尝试次数并支持失败手动重试，但暂未实现异步自动重试队列或完整投递历史表；管理界面仍在路线图中。
 
 ## 🔒 安全与限制
 
@@ -685,6 +686,7 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 - [x] API Key 外部客户端认证
 - [x] 外部客户端 `external_id` 幂等
 - [x] 基础同步单次 Webhook 回调和 HMAC 签名
+- [x] Webhook 最新投递状态、尝试次数持久化和失败手动重试
 - [x] 统一错误处理框架
 - [x] 健康检查和 Prometheus 指标入口
 - [x] 结构化日志系统
@@ -692,7 +694,7 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 
 ### 进行中 🚧
 - [ ] 更完整的操作指标和延迟观测
-- [ ] Webhook 异步重试队列
+- [ ] Webhook 异步自动重试队列
 - [ ] README、API 文档和运维文档持续按实现校准
 - [ ] Docker Compose 端到端运行验证
 

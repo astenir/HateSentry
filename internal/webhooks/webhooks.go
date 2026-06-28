@@ -41,6 +41,7 @@ type Dispatcher interface {
 
 // FinalDecisionPayload is the stable JSON body sent to external clients.
 type FinalDecisionPayload struct {
+	DeliveryID    string    `json:"-"`
 	Event         string    `json:"event"`
 	RequestID     string    `json:"request_id"`
 	ClientID      uint      `json:"client_id"`
@@ -54,6 +55,30 @@ type FinalDecisionPayload struct {
 	Reason        string    `json:"reason"`
 	PolicyVersion string    `json:"policy_version"`
 	CreatedAt     time.Time `json:"created_at"`
+}
+
+// DeliveryError exposes callback response metadata for delivery auditing.
+type DeliveryError struct {
+	StatusCode int
+	Message    string
+	Err        error
+}
+
+func (e *DeliveryError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.Err != nil {
+		return e.Message + ": " + e.Err.Error()
+	}
+	return e.Message
+}
+
+func (e *DeliveryError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
 }
 
 // HTTPDispatcher sends callbacks over HTTP.
@@ -175,9 +200,14 @@ func (d *HTTPDispatcher) DispatchFinalDecision(
 		now = time.Now
 	}
 	timestamp := now().UTC().Unix()
+	deliveryID := strings.TrimSpace(payload.DeliveryID)
+	if deliveryID == "" {
+		deliveryID = uuid.New().String()
+	}
+
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set(headerEvent, payload.Event)
-	request.Header.Set(headerDelivery, uuid.New().String())
+	request.Header.Set(headerDelivery, deliveryID)
 	request.Header.Set(headerTimestamp, strconv.FormatInt(timestamp, 10))
 	request.Header.Set(headerSignature, Sign(client.WebhookSecret, timestamp, body))
 
@@ -197,7 +227,10 @@ func (d *HTTPDispatcher) DispatchFinalDecision(
 	defer response.Body.Close()
 
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return fmt.Errorf("webhook returned status %d", response.StatusCode)
+		return &DeliveryError{
+			StatusCode: response.StatusCode,
+			Message:    fmt.Sprintf("webhook returned status %d", response.StatusCode),
+		}
 	}
 
 	return nil

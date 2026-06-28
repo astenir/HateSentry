@@ -201,7 +201,7 @@ Authorization: Bearer <admin-token>
 
 提交一段文本，服务会调用当前配置的 AI provider 生成风险建议，再由服务端默认策略生成最终业务决策。
 
-当前接口为同步处理，支持 JWT 认证或外部客户端 API Key 认证。API Key 客户端配置了 `webhook_url` 时，`allow` / `block` 会同步尝试发送最终决策回调；`review` 会先进入人工复核队列，待管理员复核后再发送最终决策回调。当前版本不包含异步重试队列。
+当前接口为同步处理，支持 JWT 认证或外部客户端 API Key 认证。API Key 客户端配置了 `webhook_url` 时，`allow` / `block` 会同步尝试发送最终决策回调；`review` 会先进入人工复核队列，待管理员复核后再发送最终决策回调。回调投递结果会记录为审计状态，失败投递支持管理员手动重试；当前版本不包含异步自动重试队列。
 
 **端点**: `POST /moderation/check`
 
@@ -878,7 +878,8 @@ print(result)
 
 - `allow` / `block`: 文本审核完成后立即发送。
 - `review`: 不立即发送最终决策；管理员复核通过、拒绝或标记误判后发送。
-- 当前版本为同步单次尝试；失败会记录日志，但不会阻断审核记录保存或人工复核结果保存，暂未实现重试队列。
+- 当前版本为同步单次尝试；最新投递状态、尝试次数和最后一次错误会记录到 `webhook_deliveries`，失败不会阻断审核记录保存或人工复核结果保存。
+- 失败投递可由管理员手动重试；暂未实现异步自动重试队列。
 
 **请求头**:
 ```http
@@ -915,3 +916,70 @@ HMAC_SHA256(webhook_secret, "<timestamp>.<raw-json-body>")
 ```
 
 `review_status` 只会在人工复核产生最终决策时出现。
+
+### 查询 Webhook 投递记录
+
+管理员可以查询最近的 Webhook 投递记录，用于定位失败投递并取得手动重试所需的内部 `id`。
+
+**端点**: `GET /admin/webhook-deliveries?status=failed&limit=50`
+
+**查询参数**:
+
+- `status`: 可选，支持 `succeeded`、`failed`、`retrying`。
+- `limit`: 可选，默认 `50`，最大 `100`。
+
+**请求头**:
+```http
+Authorization: Bearer <admin-token>
+```
+
+**响应** (200 OK):
+```json
+{
+  "items": [
+    {
+      "id": 5,
+      "delivery_id": "550e8400-e29b-41d4-a716-446655440000",
+      "request_id": "550e8400-e29b-41d4-a716-446655440000",
+      "client_id": 11,
+      "event": "moderation.final_decision",
+      "status": "failed",
+      "attempt_count": 1,
+      "last_attempt_at": "2026-06-28T12:00:00Z",
+      "http_status": 500,
+      "error_message": "webhook returned status 500",
+      "created_at": "2026-06-28T12:00:00Z",
+      "updated_at": "2026-06-28T12:00:00Z"
+    }
+  ]
+}
+```
+
+### 手动重试 Webhook 投递
+
+管理员可以对失败的 Webhook 投递记录发起一次手动重试。路径中的 `:id` 是投递记录的内部数字 ID，可通过投递记录查询接口获取。
+
+**端点**: `POST /admin/webhook-deliveries/:id/retry`
+
+**请求头**:
+```http
+Authorization: Bearer <admin-token>
+```
+
+**响应** (200 OK):
+```json
+{
+  "id": 5,
+  "delivery_id": "550e8400-e29b-41d4-a716-446655440000",
+  "request_id": "550e8400-e29b-41d4-a716-446655440000",
+  "client_id": 11,
+  "event": "moderation.final_decision",
+  "status": "succeeded",
+  "attempt_count": 2,
+  "last_attempt_at": "2026-06-28T12:05:00Z",
+  "created_at": "2026-06-28T12:00:00Z",
+  "updated_at": "2026-06-28T12:05:00Z"
+}
+```
+
+只有 `status = "failed"` 的投递记录可以重试；刚进入 `retrying` 的记录会返回冲突错误，超过内部重试租约的陈旧 `retrying` 记录可以被重新认领。重试仍使用原始最终决策载荷和同一个 `X-HateSentry-Delivery` 标识。当前表保存最新状态和尝试次数，不保存每一次历史尝试的完整明细。

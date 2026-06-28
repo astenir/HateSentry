@@ -14,6 +14,7 @@ import (
 	"hatesentry/internal/auth"
 	"hatesentry/internal/models"
 	"hatesentry/internal/moderation"
+	"hatesentry/internal/webhooks"
 )
 
 func TestModerationHandlerCheck(t *testing.T) {
@@ -380,6 +381,63 @@ func TestModerationHandlerGetReviewStats(t *testing.T) {
 	}
 }
 
+func TestModerationHandlerListWebhookDeliveries(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	repository := &moderationHandlerRepository{
+		webhookDeliveries: []models.WebhookDelivery{
+			{
+				ID:            5,
+				DeliveryID:    "delivery-123",
+				RequestID:     "request-123",
+				ClientID:      11,
+				Event:         "moderation.final_decision",
+				Status:        string(moderation.WebhookDeliveryFailed),
+				AttemptCount:  2,
+				LastAttemptAt: time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC),
+			},
+		},
+	}
+	handler := NewModerationHandler(moderation.NewService(
+		moderationHandlerAnalyzer{},
+		repository,
+		moderation.DefaultPolicy(),
+	))
+
+	engine := gin.New()
+	engine.GET("/api/v1/admin/webhook-deliveries", func(c *gin.Context) {
+		c.Set(auth.UserContextKey, &auth.Claims{
+			UserID:   42,
+			Username: "reviewer",
+			Role:     "admin",
+		})
+		handler.ListWebhookDeliveries(c)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/webhook-deliveries?status=failed&limit=10", nil)
+	recorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	var response moderation.ListWebhookDeliveriesOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(response.Items) != 1 {
+		t.Fatalf("items = %d, want 1", len(response.Items))
+	}
+	if response.Items[0].ID != 5 {
+		t.Fatalf("item id = %d, want 5", response.Items[0].ID)
+	}
+	if repository.webhookDeliveryStatus != moderation.WebhookDeliveryFailed {
+		t.Fatalf("status filter = %q, want failed", repository.webhookDeliveryStatus)
+	}
+}
+
 func TestModerationHandlerApproveReviewCase(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -461,6 +519,69 @@ func TestModerationHandlerApproveReviewCase(t *testing.T) {
 	}
 }
 
+func TestModerationHandlerRetryWebhookDelivery(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	repository := &moderationHandlerRepository{
+		webhookClient: models.ClientApplication{
+			ID:            11,
+			WebhookURL:    "https://example.com/moderation/webhook",
+			WebhookSecret: "whsec_test",
+		},
+		webhookClientFound: true,
+		webhookDelivery: models.WebhookDelivery{
+			ID:            5,
+			DeliveryID:    "delivery-123",
+			RequestID:     "request-123",
+			ClientID:      11,
+			Event:         "moderation.final_decision",
+			Status:        string(moderation.WebhookDeliveryFailed),
+			AttemptCount:  1,
+			LastAttemptAt: time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC),
+			Payload:       `{"event":"moderation.final_decision","request_id":"request-123","client_id":11,"source":"comment","decision":"block","risk_score":0.8,"labels":["hate"],"reason":"Policy threshold exceeded.","policy_version":"default-v1","created_at":"2026-06-28T12:00:00Z"}`,
+		},
+	}
+	handler := NewModerationHandler(moderation.NewService(
+		moderationHandlerAnalyzer{},
+		repository,
+		moderation.DefaultPolicy(),
+		&moderationHandlerWebhookDispatcher{},
+	))
+
+	engine := gin.New()
+	engine.POST("/api/v1/admin/webhook-deliveries/:id/retry", func(c *gin.Context) {
+		c.Set(auth.UserContextKey, &auth.Claims{
+			UserID:   42,
+			Username: "reviewer",
+			Role:     "admin",
+		})
+		handler.RetryWebhookDelivery(c)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/webhook-deliveries/5/retry", nil)
+	recorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	var response moderation.WebhookDeliveryOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Status != moderation.WebhookDeliverySucceeded {
+		t.Fatalf("Status = %q, want succeeded", response.Status)
+	}
+	if response.AttemptCount != 2 {
+		t.Fatalf("AttemptCount = %d, want 2", response.AttemptCount)
+	}
+	if repository.webhookDeliveryID != 5 {
+		t.Fatalf("webhook delivery id = %d, want 5", repository.webhookDeliveryID)
+	}
+}
+
 type moderationHandlerAnalyzer struct{}
 
 func (a moderationHandlerAnalyzer) AnalyzeText(
@@ -481,22 +602,28 @@ func (a moderationHandlerAnalyzer) AnalyzeText(
 }
 
 type moderationHandlerRepository struct {
-	request       *models.ModerationRequest
-	result        *models.ModerationResult
-	reviewCase    *models.ReviewCase
-	stored        moderation.StoredResult
-	reviewCases   []moderation.StoredReviewCase
-	finalized     moderation.StoredReviewCase
-	stats         moderation.StoredStats
-	userID        uint
-	requestID     string
-	reviewStatus  moderation.ReviewStatus
-	caseID        uint
-	reviewerID    uint
-	finalStatus   moderation.ReviewStatus
-	finalDecision moderation.Decision
-	notes         string
-	reviewedAt    time.Time
+	request               *models.ModerationRequest
+	result                *models.ModerationResult
+	reviewCase            *models.ReviewCase
+	webhookClient         models.ClientApplication
+	webhookDelivery       models.WebhookDelivery
+	webhookDeliveries     []models.WebhookDelivery
+	stored                moderation.StoredResult
+	reviewCases           []moderation.StoredReviewCase
+	finalized             moderation.StoredReviewCase
+	stats                 moderation.StoredStats
+	userID                uint
+	requestID             string
+	reviewStatus          moderation.ReviewStatus
+	caseID                uint
+	webhookClientFound    bool
+	webhookDeliveryID     uint
+	webhookDeliveryStatus moderation.WebhookDeliveryStatus
+	reviewerID            uint
+	finalStatus           moderation.ReviewStatus
+	finalDecision         moderation.Decision
+	notes                 string
+	reviewedAt            time.Time
 }
 
 func (r *moderationHandlerRepository) SaveCheck(
@@ -538,7 +665,65 @@ func (r *moderationHandlerRepository) GetClient(
 	ctx context.Context,
 	clientID uint,
 ) (models.ClientApplication, bool, error) {
-	return models.ClientApplication{}, false, nil
+	return r.webhookClient, r.webhookClientFound, nil
+}
+
+func (r *moderationHandlerRepository) SaveWebhookDelivery(
+	ctx context.Context,
+	delivery *models.WebhookDelivery,
+) error {
+	copiedDelivery := *delivery
+	r.webhookDelivery = copiedDelivery
+	return nil
+}
+
+func (r *moderationHandlerRepository) GetWebhookDelivery(
+	ctx context.Context,
+	deliveryID uint,
+) (models.WebhookDelivery, error) {
+	r.webhookDeliveryID = deliveryID
+	return r.webhookDelivery, nil
+}
+
+func (r *moderationHandlerRepository) ListWebhookDeliveries(
+	ctx context.Context,
+	status moderation.WebhookDeliveryStatus,
+	limit int,
+) ([]models.WebhookDelivery, error) {
+	r.webhookDeliveryStatus = status
+	return r.webhookDeliveries, nil
+}
+
+func (r *moderationHandlerRepository) ClaimFailedWebhookDelivery(
+	ctx context.Context,
+	deliveryID uint,
+	attemptedAt time.Time,
+) (models.WebhookDelivery, error) {
+	r.webhookDeliveryID = deliveryID
+	claimed := r.webhookDelivery
+	claimed.Status = string(moderation.WebhookDeliveryRetrying)
+	claimed.LastAttemptAt = attemptedAt
+	return claimed, nil
+}
+
+func (r *moderationHandlerRepository) UpdateWebhookDeliveryAttempt(
+	ctx context.Context,
+	deliveryID uint,
+	status moderation.WebhookDeliveryStatus,
+	httpStatus *int,
+	errorMessage string,
+	attemptedAt time.Time,
+) (models.WebhookDelivery, error) {
+	r.webhookDeliveryID = deliveryID
+	r.webhookDeliveryStatus = status
+
+	updated := r.webhookDelivery
+	updated.Status = string(status)
+	updated.AttemptCount++
+	updated.LastAttemptAt = attemptedAt
+	updated.HTTPStatus = httpStatus
+	updated.ErrorMessage = errorMessage
+	return updated, nil
 }
 
 func (r *moderationHandlerRepository) ListReviewCases(
@@ -569,4 +754,14 @@ func (r *moderationHandlerRepository) FinalizeReviewCase(
 	r.notes = notes
 	r.reviewedAt = reviewedAt
 	return r.finalized, nil
+}
+
+type moderationHandlerWebhookDispatcher struct{}
+
+func (d *moderationHandlerWebhookDispatcher) DispatchFinalDecision(
+	ctx context.Context,
+	client models.ClientApplication,
+	payload webhooks.FinalDecisionPayload,
+) error {
+	return nil
 }

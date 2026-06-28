@@ -18,12 +18,18 @@ import (
 )
 
 const (
-	defaultSource      = "api"
-	maxContentLength   = 10000
-	maxRequestIDLength = 64
-	maxSourceLength    = 50
-	maxMetadataLength  = 128
-	maxReviewNotesLen  = 2000
+	defaultSource                   = "api"
+	maxContentLength                = 10000
+	maxRequestIDLength              = 64
+	maxSourceLength                 = 50
+	maxMetadataLength               = 128
+	maxReviewNotesLen               = 2000
+	maxWebhookDeliveryListLimit     = 100
+	defaultWebhookDeliveryListLimit = 50
+	webhookDeliveryAttemptTimeout   = 6 * time.Second
+	webhookDeliveryRecordTimeout    = 5 * time.Second
+	webhookRetryStatusUpdateTimeout = 5 * time.Second
+	webhookRetryLease               = 2 * time.Minute
 )
 
 // Analyzer classifies text and returns a normalized provider suggestion.
@@ -42,6 +48,26 @@ type Repository interface {
 	GetResult(ctx context.Context, userID uint, requestID string) (StoredResult, error)
 	FindResultByClientExternalID(ctx context.Context, clientID uint, externalID string) (StoredResult, bool, error)
 	GetClient(ctx context.Context, clientID uint) (models.ClientApplication, bool, error)
+	SaveWebhookDelivery(ctx context.Context, delivery *models.WebhookDelivery) error
+	GetWebhookDelivery(ctx context.Context, deliveryID uint) (models.WebhookDelivery, error)
+	ListWebhookDeliveries(
+		ctx context.Context,
+		status WebhookDeliveryStatus,
+		limit int,
+	) ([]models.WebhookDelivery, error)
+	ClaimFailedWebhookDelivery(
+		ctx context.Context,
+		deliveryID uint,
+		attemptedAt time.Time,
+	) (models.WebhookDelivery, error)
+	UpdateWebhookDeliveryAttempt(
+		ctx context.Context,
+		deliveryID uint,
+		status WebhookDeliveryStatus,
+		httpStatus *int,
+		errorMessage string,
+		attemptedAt time.Time,
+	) (models.WebhookDelivery, error)
 	GetStats(ctx context.Context) (StoredStats, error)
 	ListReviewCases(ctx context.Context, status ReviewStatus) ([]StoredReviewCase, error)
 	FinalizeReviewCase(
@@ -179,6 +205,27 @@ type StatsOutput struct {
 	Reviewed       int64   `json:"reviewed"`
 	Mistakes       int64   `json:"mistakes"`
 	MistakeRate    float64 `json:"mistake_rate"`
+}
+
+// WebhookDeliveryOutput is the operator view of a persisted webhook delivery.
+type WebhookDeliveryOutput struct {
+	ID            uint                  `json:"id"`
+	DeliveryID    string                `json:"delivery_id"`
+	RequestID     string                `json:"request_id"`
+	ClientID      uint                  `json:"client_id"`
+	Event         string                `json:"event"`
+	Status        WebhookDeliveryStatus `json:"status"`
+	AttemptCount  int                   `json:"attempt_count"`
+	LastAttemptAt time.Time             `json:"last_attempt_at"`
+	HTTPStatus    *int                  `json:"http_status,omitempty"`
+	ErrorMessage  string                `json:"error_message,omitempty"`
+	CreatedAt     time.Time             `json:"created_at"`
+	UpdatedAt     time.Time             `json:"updated_at"`
+}
+
+// ListWebhookDeliveriesOutput is the operator list response for callback deliveries.
+type ListWebhookDeliveriesOutput struct {
+	Items []WebhookDeliveryOutput `json:"items"`
 }
 
 // Check performs a synchronous text moderation workflow and stores audit records.
@@ -530,6 +577,126 @@ func (s *Service) GetStats(ctx context.Context, reviewerID uint) (StatsOutput, e
 	}, nil
 }
 
+// ListWebhookDeliveries returns recent callback delivery records for an authenticated operator.
+func (s *Service) ListWebhookDeliveries(
+	ctx context.Context,
+	operatorID uint,
+	status string,
+	limit string,
+) (ListWebhookDeliveriesOutput, error) {
+	if operatorID == 0 {
+		return ListWebhookDeliveriesOutput{}, apperrors.Unauthorized("User not authenticated")
+	}
+	if s.repository == nil {
+		return ListWebhookDeliveriesOutput{}, apperrors.ConfigurationError("moderation repository is not configured")
+	}
+
+	normalizedStatus, err := normalizeWebhookDeliveryStatusFilter(status)
+	if err != nil {
+		return ListWebhookDeliveriesOutput{}, err
+	}
+	normalizedLimit, err := normalizeWebhookDeliveryListLimit(limit)
+	if err != nil {
+		return ListWebhookDeliveriesOutput{}, err
+	}
+
+	deliveries, err := s.repository.ListWebhookDeliveries(ctx, normalizedStatus, normalizedLimit)
+	if err != nil {
+		return ListWebhookDeliveriesOutput{}, err
+	}
+
+	items := make([]WebhookDeliveryOutput, 0, len(deliveries))
+	for _, delivery := range deliveries {
+		items = append(items, webhookDeliveryOutputFromModel(delivery))
+	}
+
+	return ListWebhookDeliveriesOutput{Items: items}, nil
+}
+
+// RetryWebhookDelivery re-sends a failed final-decision webhook delivery.
+func (s *Service) RetryWebhookDelivery(
+	ctx context.Context,
+	operatorID uint,
+	deliveryID string,
+) (WebhookDeliveryOutput, error) {
+	if operatorID == 0 {
+		return WebhookDeliveryOutput{}, apperrors.Unauthorized("User not authenticated")
+	}
+	if s.repository == nil {
+		return WebhookDeliveryOutput{}, apperrors.ConfigurationError("moderation repository is not configured")
+	}
+	if s.webhookDispatcher == nil {
+		return WebhookDeliveryOutput{}, apperrors.ConfigurationError("webhook dispatcher is not configured")
+	}
+
+	parsedDeliveryID, err := parseWebhookDeliveryID(deliveryID)
+	if err != nil {
+		return WebhookDeliveryOutput{}, err
+	}
+
+	delivery, err := s.repository.ClaimFailedWebhookDelivery(ctx, parsedDeliveryID, time.Now().UTC())
+	if err != nil {
+		return WebhookDeliveryOutput{}, err
+	}
+	statusCtx, cancelStatusCtx := context.WithTimeout(
+		context.WithoutCancel(ctx),
+		webhookRetryStatusUpdateTimeout,
+	)
+	defer cancelStatusCtx()
+
+	client, found, err := s.repository.GetClient(ctx, delivery.ClientID)
+	if err != nil {
+		s.recordClaimedWebhookDeliveryFailure(statusCtx, delivery.ID, err.Error())
+		return WebhookDeliveryOutput{}, err
+	}
+	if !found || strings.TrimSpace(client.WebhookURL) == "" {
+		s.recordClaimedWebhookDeliveryFailure(statusCtx, delivery.ID, "Webhook client not found")
+		return WebhookDeliveryOutput{}, apperrors.RecordNotFound("Webhook client not found")
+	}
+
+	var payload webhooks.FinalDecisionPayload
+	if err := json.Unmarshal([]byte(delivery.Payload), &payload); err != nil {
+		s.recordClaimedWebhookDeliveryFailure(statusCtx, delivery.ID, err.Error())
+		return WebhookDeliveryOutput{}, apperrors.Internal("failed to decode webhook payload").WithDetails(err.Error())
+	}
+	payload.DeliveryID = delivery.DeliveryID
+
+	status, httpStatus, errorMessage := deliverFinalDecision(ctx, s.webhookDispatcher, client, payload)
+	updated, err := s.repository.UpdateWebhookDeliveryAttempt(
+		statusCtx,
+		delivery.ID,
+		status,
+		httpStatus,
+		errorMessage,
+		time.Now().UTC(),
+	)
+	if err != nil {
+		return WebhookDeliveryOutput{}, err
+	}
+
+	return webhookDeliveryOutputFromModel(updated), nil
+}
+
+func (s *Service) recordClaimedWebhookDeliveryFailure(ctx context.Context, deliveryID uint, message string) {
+	if s.repository == nil {
+		return
+	}
+	if _, err := s.repository.UpdateWebhookDeliveryAttempt(
+		ctx,
+		deliveryID,
+		WebhookDeliveryFailed,
+		nil,
+		message,
+		time.Now().UTC(),
+	); err != nil {
+		zap.L().Warn(
+			"failed to restore claimed webhook delivery after retry error",
+			zap.Uint("delivery_id", deliveryID),
+			zap.Error(err),
+		)
+	}
+}
+
 func (s *Service) dispatchFinalDecision(
 	ctx context.Context,
 	stored StoredResult,
@@ -540,7 +707,13 @@ func (s *Service) dispatchFinalDecision(
 		return
 	}
 
-	client, found, err := s.repository.GetClient(ctx, *stored.Request.ClientID)
+	attemptCtx, cancelAttemptCtx := context.WithTimeout(
+		context.WithoutCancel(ctx),
+		webhookDeliveryAttemptTimeout,
+	)
+	defer cancelAttemptCtx()
+
+	client, found, err := s.repository.GetClient(attemptCtx, *stored.Request.ClientID)
 	if err != nil {
 		zap.L().Warn(
 			"failed to load webhook client",
@@ -567,6 +740,7 @@ func (s *Service) dispatchFinalDecision(
 	}
 
 	payload := webhooks.FinalDecisionPayload{
+		DeliveryID:    uuid.New().String(),
 		Event:         "moderation.final_decision",
 		RequestID:     stored.Request.RequestID,
 		ClientID:      client.ID,
@@ -581,12 +755,48 @@ func (s *Service) dispatchFinalDecision(
 		PolicyVersion: stored.Result.PolicyVersion,
 		CreatedAt:     stored.Result.CreatedAt,
 	}
-	if err := s.webhookDispatcher.DispatchFinalDecision(ctx, client, payload); err != nil {
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		zap.L().Warn(
+			"failed to encode webhook delivery payload",
+			zap.String("request_id", stored.Request.RequestID),
+			zap.Error(err),
+		)
+		return
+	}
+
+	status, httpStatus, errorMessage := deliverFinalDecision(attemptCtx, s.webhookDispatcher, client, payload)
+	delivery := &models.WebhookDelivery{
+		DeliveryID:    payload.DeliveryID,
+		RequestID:     stored.Request.RequestID,
+		ClientID:      client.ID,
+		Event:         payload.Event,
+		Status:        string(status),
+		AttemptCount:  1,
+		LastAttemptAt: time.Now().UTC(),
+		HTTPStatus:    httpStatus,
+		ErrorMessage:  errorMessage,
+		Payload:       string(payloadJSON),
+	}
+	recordCtx, cancelRecordCtx := context.WithTimeout(
+		context.WithoutCancel(ctx),
+		webhookDeliveryRecordTimeout,
+	)
+	defer cancelRecordCtx()
+	if err := s.repository.SaveWebhookDelivery(recordCtx, delivery); err != nil {
+		zap.L().Warn(
+			"failed to record webhook delivery",
+			zap.String("request_id", stored.Request.RequestID),
+			zap.Uint("client_id", client.ID),
+			zap.Error(err),
+		)
+	}
+	if errorMessage != "" {
 		zap.L().Warn(
 			"failed to deliver moderation webhook",
 			zap.String("request_id", stored.Request.RequestID),
 			zap.Uint("client_id", client.ID),
-			zap.Error(err),
+			zap.String("error", errorMessage),
 		)
 	}
 }
@@ -665,6 +875,88 @@ func parseReviewCaseID(caseID string) (uint, error) {
 	}
 
 	return uint(parsed), nil
+}
+
+func parseWebhookDeliveryID(deliveryID string) (uint, error) {
+	deliveryID = strings.TrimSpace(deliveryID)
+	if deliveryID == "" {
+		return 0, apperrors.ValidationError("webhook delivery id is required")
+	}
+
+	parsed, err := strconv.ParseUint(deliveryID, 10, 0)
+	if err != nil || parsed == 0 {
+		return 0, apperrors.ValidationError("webhook delivery id must be a positive integer")
+	}
+
+	return uint(parsed), nil
+}
+
+func normalizeWebhookDeliveryStatusFilter(status string) (WebhookDeliveryStatus, error) {
+	status = strings.TrimSpace(status)
+	if status == "" {
+		return "", nil
+	}
+
+	switch WebhookDeliveryStatus(status) {
+	case WebhookDeliverySucceeded, WebhookDeliveryFailed, WebhookDeliveryRetrying:
+		return WebhookDeliveryStatus(status), nil
+	default:
+		return "", apperrors.ValidationError("status must be succeeded, failed, or retrying")
+	}
+}
+
+func normalizeWebhookDeliveryListLimit(limit string) (int, error) {
+	limit = strings.TrimSpace(limit)
+	if limit == "" {
+		return defaultWebhookDeliveryListLimit, nil
+	}
+
+	parsed, err := strconv.Atoi(limit)
+	if err != nil || parsed <= 0 {
+		return 0, apperrors.ValidationError("limit must be a positive integer")
+	}
+	if parsed > maxWebhookDeliveryListLimit {
+		return 0, apperrors.ValidationError(
+			fmt.Sprintf("limit must not exceed %d", maxWebhookDeliveryListLimit),
+		)
+	}
+
+	return parsed, nil
+}
+
+func deliverFinalDecision(
+	ctx context.Context,
+	dispatcher webhooks.Dispatcher,
+	client models.ClientApplication,
+	payload webhooks.FinalDecisionPayload,
+) (WebhookDeliveryStatus, *int, string) {
+	if err := dispatcher.DispatchFinalDecision(ctx, client, payload); err != nil {
+		var deliveryErr *webhooks.DeliveryError
+		var httpStatus *int
+		if errors.As(err, &deliveryErr) && deliveryErr.StatusCode != 0 {
+			httpStatus = &deliveryErr.StatusCode
+		}
+		return WebhookDeliveryFailed, httpStatus, err.Error()
+	}
+
+	return WebhookDeliverySucceeded, nil, ""
+}
+
+func webhookDeliveryOutputFromModel(delivery models.WebhookDelivery) WebhookDeliveryOutput {
+	return WebhookDeliveryOutput{
+		ID:            delivery.ID,
+		DeliveryID:    delivery.DeliveryID,
+		RequestID:     delivery.RequestID,
+		ClientID:      delivery.ClientID,
+		Event:         delivery.Event,
+		Status:        WebhookDeliveryStatus(delivery.Status),
+		AttemptCount:  delivery.AttemptCount,
+		LastAttemptAt: delivery.LastAttemptAt,
+		HTTPStatus:    delivery.HTTPStatus,
+		ErrorMessage:  delivery.ErrorMessage,
+		CreatedAt:     delivery.CreatedAt,
+		UpdatedAt:     delivery.UpdatedAt,
+	}
 }
 
 func optionalUint(value uint) *uint {
