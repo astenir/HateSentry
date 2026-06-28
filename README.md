@@ -663,6 +663,18 @@ make verify-compose
 
 该命令会构建并启动 Compose 服务，然后等待 `GET /api/v1/health` 返回健康状态。健康响应需要确认 API 服务、MySQL、Redis 和 RabbitMQ 都可达。
 
+### 验证外部客户端审核闭环
+```bash
+export HATESENTRY_BASE_URL="http://localhost:8080"
+export HATESENTRY_ADMIN_EMAIL="admin@example.com"
+export HATESENTRY_ADMIN_PASSWORD="password123"
+# 需要强制覆盖复核闭环时，可要求 provider 返回 review：
+# export HATESENTRY_EXPECT_DECISION=review
+make smoke-moderation
+```
+
+该命令会通过真实 HTTP API 创建外部客户端，使用返回的一次性 API Key 提交文本审核、用相同 `external_id` 重试并断言复用原审核记录，然后查询审核结果；如果策略返回 `review`，还会用管理员身份查询复核队列、执行复核并再次用 API Key 查询最终结果。脚本默认会在结束时停用本次创建的临时客户端，保留审核审计记录但撤销该 API Key 的继续访问；如果确实需要保留客户端，可设置 `HATESENTRY_KEEP_SMOKE_CLIENT=1`。也可以直接提供 `HATESENTRY_ADMIN_TOKEN` 跳过登录。该脚本不会创建用户；空数据库首次初始化管理员请先按上文设置服务端 `ADMIN_BOOTSTRAP_TOKEN` 并单独执行 `make create-user` 或调用注册接口。该 smoke 流程会调用当前配置的 AI provider，因此运行前需要确认 OpenAI 或 Ollama 文本审核配置可用；默认内容不保证 provider 一定返回 `review`，需要强制验证复核端点时应设置 `HATESENTRY_EXPECT_DECISION=review` 并使用会触发复核阈值的 provider/内容配置。
+
 ### 测试覆盖率
 ```bash
 make test-coverage

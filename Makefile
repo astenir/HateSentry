@@ -1,4 +1,4 @@
-.PHONY: all build run clean test test-integration deps docker-build docker-up docker-down docker-logs verify-compose install-deps
+.PHONY: all build run clean test test-integration deps docker-build docker-up docker-down docker-logs verify-compose smoke-moderation install-deps
 
 # Variables
 BINARY_NAME=hatesentry
@@ -117,6 +117,11 @@ health:
 test-metrics:
 	@echo "Testing metrics endpoint..."
 	./scripts/test_metrics.sh
+
+# Smoke-test the external client moderation workflow against a running API
+smoke-moderation:
+	@echo "Running external client moderation smoke workflow..."
+	@python3 scripts/smoke_moderation_workflow.py
 
 # Install development tools
 install-deps:
