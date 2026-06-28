@@ -21,7 +21,7 @@ if ! docker info > /dev/null 2>&1; then
 fi
 
 # Check if required ports are available
-PORTS=(8080 3306 6379 5672 15672 11434)
+PORTS=(8080 3306 6379 5672 15672)
 for port in "${PORTS[@]}"; do
     if lsof -Pi :$port -sTCP:LISTEN -t >/dev/null 2>&1 ; then
         echo "⚠️  Port $port is already in use. This might cause conflicts."
@@ -39,13 +39,15 @@ docker-compose up -d
 echo "⏳ Waiting for services to be ready..."
 sleep 10
 
-# Check service health
+# Check API health. Container health alone is not enough: the API must be able
+# to reach MySQL, Redis, and RabbitMQ before the MVP workflow is usable.
 MAX_RETRIES=30
 RETRY_COUNT=0
+API_HEALTH_URL="http://localhost:8080/api/v1/health"
 
 while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-    if docker-compose ps | grep -q "healthy"; then
-        echo "✅ Services are healthy!"
+    if curl -fsS "$API_HEALTH_URL" >/dev/null 2>&1; then
+        echo "✅ API and dependencies are healthy!"
         break
     fi
     echo "⏳ Waiting for services... ($((RETRY_COUNT + 1))/$MAX_RETRIES)"
@@ -55,7 +57,10 @@ done
 
 if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
     echo "⚠️  Services did not become healthy within expected time."
-    echo "Run 'docker-compose logs' to check for errors."
+    docker-compose ps
+    docker-compose logs --tail=80 hatesentry
+    echo "Run 'docker-compose logs' to check for more details."
+    exit 1
 fi
 
 # Print service URLs
