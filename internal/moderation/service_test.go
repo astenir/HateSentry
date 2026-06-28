@@ -3,12 +3,14 @@ package moderation
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	apperrors "hatesentry/internal/errors"
 	"hatesentry/internal/models"
+	"hatesentry/internal/webhooks"
 )
 
 func TestServiceCheckPersistsDecision(t *testing.T) {
@@ -250,6 +252,139 @@ func TestServiceCheckReturnsExistingResultAfterDuplicateIdempotencySave(t *testi
 	}
 	if repository.findClientExternalIDCalls != 2 {
 		t.Fatalf("FindResultByClientExternalID calls = %d, want 2", repository.findClientExternalIDCalls)
+	}
+}
+
+func TestServiceCheckDispatchesWebhookForAutomaticFinalDecision(t *testing.T) {
+	dispatcher := &fakeWebhookDispatcher{}
+	repository := &fakeRepository{
+		webhookClient: models.ClientApplication{
+			ID:            11,
+			WebhookURL:    "https://example.com/moderation/webhook",
+			WebhookSecret: "whsec_test",
+		},
+		webhookClientFound: true,
+	}
+	service := NewService(
+		fakeAnalyzer{
+			suggestion: ProviderSuggestion{
+				RiskScore: 0.8,
+				Labels:    []string{"hate"},
+				Reason:    "Policy threshold exceeded.",
+			},
+		},
+		repository,
+		DefaultPolicy(),
+		dispatcher,
+	)
+
+	output, err := service.Check(context.Background(), CheckInput{
+		UserID:     7,
+		ClientID:   11,
+		Content:    "block this text",
+		ExternalID: "comment_123",
+		ActorID:    "user_456",
+		Source:     "comment",
+	})
+	if err != nil {
+		t.Fatalf("Check() error = %v", err)
+	}
+
+	if output.Decision != DecisionBlock {
+		t.Fatalf("Decision = %q, want block", output.Decision)
+	}
+	if len(dispatcher.payloads) != 1 {
+		t.Fatalf("webhook dispatches = %d, want 1", len(dispatcher.payloads))
+	}
+	payload := dispatcher.payloads[0]
+	if payload.RequestID != output.RequestID {
+		t.Fatalf("RequestID = %q, want %q", payload.RequestID, output.RequestID)
+	}
+	if payload.Decision != string(DecisionBlock) {
+		t.Fatalf("Decision = %q, want block", payload.Decision)
+	}
+	if payload.ReviewStatus != "" {
+		t.Fatalf("ReviewStatus = %q, want empty for automatic final decision", payload.ReviewStatus)
+	}
+	if payload.ExternalID != "comment_123" || payload.ActorID != "user_456" {
+		t.Fatalf("payload metadata = %#v", payload)
+	}
+}
+
+func TestServiceCheckDoesNotDispatchWebhookForReviewDecision(t *testing.T) {
+	dispatcher := &fakeWebhookDispatcher{}
+	repository := &fakeRepository{
+		webhookClient: models.ClientApplication{
+			ID:            11,
+			WebhookURL:    "https://example.com/moderation/webhook",
+			WebhookSecret: "whsec_test",
+		},
+		webhookClientFound: true,
+	}
+	service := NewService(
+		fakeAnalyzer{
+			suggestion: ProviderSuggestion{
+				RiskScore: 0.6,
+				Labels:    []string{"harassment"},
+				Reason:    "Needs operator review.",
+			},
+		},
+		repository,
+		DefaultPolicy(),
+		dispatcher,
+	)
+
+	output, err := service.Check(context.Background(), CheckInput{
+		UserID:   7,
+		ClientID: 11,
+		Content:  "review this text",
+	})
+	if err != nil {
+		t.Fatalf("Check() error = %v", err)
+	}
+
+	if output.Decision != DecisionReview {
+		t.Fatalf("Decision = %q, want review", output.Decision)
+	}
+	if len(dispatcher.payloads) != 0 {
+		t.Fatalf("webhook dispatches = %d, want 0 before human final decision", len(dispatcher.payloads))
+	}
+}
+
+func TestServiceCheckDoesNotFailWhenWebhookDispatchFails(t *testing.T) {
+	dispatcher := &fakeWebhookDispatcher{err: errors.New("webhook unavailable")}
+	repository := &fakeRepository{
+		webhookClient: models.ClientApplication{
+			ID:            11,
+			WebhookURL:    "https://example.com/moderation/webhook",
+			WebhookSecret: "whsec_test",
+		},
+		webhookClientFound: true,
+	}
+	service := NewService(
+		fakeAnalyzer{
+			suggestion: ProviderSuggestion{
+				RiskScore: 0.8,
+				Labels:    []string{"hate"},
+				Reason:    "Policy threshold exceeded.",
+			},
+		},
+		repository,
+		DefaultPolicy(),
+		dispatcher,
+	)
+
+	output, err := service.Check(context.Background(), CheckInput{
+		UserID:   7,
+		ClientID: 11,
+		Content:  "block this text",
+	})
+	if err != nil {
+		t.Fatalf("Check() error = %v, want nil despite webhook failure", err)
+	}
+
+	if output.Decision != DecisionBlock {
+		t.Fatalf("Decision = %q, want block", output.Decision)
 	}
 }
 
@@ -625,6 +760,66 @@ func TestServiceReviewActionsFinalizePendingCase(t *testing.T) {
 	}
 }
 
+func TestServiceReviewActionsDispatchWebhookWithHumanFinalDecision(t *testing.T) {
+	dispatcher := &fakeWebhookDispatcher{}
+	repository := &fakeRepository{
+		webhookClient: models.ClientApplication{
+			ID:            11,
+			WebhookURL:    "https://example.com/moderation/webhook",
+			WebhookSecret: "whsec_test",
+		},
+		webhookClientFound: true,
+		finalized: StoredReviewCase{
+			Case: models.ReviewCase{
+				ID:            3,
+				RequestID:     "request-123",
+				UserID:        7,
+				ClientID:      uintPtr(11),
+				Status:        string(ReviewStatusApproved),
+				FinalDecision: string(DecisionAllow),
+			},
+			Request: models.ModerationRequest{
+				RequestID:  "request-123",
+				UserID:     7,
+				ClientID:   uintPtr(11),
+				Content:    "stored content",
+				Source:     "comment",
+				ExternalID: "comment_123",
+			},
+			Result: models.ModerationResult{
+				RequestID:     "request-123",
+				UserID:        7,
+				ClientID:      uintPtr(11),
+				RiskScore:     0.6,
+				Labels:        `["harassment"]`,
+				Decision:      string(DecisionReview),
+				Reason:        "Needs operator review.",
+				PolicyVersion: "default-v1",
+			},
+		},
+	}
+	service := NewService(fakeAnalyzer{}, repository, DefaultPolicy(), dispatcher)
+
+	output, err := service.ApproveReviewCase(context.Background(), "3", 9, "looks safe")
+	if err != nil {
+		t.Fatalf("ApproveReviewCase() error = %v", err)
+	}
+
+	if output.FinalDecision != DecisionAllow {
+		t.Fatalf("FinalDecision = %q, want allow", output.FinalDecision)
+	}
+	if len(dispatcher.payloads) != 1 {
+		t.Fatalf("webhook dispatches = %d, want 1", len(dispatcher.payloads))
+	}
+	payload := dispatcher.payloads[0]
+	if payload.Decision != string(DecisionAllow) {
+		t.Fatalf("webhook Decision = %q, want human final allow", payload.Decision)
+	}
+	if payload.ReviewStatus != string(ReviewStatusApproved) {
+		t.Fatalf("webhook ReviewStatus = %q, want approved", payload.ReviewStatus)
+	}
+}
+
 func TestServiceMarkReviewMistakeRequiresFinalDecision(t *testing.T) {
 	service := NewService(fakeAnalyzer{}, &fakeRepository{}, DefaultPolicy())
 
@@ -663,6 +858,8 @@ type fakeRepository struct {
 	clientResultFound          bool
 	clientResultFoundAfterSave bool
 	findClientExternalIDCalls  int
+	webhookClient              models.ClientApplication
+	webhookClientFound         bool
 	reviewCases                []StoredReviewCase
 	finalized                  StoredReviewCase
 	userID                     uint
@@ -730,6 +927,17 @@ func (r *fakeRepository) FindResultByClientExternalID(
 	return r.clientStored, r.clientResultFound, nil
 }
 
+func (r *fakeRepository) GetClient(
+	ctx context.Context,
+	clientID uint,
+) (models.ClientApplication, bool, error) {
+	if r.err != nil {
+		return models.ClientApplication{}, false, r.err
+	}
+	r.clientID = clientID
+	return r.webhookClient, r.webhookClientFound, nil
+}
+
 func (r *fakeRepository) ListReviewCases(
 	ctx context.Context,
 	status ReviewStatus,
@@ -764,4 +972,23 @@ func (r *fakeRepository) FinalizeReviewCase(
 
 func uintPtr(value uint) *uint {
 	return &value
+}
+
+type fakeWebhookDispatcher struct {
+	clients  []models.ClientApplication
+	payloads []webhooks.FinalDecisionPayload
+	err      error
+}
+
+func (d *fakeWebhookDispatcher) DispatchFinalDecision(
+	ctx context.Context,
+	client models.ClientApplication,
+	payload webhooks.FinalDecisionPayload,
+) error {
+	if d.err != nil {
+		return d.err
+	}
+	d.clients = append(d.clients, client)
+	d.payloads = append(d.payloads, payload)
+	return nil
 }

@@ -127,7 +127,7 @@ Authorization: Bearer <token>
 
 ## 外部客户端
 
-外部客户端用于小型应用、评论系统或论坛等系统接入文本审核 API。客户端由管理员创建，创建响应会返回一次明文 `api_key`；服务端只保存 API Key 哈希。
+外部客户端用于小型应用、评论系统或论坛等系统接入文本审核 API。客户端由管理员创建，创建响应会返回一次明文 `api_key`。如果配置了 `webhook_url`，创建响应还会返回一次 `webhook_secret`，用于验证后续回调签名。服务端只保存 API Key 哈希；Webhook secret 不会出现在查询客户端列表的响应中。
 
 ### 1. 创建客户端
 
@@ -150,7 +150,7 @@ Content-Type: application/json
 
 **字段说明**:
 - `name`: 必填，客户端名称。
-- `webhook_url`: 可选，预留给后续 webhook 回调；当前只保存配置，不会实际回调。
+- `webhook_url`: 可选，接收审核最终决策回调的 HTTPS 地址；不允许 localhost、内网、链路本地、组播或元数据服务 IP。发送回调时也会检查域名解析结果，避免域名指向内部地址。
 - `policy_version`: 可选，预留给后续客户端策略分配；当前审核仍使用服务端全局策略配置。
 
 **响应** (201 Created):
@@ -161,6 +161,7 @@ Content-Type: application/json
   "status": "active",
   "api_key": "hs_live_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
   "api_key_prefix": "hs_live_xxxx",
+  "webhook_secret": "whsec_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
   "webhook_url": "https://example.com/moderation/webhook",
   "policy_version": "default-v1",
   "created_at": "2026-06-28T12:00:00Z"
@@ -200,7 +201,7 @@ Authorization: Bearer <admin-token>
 
 提交一段文本，服务会调用当前配置的 AI provider 生成风险建议，再由服务端默认策略生成最终业务决策。
 
-当前接口为同步处理，支持 JWT 认证或外部客户端 API Key 认证。Webhook 回调仍属于后续集成能力。
+当前接口为同步处理，支持 JWT 认证或外部客户端 API Key 认证。API Key 客户端配置了 `webhook_url` 时，`allow` / `block` 会同步尝试发送最终决策回调；`review` 会先进入人工复核队列，待管理员复核后再发送最终决策回调。当前版本不包含异步重试队列。
 
 **端点**: `POST /moderation/check`
 
@@ -848,8 +849,46 @@ X-RateLimit-Remaining: 55
 X-RateLimit-Reset: 1609459200
 ```
 
-## Webhook 支持（计划中）
+## Webhook 支持
 
-后续版本计划支持向客户端配置的 `webhook_url` 推送审核最终决策，并使用 HMAC 签名保护回调完整性。
+客户端配置 `webhook_url` 后，服务会向该地址推送审核最终决策：
 
-配置方式将在后续版本中提供。
+- `allow` / `block`: 文本审核完成后立即发送。
+- `review`: 不立即发送最终决策；管理员复核通过、拒绝或标记误判后发送。
+- 当前版本为同步单次尝试；失败会记录日志，但不会阻断审核记录保存或人工复核结果保存，暂未实现重试队列。
+
+**请求头**:
+```http
+Content-Type: application/json
+X-HateSentry-Event: moderation.final_decision
+X-HateSentry-Delivery: <uuid>
+X-HateSentry-Timestamp: <unix-timestamp>
+X-HateSentry-Signature: sha256=<hex-hmac>
+```
+
+签名计算方式：
+
+```text
+HMAC_SHA256(webhook_secret, "<timestamp>.<raw-json-body>")
+```
+
+**请求体**:
+```json
+{
+  "event": "moderation.final_decision",
+  "request_id": "550e8400-e29b-41d4-a716-446655440000",
+  "client_id": 11,
+  "external_id": "comment_123",
+  "actor_id": "user_456",
+  "source": "comment",
+  "decision": "block",
+  "review_status": "rejected",
+  "risk_score": 0.82,
+  "labels": ["harassment", "identity_attack"],
+  "reason": "Policy threshold exceeded.",
+  "policy_version": "default-v1",
+  "created_at": "2026-06-28T12:00:00Z"
+}
+```
+
+`review_status` 只会在人工复核产生最终决策时出现。

@@ -9,6 +9,7 @@ import (
 	"hatesentry/internal/moderation"
 	"hatesentry/internal/observability"
 	"hatesentry/internal/queue"
+	"hatesentry/internal/webhooks"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -76,6 +77,7 @@ func (r *Router) Setup() *gin.Engine {
 		r.detectionService,
 		moderation.NewGormRepository(r.db),
 		r.moderationPolicy,
+		webhooks.NewHTTPDispatcher(),
 	)
 	moderationHandler := handlers.NewModerationHandler(moderationService)
 	healthHandler := handlers.NewHealthHandler(r.rabbitMQManager)

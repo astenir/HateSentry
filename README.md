@@ -6,7 +6,7 @@
 
 HateSentry 是一个基于 Go 的文本内容审核网关。当前重点是接收文本审核请求，调用 OpenAI 或 Ollama 等 AI provider 生成风险建议，再由服务端策略转换为 `allow`、`review`、`block` 三类业务决策，并保存审核记录用于审计和后续人工复核。
 
-项目中仍保留旧版 detection、RabbitMQ、Redis、Prometheus 等后端基础设施代码，但近期产品方向优先保证文本审核 MVP 可运行、可测试、可接入。图片、批量、完整异步队列、Webhook 和管理界面属于后续路线，不应视为当前已完整可用能力。
+项目中仍保留旧版 detection、RabbitMQ、Redis、Prometheus 等后端基础设施代码，但近期产品方向优先保证文本审核 MVP 可运行、可测试、可接入。图片、批量、完整异步队列和管理界面属于后续路线，不应视为当前已完整可用能力。
 
 ## ✨ 特性
 
@@ -189,7 +189,7 @@ Content-Type: application/json
 }
 ```
 
-响应中的 `api_key` 只返回一次，服务端只保存哈希值。
+响应中的 `api_key` 只返回一次，服务端只保存哈希值。配置 `webhook_url` 时，响应还会返回一次 `webhook_secret`，用于验证后续最终决策回调的 HMAC 签名。
 
 #### 使用 API Key 提交文本审核
 ```http
@@ -566,6 +566,7 @@ make create-user
 - 外部客户端管理：`POST /api/v1/admin/clients`、`GET /api/v1/admin/clients`。
 - API Key 文本审核接入：`X-API-Key` + `POST /api/v1/moderation/check`。
 - 同一客户端的 `external_id` 幂等查询。
+- 基础 Webhook 最终决策回调：向客户端 HTTPS `webhook_url` 同步单次发送 `allow` / `block` 或人工复核后的最终决策，并使用 HMAC-SHA256 签名。
 - 服务端策略决策：`allow`、`review`、`block`。
 - 可配置策略阈值和策略版本。
 - 审核请求与结果持久化。
@@ -577,11 +578,12 @@ make create-user
 
 - 旧版 `/api/v1/detection/*` 路由仍存在，但不是新的产品主线。
 - Redis 缓存、RabbitMQ 队列和 Prometheus 监控相关代码已存在，但完整异步审核工作流、批量审核状态查询、真实图片审核和高并发承诺还没有作为 MVP 完成。
-- Webhook 回调、复核统计和管理界面仍在路线图中。
+- Webhook 当前为同步单次尝试，暂未实现异步重试队列；复核统计和管理界面仍在路线图中。
 
 ## 🔒 安全与限制
 
 - 当前审核 API 支持 JWT Bearer Token 和外部客户端 `X-API-Key`；客户端 API Key 只在创建时返回明文，数据库仅保存哈希值。
+- Webhook 回调用创建客户端时返回的 `webhook_secret` 计算 HMAC-SHA256 签名；客户端列表不会返回 secret。`webhook_url` 仅支持 HTTPS，且会拒绝 localhost、内网、链路本地、组播和元数据服务 IP；发送时还会检查域名解析结果。
 - 密码不会在响应中返回，JWT Secret 可通过环境变量覆盖。
 - 文本审核入口会校验必填内容、内容长度和元数据长度。
 - 审核结果查询按当前登录用户和 `request_id` 过滤，避免跨用户读取。
@@ -666,6 +668,7 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 - [x] 人工复核队列和复核处理接口
 - [x] API Key 外部客户端认证
 - [x] 外部客户端 `external_id` 幂等
+- [x] 基础同步单次 Webhook 回调和 HMAC 签名
 - [x] 统一错误处理框架
 - [x] 健康检查和 Prometheus 指标入口
 - [x] 结构化日志系统
@@ -673,7 +676,7 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 
 ### 进行中 🚧
 - [ ] 复核统计和操作指标
-- [ ] 实现 Webhook 支持
+- [ ] Webhook 异步重试队列
 - [ ] README、API 文档和运维文档持续按实现校准
 - [ ] Docker Compose 端到端运行验证
 

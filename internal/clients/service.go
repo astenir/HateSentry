@@ -3,13 +3,13 @@ package clients
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"strings"
 	"time"
 
 	"hatesentry/internal/auth"
 	apperrors "hatesentry/internal/errors"
 	"hatesentry/internal/models"
+	"hatesentry/internal/webhooks"
 )
 
 const (
@@ -52,6 +52,7 @@ type CreateOutput struct {
 	Status        string    `json:"status"`
 	APIKey        string    `json:"api_key"`
 	APIKeyPrefix  string    `json:"api_key_prefix"`
+	WebhookSecret string    `json:"webhook_secret,omitempty"`
 	WebhookURL    string    `json:"webhook_url,omitempty"`
 	PolicyVersion string    `json:"policy_version,omitempty"`
 	CreatedAt     time.Time `json:"created_at"`
@@ -85,6 +86,14 @@ func (s *Service) CreateClient(ctx context.Context, input CreateInput) (CreateOu
 		return CreateOutput{}, err
 	}
 
+	webhookSecret := ""
+	if normalized.WebhookURL != "" {
+		webhookSecret, err = webhooks.GenerateSecret()
+		if err != nil {
+			return CreateOutput{}, err
+		}
+	}
+
 	client := &models.ClientApplication{
 		UserID:        normalized.UserID,
 		Name:          normalized.Name,
@@ -92,6 +101,7 @@ func (s *Service) CreateClient(ctx context.Context, input CreateInput) (CreateOu
 		APIKeyPrefix:  auth.APIKeyPrefix(apiKey),
 		Status:        StatusActive,
 		WebhookURL:    normalized.WebhookURL,
+		WebhookSecret: webhookSecret,
 		PolicyVersion: normalized.PolicyVersion,
 	}
 	if err := s.repository.CreateClient(ctx, client); err != nil {
@@ -104,6 +114,7 @@ func (s *Service) CreateClient(ctx context.Context, input CreateInput) (CreateOu
 		Status:        client.Status,
 		APIKey:        apiKey,
 		APIKeyPrefix:  client.APIKeyPrefix,
+		WebhookSecret: webhookSecret,
 		WebhookURL:    client.WebhookURL,
 		PolicyVersion: client.PolicyVersion,
 		CreatedAt:     client.CreatedAt,
@@ -160,12 +171,8 @@ func validateCreateInput(input CreateInput) (CreateInput, error) {
 		)
 	}
 	if input.WebhookURL != "" {
-		parsed, err := url.ParseRequestURI(input.WebhookURL)
-		if err != nil || parsed.Host == "" {
-			return CreateInput{}, apperrors.ValidationError("webhook_url must be a valid absolute URL")
-		}
-		if parsed.Scheme != "http" && parsed.Scheme != "https" {
-			return CreateInput{}, apperrors.ValidationError("webhook_url must use http or https")
+		if err := webhooks.ValidateURL(input.WebhookURL); err != nil {
+			return CreateInput{}, err
 		}
 	}
 	if len(input.PolicyVersion) > maxPolicyVersionLength {

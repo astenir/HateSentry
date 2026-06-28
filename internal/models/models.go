@@ -33,6 +33,7 @@ type ClientApplication struct {
 	APIKeyPrefix  string         `gorm:"size:20;index" json:"api_key_prefix"`
 	Status        string         `gorm:"size:20;not null;index;default:'active'" json:"status"`
 	WebhookURL    string         `gorm:"size:500" json:"webhook_url,omitempty"`
+	WebhookSecret string         `gorm:"size:80" json:"-"`
 	PolicyVersion string         `gorm:"size:50" json:"policy_version,omitempty"`
 }
 

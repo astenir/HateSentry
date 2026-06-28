@@ -472,6 +472,13 @@ func (r *moderationHandlerRepository) FindResultByClientExternalID(
 	return moderation.StoredResult{}, false, nil
 }
 
+func (r *moderationHandlerRepository) GetClient(
+	ctx context.Context,
+	clientID uint,
+) (models.ClientApplication, bool, error) {
+	return models.ClientApplication{}, false, nil
+}
+
 func (r *moderationHandlerRepository) ListReviewCases(
 	ctx context.Context,
 	status moderation.ReviewStatus,

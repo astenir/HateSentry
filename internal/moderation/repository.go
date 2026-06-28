@@ -130,6 +130,26 @@ func (r *GormRepository) FindResultByClientExternalID(
 	}, true, nil
 }
 
+// GetClient retrieves an active client application for webhook delivery.
+func (r *GormRepository) GetClient(ctx context.Context, clientID uint) (models.ClientApplication, bool, error) {
+	if r == nil || r.db == nil {
+		return models.ClientApplication{}, false, apperrors.ConfigurationError("moderation database is not configured")
+	}
+
+	var client models.ClientApplication
+	err := r.db.WithContext(ctx).
+		Where("id = ? AND status = ?", clientID, "active").
+		First(&client).Error
+	if err != nil {
+		if stderrors.Is(err, gorm.ErrRecordNotFound) {
+			return models.ClientApplication{}, false, nil
+		}
+		return models.ClientApplication{}, false, apperrors.DatabaseError(err, "failed to retrieve webhook client")
+	}
+
+	return client, true, nil
+}
+
 // ListReviewCases retrieves review cases by workflow status.
 func (r *GormRepository) ListReviewCases(
 	ctx context.Context,

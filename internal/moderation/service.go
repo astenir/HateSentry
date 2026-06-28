@@ -10,9 +10,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.uber.org/zap"
 
 	apperrors "hatesentry/internal/errors"
 	"hatesentry/internal/models"
+	"hatesentry/internal/webhooks"
 )
 
 const (
@@ -39,6 +41,7 @@ type Repository interface {
 	) error
 	GetResult(ctx context.Context, userID uint, requestID string) (StoredResult, error)
 	FindResultByClientExternalID(ctx context.Context, clientID uint, externalID string) (StoredResult, bool, error)
+	GetClient(ctx context.Context, clientID uint) (models.ClientApplication, bool, error)
 	ListReviewCases(ctx context.Context, status ReviewStatus) ([]StoredReviewCase, error)
 	FinalizeReviewCase(
 		ctx context.Context,
@@ -66,17 +69,29 @@ type StoredReviewCase struct {
 
 // Service coordinates provider analysis, policy decisions, and persistence.
 type Service struct {
-	analyzer   Analyzer
-	repository Repository
-	policy     Policy
+	analyzer          Analyzer
+	repository        Repository
+	policy            Policy
+	webhookDispatcher webhooks.Dispatcher
 }
 
 // NewService creates a moderation service.
-func NewService(analyzer Analyzer, repository Repository, policy Policy) *Service {
+func NewService(
+	analyzer Analyzer,
+	repository Repository,
+	policy Policy,
+	webhookDispatchers ...webhooks.Dispatcher,
+) *Service {
+	var webhookDispatcher webhooks.Dispatcher
+	if len(webhookDispatchers) > 0 {
+		webhookDispatcher = webhookDispatchers[0]
+	}
+
 	return &Service{
-		analyzer:   analyzer,
-		repository: repository,
-		policy:     policy,
+		analyzer:          analyzer,
+		repository:        repository,
+		policy:            policy,
+		webhookDispatcher: webhookDispatcher,
 	}
 }
 
@@ -235,6 +250,12 @@ func (s *Service) Check(ctx context.Context, input CheckInput) (CheckOutput, err
 			}
 		}
 		return CheckOutput{}, err
+	}
+	if decision.Decision != DecisionReview {
+		s.dispatchFinalDecision(ctx, StoredResult{
+			Request: *request,
+			Result:  *result,
+		}, "", "")
 	}
 
 	return CheckOutput{
@@ -440,7 +461,78 @@ func (s *Service) finalizeReviewCase(
 		return ReviewCaseOutput{}, err
 	}
 
-	return mapReviewCaseOutput(stored)
+	output, err := mapReviewCaseOutput(stored)
+	if err != nil {
+		return ReviewCaseOutput{}, err
+	}
+
+	s.dispatchFinalDecision(ctx, StoredResult{
+		Request: stored.Request,
+		Result:  stored.Result,
+	}, string(status), string(finalDecision))
+
+	return output, nil
+}
+
+func (s *Service) dispatchFinalDecision(
+	ctx context.Context,
+	stored StoredResult,
+	reviewStatus string,
+	finalDecision string,
+) {
+	if s.webhookDispatcher == nil || stored.Request.ClientID == nil {
+		return
+	}
+
+	client, found, err := s.repository.GetClient(ctx, *stored.Request.ClientID)
+	if err != nil {
+		zap.L().Warn(
+			"failed to load webhook client",
+			zap.String("request_id", stored.Request.RequestID),
+			zap.Error(err),
+		)
+		return
+	}
+	if !found || strings.TrimSpace(client.WebhookURL) == "" {
+		return
+	}
+
+	labels, err := decodeLabels(stored.Result.Labels)
+	if err != nil {
+		zap.L().Warn(
+			"failed to decode webhook labels",
+			zap.String("request_id", stored.Request.RequestID),
+			zap.Error(err),
+		)
+		return
+	}
+	if finalDecision == "" {
+		finalDecision = stored.Result.Decision
+	}
+
+	payload := webhooks.FinalDecisionPayload{
+		Event:         "moderation.final_decision",
+		RequestID:     stored.Request.RequestID,
+		ClientID:      client.ID,
+		ExternalID:    stored.Request.ExternalID,
+		ActorID:       stored.Request.ActorID,
+		Source:        stored.Request.Source,
+		Decision:      finalDecision,
+		ReviewStatus:  reviewStatus,
+		RiskScore:     stored.Result.RiskScore,
+		Labels:        labels,
+		Reason:        stored.Result.Reason,
+		PolicyVersion: stored.Result.PolicyVersion,
+		CreatedAt:     stored.Result.CreatedAt,
+	}
+	if err := s.webhookDispatcher.DispatchFinalDecision(ctx, client, payload); err != nil {
+		zap.L().Warn(
+			"failed to deliver moderation webhook",
+			zap.String("request_id", stored.Request.RequestID),
+			zap.Uint("client_id", client.ID),
+			zap.Error(err),
+		)
+	}
 }
 
 func validateCheckInput(input CheckInput) (CheckInput, error) {

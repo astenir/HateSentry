@@ -27,6 +27,12 @@ func TestServiceCreateClientStoresHashedAPIKey(t *testing.T) {
 	if output.APIKey == "" {
 		t.Fatal("APIKey is empty")
 	}
+	if output.WebhookSecret == "" {
+		t.Fatal("WebhookSecret is empty when webhook_url is configured")
+	}
+	if !strings.HasPrefix(output.WebhookSecret, "whsec_") {
+		t.Fatalf("WebhookSecret = %q, want whsec_ prefix", output.WebhookSecret)
+	}
 	if !strings.HasPrefix(output.APIKey, "hs_live_") {
 		t.Fatalf("APIKey = %q, want hs_live_ prefix", output.APIKey)
 	}
@@ -50,6 +56,9 @@ func TestServiceCreateClientStoresHashedAPIKey(t *testing.T) {
 	}
 	if repository.client.APIKeyPrefix != output.APIKeyPrefix {
 		t.Fatalf("APIKeyPrefix = %q, want %q", repository.client.APIKeyPrefix, output.APIKeyPrefix)
+	}
+	if repository.client.WebhookSecret != output.WebhookSecret {
+		t.Fatal("persisted WebhookSecret does not match returned secret")
 	}
 }
 
@@ -82,7 +91,79 @@ func TestServiceCreateClientRejectsInvalidInput(t *testing.T) {
 				Name:       "blog",
 				WebhookURL: "ftp://example.com/hook",
 			},
-			wantErr: "webhook_url must use http or https",
+			wantErr: "webhook_url must use https",
+		},
+		{
+			name: "plain http webhook",
+			input: CreateInput{
+				UserID:     42,
+				Name:       "blog",
+				WebhookURL: "http://example.com/hook",
+			},
+			wantErr: "webhook_url must use https",
+		},
+		{
+			name: "localhost webhook",
+			input: CreateInput{
+				UserID:     42,
+				Name:       "blog",
+				WebhookURL: "https://localhost/hook",
+			},
+			wantErr: "webhook_url must not target localhost",
+		},
+		{
+			name: "loopback webhook",
+			input: CreateInput{
+				UserID:     42,
+				Name:       "blog",
+				WebhookURL: "https://127.0.0.1/hook",
+			},
+			wantErr: "webhook_url must not target private or local addresses",
+		},
+		{
+			name: "metadata webhook",
+			input: CreateInput{
+				UserID:     42,
+				Name:       "blog",
+				WebhookURL: "https://169.254.169.254/latest/meta-data",
+			},
+			wantErr: "webhook_url must not target private or local addresses",
+		},
+		{
+			name: "rfc1918 webhook",
+			input: CreateInput{
+				UserID:     42,
+				Name:       "blog",
+				WebhookURL: "https://10.0.0.5/hook",
+			},
+			wantErr: "webhook_url must not target private or local addresses",
+		},
+		{
+			name: "ipv6 loopback webhook",
+			input: CreateInput{
+				UserID:     42,
+				Name:       "blog",
+				WebhookURL: "https://[::1]/hook",
+			},
+			wantErr: "webhook_url must not target private or local addresses",
+		},
+		{
+			name: "ipv6 private webhook",
+			input: CreateInput{
+				UserID:     42,
+				Name:       "blog",
+				WebhookURL: "https://[fd00::1]/hook",
+			},
+			wantErr: "webhook_url must not target private or local addresses",
+		},
+		{
+			name: "multicast webhook",
+			input: CreateInput{
+				UserID:     42,
+				Name:       "blog",
+				WebhookURL: "https://224.0.0.1/hook",
+			},
+			wantErr: "webhook_url must not target private or local addresses",
 		},
 		{
 			name: "relative webhook",
@@ -113,13 +194,14 @@ func TestServiceListClientsDoesNotExposeSecrets(t *testing.T) {
 	service := NewService(&fakeRepository{
 		clients: []models.ClientApplication{
 			{
-				ID:           11,
-				Name:         "blog",
-				Status:       StatusActive,
-				APIKeyHash:   "secret-hash",
-				APIKeyPrefix: "hs_live_abc",
-				CreatedAt:    createdAt,
-				UpdatedAt:    createdAt,
+				ID:            11,
+				Name:          "blog",
+				Status:        StatusActive,
+				APIKeyHash:    "secret-hash",
+				APIKeyPrefix:  "hs_live_abc",
+				WebhookSecret: "whsec_secret",
+				CreatedAt:     createdAt,
+				UpdatedAt:     createdAt,
 			},
 		},
 	})
