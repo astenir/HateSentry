@@ -678,15 +678,25 @@ make verify-compose
 
 ### 验证外部客户端审核闭环
 ```bash
+# 脚本会先读取仓库根目录 .env，再读取当前 shell 环境变量。
 export HATESENTRY_BASE_URL="http://localhost:8080"
 export HATESENTRY_ADMIN_EMAIL="admin@example.com"
 export HATESENTRY_ADMIN_PASSWORD="password123"
+# 空数据库首次初始化时，需与 API 服务启动时的 ADMIN_BOOTSTRAP_TOKEN 一致。
+export HATESENTRY_ADMIN_BOOTSTRAP_TOKEN="$ADMIN_BOOTSTRAP_TOKEN"
 # 需要强制覆盖复核闭环时，可要求 provider 返回 review：
 # export HATESENTRY_EXPECT_DECISION=review
 make smoke-moderation
 ```
 
-该命令会通过真实 HTTP API 创建外部客户端，使用返回的一次性 API Key 提交文本审核、用相同 `external_id` 重试并断言复用原审核记录，然后查询审核结果；如果策略返回 `review`，还会用管理员身份查询复核队列、执行复核并再次用 API Key 查询最终结果。脚本默认会在结束时停用本次创建的临时客户端，保留审核审计记录但撤销该 API Key 的继续访问；如果确实需要保留客户端，可设置 `HATESENTRY_KEEP_SMOKE_CLIENT=1`。也可以直接提供 `HATESENTRY_ADMIN_TOKEN` 跳过登录。该脚本不会创建用户；空数据库首次初始化管理员请先按上文设置服务端 `ADMIN_BOOTSTRAP_TOKEN` 并单独执行 `make create-user` 或调用注册接口。该 smoke 流程会调用当前配置的 AI provider，因此运行前需要确认 OpenAI 或 Ollama 文本审核配置可用；默认内容不保证 provider 一定返回 `review`，需要强制验证复核端点时应设置 `HATESENTRY_EXPECT_DECISION=review` 并使用会触发复核阈值的 provider/内容配置。
+该命令会通过真实 HTTP API 创建外部客户端，使用返回的一次性 API Key 提交文本审核、用相同 `external_id` 重试并断言复用原审核记录，然后查询审核结果；如果策略返回 `review`，还会用管理员身份查询复核队列、执行复核并再次用 API Key 查询最终结果。脚本默认会在结束时停用本次创建的临时客户端，保留审核审计记录但撤销该 API Key 的继续访问；如果确实需要保留客户端，可设置 `HATESENTRY_KEEP_SMOKE_CLIENT=1`。
+
+管理员认证按以下顺序解析：
+- 设置 `HATESENTRY_ADMIN_TOKEN` 时直接使用该 JWT。
+- 否则使用 `HATESENTRY_ADMIN_EMAIL` 和 `HATESENTRY_ADMIN_PASSWORD` 登录。
+- 如果登录失败且设置了 `HATESENTRY_ADMIN_BOOTSTRAP_TOKEN` 或 `ADMIN_BOOTSTRAP_TOKEN`，脚本会尝试注册第一个管理员。该 token 必须与正在运行的 API 服务 `ADMIN_BOOTSTRAP_TOKEN` 配置一致；如果数据库中已经存在用户，仍需使用已有管理员 token 或账号。
+
+该 smoke 流程会调用当前配置的 AI provider，因此运行前需要确认 OpenAI 或 Ollama 文本审核配置可用；默认内容不保证 provider 一定返回 `review`，需要强制验证复核端点时应设置 `HATESENTRY_EXPECT_DECISION=review` 并使用会触发复核阈值的 provider/内容配置。
 
 ### 测试覆盖率
 ```bash

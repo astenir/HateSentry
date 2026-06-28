@@ -9,13 +9,15 @@ import urllib.request
 import uuid
 
 
-BASE_URL = os.getenv("HATESENTRY_BASE_URL", "http://localhost:8080").rstrip("/")
+BASE_URL = "http://localhost:8080"
 TIMEOUT_SECONDS = 20.0
 
 
 def main():
-    global TIMEOUT_SECONDS
+    global BASE_URL, TIMEOUT_SECONDS
 
+    load_env_file()
+    BASE_URL = os.getenv("HATESENTRY_BASE_URL", BASE_URL).rstrip("/")
     TIMEOUT_SECONDS = smoke_timeout_seconds()
     admin_token = admin_token_from_env_or_login()
     client = None
@@ -75,6 +77,38 @@ def smoke_timeout_seconds():
     return timeout
 
 
+def load_env_file():
+    env_path = os.getenv("HATESENTRY_ENV_FILE", ".env").strip()
+    if not env_path or not os.path.exists(env_path):
+        return
+
+    try:
+        with open(env_path, "r", encoding="utf-8") as env_file:
+            for raw_line in env_file:
+                load_env_line(raw_line)
+    except OSError as err:
+        fail("failed to read env file {}: {}".format(env_path, err))
+
+
+def load_env_line(raw_line):
+    line = raw_line.strip()
+    if not line or line.startswith("#") or "=" not in line:
+        return
+
+    key, value = line.split("=", 1)
+    key = key.strip()
+    if not key or key in os.environ:
+        return
+
+    os.environ[key] = strip_optional_quotes(value.strip())
+
+
+def strip_optional_quotes(value):
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        return value[1:-1]
+    return value
+
+
 def validate_expected_decision(decision):
     expected = os.getenv("HATESENTRY_EXPECT_DECISION", "").strip().lower()
     if not expected:
@@ -101,11 +135,23 @@ def admin_token_from_env_or_login():
     try:
         return login_admin(email, password)
     except SmokeHTTPError as err:
-        fail(
-            "admin login failed: {}; set HATESENTRY_ADMIN_TOKEN or use valid "
-            "admin credentials. Bootstrap the first admin separately before "
-            "running this workflow.".format(err)
-        )
+        bootstrap_token = admin_bootstrap_token()
+        if not bootstrap_token:
+            fail(
+                "admin login failed: {}; set HATESENTRY_ADMIN_TOKEN, or use "
+                "valid admin credentials. For a fresh database, set "
+                "HATESENTRY_ADMIN_BOOTSTRAP_TOKEN to the same value as the "
+                "running service ADMIN_BOOTSTRAP_TOKEN.".format(err)
+            )
+
+        try:
+            return register_initial_admin(email, password, bootstrap_token)
+        except SmokeHTTPError as register_err:
+            fail(
+                "admin login failed and bootstrap registration failed: login {}; "
+                "register {}. Use an existing admin token or reset the supplied "
+                "admin credentials.".format(err, register_err)
+            )
 
 
 def login_admin(email, password):
@@ -123,6 +169,34 @@ def login_admin(email, password):
         fail("login response did not include token")
     if response.get("user", {}).get("role") != "admin":
         fail("logged-in user is not an admin")
+
+    return token
+
+
+def admin_bootstrap_token():
+    token = os.getenv("HATESENTRY_ADMIN_BOOTSTRAP_TOKEN", "").strip()
+    if token:
+        return token
+    return os.getenv("ADMIN_BOOTSTRAP_TOKEN", "").strip()
+
+
+def register_initial_admin(email, password, bootstrap_token):
+    response = request_json(
+        "POST",
+        "/api/v1/auth/register",
+        payload={
+            "username": os.getenv("HATESENTRY_ADMIN_USERNAME", "smoke-admin"),
+            "email": email,
+            "password": password,
+            "admin_bootstrap_token": bootstrap_token,
+        },
+        expected_statuses=(201,),
+    )
+    token = response.get("token", "")
+    if not token:
+        fail("registration response did not include token")
+    if response.get("user", {}).get("role") != "admin":
+        fail("registered user is not an admin")
 
     return token
 
