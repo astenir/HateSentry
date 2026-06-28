@@ -12,6 +12,9 @@ import (
 	apperrors "hatesentry/internal/errors"
 	"hatesentry/internal/models"
 	"hatesentry/internal/webhooks"
+
+	"github.com/prometheus/client_golang/prometheus"
+	io_prometheus_client "github.com/prometheus/client_model/go"
 )
 
 func TestServiceCheckPersistsDecision(t *testing.T) {
@@ -91,6 +94,44 @@ func TestServiceCheckPersistsDecision(t *testing.T) {
 	}
 	if !equalStrings(persistedLabels, output.Labels) {
 		t.Fatalf("persisted labels = %#v, want %#v", persistedLabels, output.Labels)
+	}
+}
+
+func TestServiceCheckRecordsModerationMetrics(t *testing.T) {
+	labels := map[string]string{
+		"decision":    string(DecisionBlock),
+		"provider":    "metric-test-provider",
+		"client_type": "operator",
+	}
+	before := prometheusCounterValue(t, "moderation_checks_total", labels)
+
+	service := NewService(
+		fakeAnalyzer{
+			suggestion: ProviderSuggestion{
+				RiskScore: 0.82,
+				Labels:    []string{"harassment"},
+				Reason:    "Policy threshold exceeded.",
+				RawOutput: `{"risk_score":0.82,"labels":["harassment"],"reason":"Policy threshold exceeded."}`,
+			},
+			provider: ProviderInfo{
+				Provider: "metric-test-provider",
+				Model:    "test-model",
+			},
+		},
+		&fakeRepository{},
+		DefaultPolicy(),
+	)
+
+	if _, err := service.Check(context.Background(), CheckInput{
+		UserID:  7,
+		Content: "blocked content",
+	}); err != nil {
+		t.Fatalf("Check() error = %v", err)
+	}
+
+	after := prometheusCounterValue(t, "moderation_checks_total", labels)
+	if after != before+1 {
+		t.Fatalf("moderation_checks_total increment = %v, want %v", after-before, 1.0)
 	}
 }
 
@@ -1333,6 +1374,54 @@ func TestServiceReviewActionsFinalizePendingCase(t *testing.T) {
 	}
 }
 
+func TestServiceReviewActionsRecordMetrics(t *testing.T) {
+	labels := map[string]string{
+		"status":         string(ReviewStatusApproved),
+		"final_decision": string(DecisionAllow),
+	}
+	before := prometheusCounterValue(t, "review_cases_finalized_total", labels)
+	createdAt := time.Now().Add(-10 * time.Minute).UTC()
+	reviewedAt := time.Now().UTC()
+	repository := &fakeRepository{
+		finalized: StoredReviewCase{
+			Case: models.ReviewCase{
+				ID:            3,
+				RequestID:     "request-123",
+				UserID:        7,
+				Status:        string(ReviewStatusApproved),
+				FinalDecision: string(DecisionAllow),
+				CreatedAt:     createdAt,
+				ReviewedAt:    &reviewedAt,
+			},
+			Request: models.ModerationRequest{
+				RequestID: "request-123",
+				UserID:    7,
+				Content:   "stored content",
+				Source:    "comment",
+			},
+			Result: models.ModerationResult{
+				RequestID:     "request-123",
+				UserID:        7,
+				RiskScore:     0.6,
+				Labels:        `["harassment"]`,
+				Decision:      string(DecisionReview),
+				Reason:        "Needs operator review.",
+				PolicyVersion: "default-v1",
+			},
+		},
+	}
+	service := NewService(fakeAnalyzer{}, repository, DefaultPolicy())
+
+	if _, err := service.ApproveReviewCase(context.Background(), "3", 9, "looks safe"); err != nil {
+		t.Fatalf("ApproveReviewCase() error = %v", err)
+	}
+
+	after := prometheusCounterValue(t, "review_cases_finalized_total", labels)
+	if after != before+1 {
+		t.Fatalf("review_cases_finalized_total increment = %v, want %v", after-before, 1.0)
+	}
+}
+
 func TestServiceReviewActionsDispatchWebhookWithHumanFinalDecision(t *testing.T) {
 	dispatcher := &fakeWebhookDispatcher{}
 	repository := &fakeRepository{
@@ -2054,6 +2143,47 @@ func (r *fakeRepository) FinalizeReviewCase(
 	r.notes = notes
 	r.reviewedAt = reviewedAt
 	return r.finalized, nil
+}
+
+func prometheusCounterValue(t *testing.T, name string, labels map[string]string) float64 {
+	t.Helper()
+
+	families, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("gather prometheus metrics: %v", err)
+	}
+
+	for _, family := range families {
+		if family.GetName() != name {
+			continue
+		}
+		for _, metric := range family.GetMetric() {
+			if !prometheusMetricLabelsMatch(metric.GetLabel(), labels) {
+				continue
+			}
+			if metric.GetCounter() == nil {
+				t.Fatalf("metric %s with labels %#v is not a counter", name, labels)
+			}
+			return metric.GetCounter().GetValue()
+		}
+	}
+
+	return 0
+}
+
+func prometheusMetricLabelsMatch(metricLabels []*io_prometheus_client.LabelPair, labels map[string]string) bool {
+	if len(metricLabels) != len(labels) {
+		return false
+	}
+
+	for _, label := range metricLabels {
+		want, exists := labels[label.GetName()]
+		if !exists || want != label.GetValue() {
+			return false
+		}
+	}
+
+	return true
 }
 
 func uintPtr(value uint) *uint {

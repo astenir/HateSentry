@@ -205,6 +205,41 @@ var (
 		[]string{"endpoint"},
 	)
 
+	// 内容审核指标
+	moderationChecksTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "moderation_checks_total",
+			Help: "Total number of successful moderation checks",
+		},
+		[]string{"decision", "provider", "client_type"},
+	)
+
+	moderationCheckDuration = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "moderation_check_duration_seconds",
+			Help:    "Successful moderation check latency in seconds",
+			Buckets: []float64{0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10},
+		},
+		[]string{"decision", "provider", "client_type"},
+	)
+
+	reviewCasesFinalizedTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "review_cases_finalized_total",
+			Help: "Total number of finalized moderation review cases",
+		},
+		[]string{"status", "final_decision"},
+	)
+
+	reviewCaseLatency = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "review_case_latency_seconds",
+			Help:    "Time from review case creation to human finalization in seconds",
+			Buckets: []float64{60, 300, 900, 1800, 3600, 21600, 86400},
+		},
+		[]string{"status", "final_decision"},
+	)
+
 	// 系统指标
 	activeConnections = promauto.NewGauge(
 		prometheus.GaugeOpts{
@@ -364,6 +399,46 @@ func NewRateLimitMetrics() *RateLimitMetrics {
 
 func (m *RateLimitMetrics) RecordLimited(endpoint string) {
 	rateLimitRequestsTotal.WithLabelValues(endpoint).Inc()
+}
+
+// ModerationMetrics 封装文本审核工作流相关的指标收集
+type ModerationMetrics struct{}
+
+func NewModerationMetrics() *ModerationMetrics {
+	return &ModerationMetrics{}
+}
+
+func (m *ModerationMetrics) RecordCheck(decision, provider, clientType string, duration time.Duration) {
+	moderationChecksTotal.WithLabelValues(
+		metricLabelOrUnknown(decision),
+		metricLabelOrUnknown(provider),
+		metricLabelOrUnknown(clientType),
+	).Inc()
+	moderationCheckDuration.WithLabelValues(
+		metricLabelOrUnknown(decision),
+		metricLabelOrUnknown(provider),
+		metricLabelOrUnknown(clientType),
+	).Observe(duration.Seconds())
+}
+
+func (m *ModerationMetrics) RecordReviewFinalized(status, finalDecision string, latency time.Duration) {
+	reviewCasesFinalizedTotal.WithLabelValues(
+		metricLabelOrUnknown(status),
+		metricLabelOrUnknown(finalDecision),
+	).Inc()
+	if latency >= 0 {
+		reviewCaseLatency.WithLabelValues(
+			metricLabelOrUnknown(status),
+			metricLabelOrUnknown(finalDecision),
+		).Observe(latency.Seconds())
+	}
+}
+
+func metricLabelOrUnknown(value string) string {
+	if value == "" {
+		return "unknown"
+	}
+	return value
 }
 
 // SystemMetrics 封装系统相关的指标收集

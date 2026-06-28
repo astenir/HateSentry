@@ -832,12 +832,13 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 - [x] Webhook 最新投递状态、尝试次数持久化和失败手动重试
 - [x] 统一错误处理框架
 - [x] 健康检查和 Prometheus 指标入口
+- [x] 文本审核结果和人工复核延迟 Prometheus 指标
 - [x] 结构化日志系统
 - [x] Docker 部署支持
 - [x] Docker Compose 端到端健康检查验证
 
 ### 进行中 🚧
-- [ ] 更完整的操作指标和延迟观测
+- [ ] 更完整的操作指标、失败分类和延迟观测
 - [ ] Webhook 异步自动重试队列
 - [ ] README、API 文档和运维文档持续按实现校准
 
@@ -847,7 +848,7 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 - [ ] 真实图片审核（下载、校验、provider 图片 API）
 - [ ] 管理后台 UI
 - [ ] 数据导出功能
-- [ ] 更完整的指标和审核延迟观测
+- [ ] 指标仪表盘和告警建议
 
 ---
 

@@ -14,6 +14,7 @@ import (
 
 	apperrors "hatesentry/internal/errors"
 	"hatesentry/internal/models"
+	"hatesentry/internal/observability"
 	"hatesentry/internal/webhooks"
 )
 
@@ -143,6 +144,7 @@ type Service struct {
 	repository        Repository
 	policies          PolicySet
 	webhookDispatcher webhooks.Dispatcher
+	metrics           *observability.ModerationMetrics
 }
 
 // NewService creates a moderation service.
@@ -177,6 +179,7 @@ func NewServiceWithPolicySet(
 		repository:        repository,
 		policies:          policies,
 		webhookDispatcher: webhookDispatcher,
+		metrics:           observability.NewModerationMetrics(),
 	}
 }
 
@@ -325,6 +328,7 @@ func (s *Service) Check(ctx context.Context, input CheckInput) (CheckOutput, err
 	if err != nil {
 		return CheckOutput{}, err
 	}
+	startedAt := time.Now()
 	if s.analyzer == nil {
 		return CheckOutput{}, apperrors.ConfigurationError("moderation analyzer is not configured")
 	}
@@ -342,6 +346,12 @@ func (s *Service) Check(ctx context.Context, input CheckInput) (CheckOutput, err
 			return CheckOutput{}, err
 		}
 		if found {
+			s.recordCheckMetric(
+				Decision(stored.Result.Decision),
+				stored.Result.Provider,
+				normalized.ClientID,
+				time.Since(startedAt),
+			)
 			return checkOutputFromStored(stored)
 		}
 	}
@@ -413,6 +423,12 @@ func (s *Service) Check(ctx context.Context, input CheckInput) (CheckOutput, err
 				return CheckOutput{}, lookupErr
 			}
 			if found {
+				s.recordCheckMetric(
+					Decision(stored.Result.Decision),
+					stored.Result.Provider,
+					normalized.ClientID,
+					time.Since(startedAt),
+				)
 				return checkOutputFromStored(stored)
 			}
 		}
@@ -424,6 +440,7 @@ func (s *Service) Check(ctx context.Context, input CheckInput) (CheckOutput, err
 			Result:  *result,
 		}, "", "")
 	}
+	s.recordCheckMetric(decision.Decision, provider.Provider, normalized.ClientID, time.Since(startedAt))
 
 	return CheckOutput{
 		RequestID:     requestID,
@@ -747,6 +764,7 @@ func (s *Service) finalizeReviewCase(
 	if err != nil {
 		return ReviewCaseOutput{}, err
 	}
+	s.recordReviewFinalizedMetric(stored.Case)
 
 	s.dispatchFinalDecision(ctx, StoredResult{
 		Request: stored.Request,
@@ -754,6 +772,36 @@ func (s *Service) finalizeReviewCase(
 	}, string(status), string(finalDecision))
 
 	return output, nil
+}
+
+func (s *Service) recordCheckMetric(
+	decision Decision,
+	provider string,
+	clientID uint,
+	duration time.Duration,
+) {
+	if s.metrics == nil {
+		return
+	}
+	s.metrics.RecordCheck(string(decision), provider, moderationClientType(clientID), duration)
+}
+
+func (s *Service) recordReviewFinalizedMetric(reviewCase models.ReviewCase) {
+	if s.metrics == nil || reviewCase.ReviewedAt == nil {
+		return
+	}
+	s.metrics.RecordReviewFinalized(
+		reviewCase.Status,
+		reviewCase.FinalDecision,
+		reviewCase.ReviewedAt.Sub(reviewCase.CreatedAt),
+	)
+}
+
+func moderationClientType(clientID uint) string {
+	if clientID == 0 {
+		return "operator"
+	}
+	return "api_key"
 }
 
 // GetStats returns moderation and review operations metrics for an authenticated operator.
