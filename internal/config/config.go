@@ -176,7 +176,8 @@ func Load(configPath string) (*Config, error) {
 }
 
 func validateConfig(config *Config) error {
-	switch strings.TrimSpace(config.AI.Provider) {
+	config.AI.Provider = strings.TrimSpace(config.AI.Provider)
+	switch config.AI.Provider {
 	case "openai", "ollama":
 	default:
 		return errors.ConfigurationError("invalid AI provider").WithDetails("AI_PROVIDER must be openai or ollama")

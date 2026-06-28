@@ -258,6 +258,19 @@ func TestLoadRejectsInvalidAIProviderEnvironment(t *testing.T) {
 	}
 }
 
+func TestLoadNormalizesAIProviderEnvironment(t *testing.T) {
+	configPath := writeTestConfig(t)
+	t.Setenv("AI_PROVIDER", " ollama ")
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.AI.Provider != "ollama" {
+		t.Fatalf("AI.Provider = %q, want ollama", cfg.AI.Provider)
+	}
+}
+
 func TestLoadRejectsNegativeModerationRateLimit(t *testing.T) {
 	configPath := writeTestConfig(t)
 	t.Setenv("MODERATION_CLIENT_RATE_LIMIT", "-1")
