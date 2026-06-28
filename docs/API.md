@@ -195,7 +195,40 @@ Authorization: Bearer <admin-token>
 }
 ```
 
-### 3. 停用客户端
+### 3. 更新客户端名称
+
+更新客户端展示名称。该接口不会改变客户端状态、API Key、Webhook 或策略版本，也不会返回 API Key 哈希或 Webhook secret。
+
+**端点**: `POST /admin/clients/:id/name`
+
+**请求头**:
+```
+Authorization: Bearer <admin-token>
+Content-Type: application/json
+```
+
+**请求体**:
+```json
+{
+  "name": "blog-comments-v2"
+}
+```
+
+**响应** (200 OK):
+```json
+{
+  "id": 11,
+  "name": "blog-comments-v2",
+  "status": "active",
+  "api_key_prefix": "hs_live_xxxx",
+  "webhook_url": "https://example.com/moderation/webhook",
+  "policy_version": "default-v1",
+  "created_at": "2026-06-28T12:00:00Z",
+  "updated_at": "2026-06-28T12:20:00Z"
+}
+```
+
+### 4. 停用客户端
 
 停用客户端会将状态改为 `inactive`，该客户端现有 API Key 将不能继续调用文本审核接口。已有审核记录、复核记录和 Webhook 投递记录不会被删除。
 
@@ -220,7 +253,7 @@ Authorization: Bearer <admin-token>
 }
 ```
 
-### 4. 启用客户端
+### 5. 启用客户端
 
 重新启用客户端会将状态改为 `active`，客户端可以继续使用当前有效的 API Key 调用文本审核接口。
 
@@ -233,7 +266,7 @@ Authorization: Bearer <admin-token>
 
 响应字段与停用客户端一致，其中 `status` 为 `active`。客户端列表和状态更新响应都不会返回 API Key 哈希或 Webhook secret。
 
-### 5. 更新客户端策略版本
+### 6. 更新客户端策略版本
 
 更新客户端后续文本审核使用的策略版本。非空 `policy_version` 必须匹配 `moderation.policy.version` 或 `moderation.policies[].version`；传空字符串会重置为默认策略。该接口不会返回 API Key 哈希或 Webhook secret，也不会改变客户端状态、API Key 或 Webhook 配置。
 
@@ -266,7 +299,7 @@ Content-Type: application/json
 }
 ```
 
-### 6. 更新客户端 Webhook
+### 7. 更新客户端 Webhook
 
 更新客户端接收最终决策回调的 HTTPS 地址。请求体必须包含 `webhook_url` 字段。传入非空 `webhook_url` 时，服务会保存新地址并生成新的 `webhook_secret`，该 secret 只在本次响应中返回一次；旧 secret 会立即失效。传入空字符串会清除 Webhook URL 和 secret，后续审核结果不会再向该客户端发送回调。该接口不会改变客户端状态、API Key 或策略版本，也不会返回 API Key 哈希。
 
@@ -309,7 +342,7 @@ Content-Type: application/json
 
 清除响应不会包含 `webhook_url` 或 `webhook_secret`。
 
-### 7. 轮换客户端 API Key
+### 8. 轮换客户端 API Key
 
 轮换客户端 API Key 会替换数据库中的 API Key 哈希和展示前缀，旧 API Key 会立即失效。响应中的新 `api_key` 只返回一次；客户端状态、Webhook URL、Webhook secret 和策略版本不会改变。如果客户端当前为 `inactive`，轮换密钥不会自动启用客户端。若管理员并发触发多次轮换，最后完成的轮换返回的 API Key 才是当前有效密钥。
 

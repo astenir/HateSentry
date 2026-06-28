@@ -249,6 +249,129 @@ func TestServiceListClientsDoesNotExposeSecrets(t *testing.T) {
 	}
 }
 
+func TestServiceUpdateClientName(t *testing.T) {
+	createdAt := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
+	updatedAt := time.Date(2026, 6, 28, 12, 5, 0, 0, time.UTC)
+	repository := &fakeRepository{
+		nameClient: models.ClientApplication{
+			ID:            11,
+			Name:          "updated blog",
+			Status:        StatusInactive,
+			APIKeyHash:    "secret-hash",
+			APIKeyPrefix:  "hs_live_abc",
+			WebhookSecret: "whsec_secret",
+			WebhookURL:    "https://example.com/moderation",
+			PolicyVersion: "default-v1",
+			CreatedAt:     createdAt,
+			UpdatedAt:     updatedAt,
+		},
+	}
+	service := NewService(repository)
+
+	output, err := service.UpdateClientName(context.Background(), 42, "11", " updated blog ")
+	if err != nil {
+		t.Fatalf("UpdateClientName() error = %v", err)
+	}
+
+	if repository.nameClientID != 11 {
+		t.Fatalf("name client id = %d, want 11", repository.nameClientID)
+	}
+	if repository.name != "updated blog" {
+		t.Fatalf("name = %q, want trimmed name", repository.name)
+	}
+	if output.ID != 11 {
+		t.Fatalf("output ID = %d, want 11", output.ID)
+	}
+	if output.Name != "updated blog" {
+		t.Fatalf("output Name = %q, want updated blog", output.Name)
+	}
+	if output.Status != StatusInactive {
+		t.Fatalf("output Status = %q, want inactive", output.Status)
+	}
+	if output.APIKeyPrefix != "hs_live_abc" {
+		t.Fatalf("APIKeyPrefix = %q, want hs_live_abc", output.APIKeyPrefix)
+	}
+	if output.WebhookURL != "https://example.com/moderation" {
+		t.Fatalf("WebhookURL = %q, want existing webhook URL", output.WebhookURL)
+	}
+	if output.PolicyVersion != "default-v1" {
+		t.Fatalf("PolicyVersion = %q, want default-v1", output.PolicyVersion)
+	}
+	if strings.Contains(output.APIKeyPrefix, "secret-hash") {
+		t.Fatal("output exposed API key hash")
+	}
+}
+
+func TestServiceUpdateClientNameRejectsInvalidInput(t *testing.T) {
+	service := NewService(&fakeRepository{})
+
+	tests := []struct {
+		name       string
+		operatorID uint
+		clientID   string
+		clientName string
+		wantErr    string
+	}{
+		{
+			name:       "missing operator",
+			clientID:   "11",
+			clientName: "blog",
+			wantErr:    "User not authenticated",
+		},
+		{
+			name:       "missing client id",
+			operatorID: 42,
+			clientName: "blog",
+			wantErr:    "client id is required",
+		},
+		{
+			name:       "bad client id",
+			operatorID: 42,
+			clientID:   "abc",
+			clientName: "blog",
+			wantErr:    "client id must be a positive integer",
+		},
+		{
+			name:       "zero client id",
+			operatorID: 42,
+			clientID:   "0",
+			clientName: "blog",
+			wantErr:    "client id must be a positive integer",
+		},
+		{
+			name:       "blank name",
+			operatorID: 42,
+			clientID:   "11",
+			clientName: "   ",
+			wantErr:    "name is required",
+		},
+		{
+			name:       "name too long",
+			operatorID: 42,
+			clientID:   "11",
+			clientName: strings.Repeat("a", maxNameLength+1),
+			wantErr:    "name must not exceed 100 characters",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := service.UpdateClientName(
+				context.Background(),
+				tt.operatorID,
+				tt.clientID,
+				tt.clientName,
+			)
+			if err == nil {
+				t.Fatal("UpdateClientName() error = nil, want validation error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("UpdateClientName() error = %q, want %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestServiceUpdateClientStatus(t *testing.T) {
 	createdAt := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
 	repository := &fakeRepository{
@@ -783,6 +906,9 @@ func TestServiceRotateClientAPIKeyRejectsInvalidInput(t *testing.T) {
 type fakeRepository struct {
 	client              *models.ClientApplication
 	clients             []models.ClientApplication
+	nameClient          models.ClientApplication
+	nameClientID        uint
+	name                string
 	statusClient        models.ClientApplication
 	statusClientID      uint
 	status              string
@@ -838,6 +964,22 @@ func (r *fakeRepository) ListClients(ctx context.Context) ([]models.ClientApplic
 	}
 
 	return r.clients, nil
+}
+
+func (r *fakeRepository) UpdateClientName(
+	ctx context.Context,
+	clientID uint,
+	name string,
+) (models.ClientApplication, error) {
+	if r.err != nil {
+		return models.ClientApplication{}, r.err
+	}
+
+	r.nameClientID = clientID
+	r.name = name
+	r.nameClient.ID = clientID
+	r.nameClient.Name = name
+	return r.nameClient, nil
 }
 
 func (r *fakeRepository) UpdateClientStatus(

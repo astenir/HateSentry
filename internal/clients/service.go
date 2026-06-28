@@ -26,6 +26,7 @@ const (
 type Repository interface {
 	CreateClient(ctx context.Context, client *models.ClientApplication) error
 	ListClients(ctx context.Context) ([]models.ClientApplication, error)
+	UpdateClientName(ctx context.Context, clientID uint, name string) (models.ClientApplication, error)
 	UpdateClientStatus(ctx context.Context, clientID uint, status string) (models.ClientApplication, error)
 	UpdateClientPolicyVersion(ctx context.Context, clientID uint, policyVersion string) (models.ClientApplication, error)
 	UpdateClientWebhook(ctx context.Context, clientID uint, webhookURL string, webhookSecret string) (models.ClientApplication, error)
@@ -190,6 +191,37 @@ func (s *Service) ListClients(ctx context.Context) ([]ListOutput, error) {
 	}
 
 	return output, nil
+}
+
+// UpdateClientName changes the display name for an external client.
+func (s *Service) UpdateClientName(
+	ctx context.Context,
+	operatorID uint,
+	clientID string,
+	name string,
+) (ListOutput, error) {
+	if operatorID == 0 {
+		return ListOutput{}, apperrors.Unauthorized("User not authenticated")
+	}
+	if s.repository == nil {
+		return ListOutput{}, apperrors.ConfigurationError("client repository is not configured")
+	}
+
+	parsedClientID, err := parseClientID(clientID)
+	if err != nil {
+		return ListOutput{}, err
+	}
+	normalizedName, err := validateClientNameInput(name)
+	if err != nil {
+		return ListOutput{}, err
+	}
+
+	client, err := s.repository.UpdateClientName(ctx, parsedClientID, normalizedName)
+	if err != nil {
+		return ListOutput{}, err
+	}
+
+	return clientListOutput(client), nil
 }
 
 // ActivateClient allows an external client to authenticate with its existing API key.
@@ -363,21 +395,17 @@ func (s *Service) updateClientStatus(
 }
 
 func validateCreateInput(input CreateInput) (CreateInput, error) {
-	input.Name = strings.TrimSpace(input.Name)
 	input.WebhookURL = strings.TrimSpace(input.WebhookURL)
 	input.PolicyVersion = strings.TrimSpace(input.PolicyVersion)
 
 	if input.UserID == 0 {
 		return CreateInput{}, apperrors.Unauthorized("User not authenticated")
 	}
-	if input.Name == "" {
-		return CreateInput{}, apperrors.ValidationError("name is required")
+	name, err := validateClientNameInput(input.Name)
+	if err != nil {
+		return CreateInput{}, err
 	}
-	if len(input.Name) > maxNameLength {
-		return CreateInput{}, apperrors.ValidationError(
-			fmt.Sprintf("name must not exceed %d characters", maxNameLength),
-		)
-	}
+	input.Name = name
 	if len(input.WebhookURL) > maxWebhookURLLength {
 		return CreateInput{}, apperrors.ValidationError(
 			fmt.Sprintf("webhook_url must not exceed %d characters", maxWebhookURLLength),
@@ -395,6 +423,20 @@ func validateCreateInput(input CreateInput) (CreateInput, error) {
 	}
 
 	return input, nil
+}
+
+func validateClientNameInput(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", apperrors.ValidationError("name is required")
+	}
+	if len(name) > maxNameLength {
+		return "", apperrors.ValidationError(
+			fmt.Sprintf("name must not exceed %d characters", maxNameLength),
+		)
+	}
+
+	return name, nil
 }
 
 func validatePolicyVersionInput(policyVersion string) (string, error) {

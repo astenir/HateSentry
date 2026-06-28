@@ -51,6 +51,35 @@ func (r *GormRepository) ListClients(ctx context.Context) ([]models.ClientApplic
 	return clients, nil
 }
 
+// UpdateClientName changes a client application's display name.
+func (r *GormRepository) UpdateClientName(
+	ctx context.Context,
+	clientID uint,
+	name string,
+) (models.ClientApplication, error) {
+	if r == nil || r.db == nil {
+		return models.ClientApplication{}, apperrors.ConfigurationError("client database is not configured")
+	}
+
+	result := r.db.WithContext(ctx).
+		Model(&models.ClientApplication{}).
+		Where("id = ?", clientID).
+		Update("name", name)
+	if result.Error != nil {
+		return models.ClientApplication{}, apperrors.DatabaseError(result.Error, "failed to update client name")
+	}
+
+	var client models.ClientApplication
+	if err := r.db.WithContext(ctx).First(&client, clientID).Error; err != nil {
+		if stderrors.Is(err, gorm.ErrRecordNotFound) {
+			return models.ClientApplication{}, apperrors.RecordNotFound("Client not found")
+		}
+		return models.ClientApplication{}, apperrors.DatabaseError(err, "failed to retrieve client")
+	}
+
+	return client, nil
+}
+
 // UpdateClientStatus changes a client application's authentication status.
 func (r *GormRepository) UpdateClientStatus(
 	ctx context.Context,

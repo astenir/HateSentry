@@ -32,6 +32,11 @@ type UpdateClientPolicyRequest struct {
 	PolicyVersion string `json:"policy_version"`
 }
 
+// UpdateClientNameRequest is the admin request body for changing a client's display name.
+type UpdateClientNameRequest struct {
+	Name string `json:"name" binding:"required"`
+}
+
 // UpdateClientWebhookRequest is the admin request body for changing a client's callback URL.
 type UpdateClientWebhookRequest struct {
 	WebhookURL *string `json:"webhook_url"`
@@ -116,6 +121,33 @@ func (h *ClientHandler) RotateAPIKey(c *gin.Context) {
 	}
 
 	output, err := h.service.RotateClientAPIKey(c.Request.Context(), claims.UserID, c.Param("id"))
+	if err != nil {
+		apperrors.Handle(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, output)
+}
+
+// UpdateName changes a client's display name without touching secrets or integration settings.
+func (h *ClientHandler) UpdateName(c *gin.Context) {
+	claims, exists := auth.GetClaims(c)
+	if !exists {
+		apperrors.RespondWithError(c, apperrors.Unauthorized("User not authenticated"))
+		return
+	}
+	if h.service == nil {
+		apperrors.RespondWithError(c, apperrors.ConfigurationError("client service is not configured"))
+		return
+	}
+
+	var req UpdateClientNameRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		apperrors.RespondWithError(c, apperrors.ValidationError("Invalid request body").WithDetails(err.Error()))
+		return
+	}
+
+	output, err := h.service.UpdateClientName(c.Request.Context(), claims.UserID, c.Param("id"), req.Name)
 	if err != nil {
 		apperrors.Handle(c, err)
 		return

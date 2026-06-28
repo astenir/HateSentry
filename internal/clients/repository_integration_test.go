@@ -354,6 +354,86 @@ func TestGormRepositoryUpdateClientPolicyVersionIntegration(t *testing.T) {
 	)
 }
 
+func TestGormRepositoryUpdateClientNameIntegration(t *testing.T) {
+	dsn := os.Getenv("HATESENTRY_TEST_DSN")
+	if strings.TrimSpace(dsn) == "" {
+		t.Skip("HATESENTRY_TEST_DSN is required for integration repository tests")
+	}
+
+	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+	if err := db.AutoMigrate(
+		&models.User{},
+		&models.ClientApplication{},
+	); err != nil {
+		t.Fatalf("auto migrate test database: %v", err)
+	}
+
+	ctx := context.Background()
+	repository := NewGormRepository(db)
+	suffix := strings.ReplaceAll(uuid.New().String(), "-", "")[:12]
+	user := models.User{
+		Username: "it-client-name-" + suffix,
+		Email:    "it-client-name-" + suffix + "@example.test",
+		Password: "not-used",
+		Role:     "admin",
+		Status:   "active",
+		APIKey:   "it_client_name_" + suffix,
+	}
+	if err := db.WithContext(ctx).Create(&user).Error; err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	apiKey, err := auth.GenerateAPIKey()
+	if err != nil {
+		t.Fatalf("GenerateAPIKey() error = %v", err)
+	}
+	client := models.ClientApplication{
+		UserID:        user.ID,
+		Name:          "integration name client",
+		APIKeyHash:    auth.HashAPIKey(apiKey),
+		APIKeyPrefix:  auth.APIKeyPrefix(apiKey),
+		Status:        StatusInactive,
+		WebhookURL:    "https://example.com/moderation/webhook",
+		WebhookSecret: "whsec_name_integration",
+		PolicyVersion: "strict-v1",
+	}
+	if err := db.WithContext(ctx).Create(&client).Error; err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	originalAPIKeyHash := client.APIKeyHash
+	originalAPIKeyPrefix := client.APIKeyPrefix
+	originalStatus := client.Status
+	originalWebhookURL := client.WebhookURL
+	originalWebhookSecret := client.WebhookSecret
+	originalPolicyVersion := client.PolicyVersion
+
+	t.Cleanup(func() {
+		db.Unscoped().Delete(&models.ClientApplication{}, client.ID)
+		db.Unscoped().Delete(&models.User{}, user.ID)
+	})
+
+	updated, err := repository.UpdateClientName(ctx, client.ID, "renamed client")
+	if err != nil {
+		t.Fatalf("UpdateClientName() error = %v", err)
+	}
+	if updated.Name != "renamed client" {
+		t.Fatalf("Name = %q, want renamed client", updated.Name)
+	}
+	assertClientNameUpdatePreservedFields(
+		t,
+		updated,
+		originalAPIKeyHash,
+		originalAPIKeyPrefix,
+		originalStatus,
+		originalWebhookURL,
+		originalWebhookSecret,
+		originalPolicyVersion,
+	)
+}
+
 func TestGormRepositoryUpdateClientWebhookIntegration(t *testing.T) {
 	dsn := os.Getenv("HATESENTRY_TEST_DSN")
 	if strings.TrimSpace(dsn) == "" {
@@ -603,6 +683,38 @@ func assertClientWebhookUpdatePreservedFields(
 	}
 	if client.Status != status {
 		t.Fatalf("Status = %q, want %q", client.Status, status)
+	}
+	if client.PolicyVersion != policyVersion {
+		t.Fatalf("PolicyVersion = %q, want %q", client.PolicyVersion, policyVersion)
+	}
+}
+
+func assertClientNameUpdatePreservedFields(
+	t *testing.T,
+	client models.ClientApplication,
+	apiKeyHash string,
+	apiKeyPrefix string,
+	status string,
+	webhookURL string,
+	webhookSecret string,
+	policyVersion string,
+) {
+	t.Helper()
+
+	if client.APIKeyHash != apiKeyHash {
+		t.Fatal("APIKeyHash changed after name update")
+	}
+	if client.APIKeyPrefix != apiKeyPrefix {
+		t.Fatalf("APIKeyPrefix = %q, want %q", client.APIKeyPrefix, apiKeyPrefix)
+	}
+	if client.Status != status {
+		t.Fatalf("Status = %q, want %q", client.Status, status)
+	}
+	if client.WebhookURL != webhookURL {
+		t.Fatalf("WebhookURL = %q, want %q", client.WebhookURL, webhookURL)
+	}
+	if client.WebhookSecret != webhookSecret {
+		t.Fatal("WebhookSecret changed after name update")
 	}
 	if client.PolicyVersion != policyVersion {
 		t.Fatalf("PolicyVersion = %q, want %q", client.PolicyVersion, policyVersion)
