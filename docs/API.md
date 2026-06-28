@@ -1063,11 +1063,13 @@ HMAC_SHA256(webhook_secret, "<timestamp>.<raw-json-body>")
 
 管理员可以查询最近的 Webhook 投递记录，用于定位失败投递并取得手动重试所需的内部 `id`。
 
-**端点**: `GET /admin/webhook-deliveries?status=failed&limit=50`
+**端点**: `GET /admin/webhook-deliveries?status=failed&client_id=11&request_id=550e8400-e29b-41d4-a716-446655440000&limit=50`
 
 **查询参数**:
 
 - `status`: 可选，支持 `succeeded`、`failed`、`retrying`。
+- `client_id`: 可选，外部客户端 ID。
+- `request_id`: 可选，审核请求 ID。
 - `limit`: 可选，默认 `50`，最大 `100`。
 
 **请求头**:

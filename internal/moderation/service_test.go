@@ -1293,16 +1293,28 @@ func TestServiceListWebhookDeliveries(t *testing.T) {
 	}
 	service := NewService(fakeAnalyzer{}, repository, DefaultPolicy())
 
-	output, err := service.ListWebhookDeliveries(context.Background(), 9, "failed", "25")
+	output, err := service.ListWebhookDeliveries(context.Background(), 9, WebhookDeliveryListInput{
+		Status:    "failed",
+		ClientID:  "11",
+		RequestID: " request-123 ",
+		Limit:     "25",
+	})
 	if err != nil {
 		t.Fatalf("ListWebhookDeliveries() error = %v", err)
 	}
 
-	if repository.webhookDeliveryListStatus != WebhookDeliveryFailed {
-		t.Fatalf("status filter = %q, want failed", repository.webhookDeliveryListStatus)
+	if repository.webhookDeliveryListFilter.Status != WebhookDeliveryFailed {
+		t.Fatalf("status filter = %q, want failed", repository.webhookDeliveryListFilter.Status)
 	}
-	if repository.webhookDeliveryListLimit != 25 {
-		t.Fatalf("limit = %d, want 25", repository.webhookDeliveryListLimit)
+	if repository.webhookDeliveryListFilter.ClientID == nil ||
+		*repository.webhookDeliveryListFilter.ClientID != 11 {
+		t.Fatalf("client id filter = %#v, want 11", repository.webhookDeliveryListFilter.ClientID)
+	}
+	if repository.webhookDeliveryListFilter.RequestID != "request-123" {
+		t.Fatalf("request id filter = %q, want request-123", repository.webhookDeliveryListFilter.RequestID)
+	}
+	if repository.webhookDeliveryListFilter.Limit != 25 {
+		t.Fatalf("limit = %d, want 25", repository.webhookDeliveryListFilter.Limit)
 	}
 	if len(output.Items) != 1 {
 		t.Fatalf("items = %d, want 1", len(output.Items))
@@ -1316,29 +1328,55 @@ func TestServiceListWebhookDeliveriesValidatesFilters(t *testing.T) {
 	service := NewService(fakeAnalyzer{}, &fakeRepository{}, DefaultPolicy())
 
 	tests := []struct {
-		name   string
-		status string
-		limit  string
+		name    string
+		input   WebhookDeliveryListInput
+		wantErr string
 	}{
 		{
-			name:   "invalid status",
-			status: "pending",
+			name: "invalid status",
+			input: WebhookDeliveryListInput{
+				Status: "pending",
+			},
+			wantErr: "status must be succeeded, failed, or retrying",
 		},
 		{
-			name:  "invalid limit",
-			limit: "0",
+			name: "invalid client id",
+			input: WebhookDeliveryListInput{
+				ClientID: "abc",
+			},
+			wantErr: "client_id must be a positive integer",
 		},
 		{
-			name:  "excessive limit",
-			limit: "101",
+			name: "request id too long",
+			input: WebhookDeliveryListInput{
+				RequestID: strings.Repeat("a", maxRequestIDLength+1),
+			},
+			wantErr: "request_id must not exceed",
+		},
+		{
+			name: "invalid limit",
+			input: WebhookDeliveryListInput{
+				Limit: "0",
+			},
+			wantErr: "limit must be a positive integer",
+		},
+		{
+			name: "excessive limit",
+			input: WebhookDeliveryListInput{
+				Limit: "101",
+			},
+			wantErr: "limit must not exceed",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := service.ListWebhookDeliveries(context.Background(), 9, tt.status, tt.limit)
+			_, err := service.ListWebhookDeliveries(context.Background(), 9, tt.input)
 			if err == nil {
 				t.Fatal("ListWebhookDeliveries() error = nil, want validation error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("ListWebhookDeliveries() error = %q, want %q", err.Error(), tt.wantErr)
 			}
 		})
 	}
@@ -1549,8 +1587,7 @@ type fakeRepository struct {
 	webhookDeliveryAttemptedAt      time.Time
 	webhookDeliveryUpdateContextErr error
 	webhookDeliverySaveContextErr   error
-	webhookDeliveryListStatus       WebhookDeliveryStatus
-	webhookDeliveryListLimit        int
+	webhookDeliveryListFilter       WebhookDeliveryFilter
 	afterSaveCheck                  func()
 	reviewerID                      uint
 	finalStatus                     ReviewStatus
@@ -1654,8 +1691,7 @@ func (r *fakeRepository) SaveWebhookDelivery(
 
 func (r *fakeRepository) ListWebhookDeliveries(
 	ctx context.Context,
-	status WebhookDeliveryStatus,
-	limit int,
+	filter WebhookDeliveryFilter,
 ) ([]models.WebhookDelivery, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1663,8 +1699,7 @@ func (r *fakeRepository) ListWebhookDeliveries(
 	if r.err != nil {
 		return nil, r.err
 	}
-	r.webhookDeliveryListStatus = status
-	r.webhookDeliveryListLimit = limit
+	r.webhookDeliveryListFilter = filter
 	return r.webhookDeliveries, nil
 }
 

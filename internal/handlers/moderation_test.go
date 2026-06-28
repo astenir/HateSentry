@@ -582,7 +582,11 @@ func TestModerationHandlerListWebhookDeliveries(t *testing.T) {
 		handler.ListWebhookDeliveries(c)
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/webhook-deliveries?status=failed&limit=10", nil)
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/admin/webhook-deliveries?status=failed&client_id=11&request_id=request-123&limit=10",
+		nil,
+	)
 	recorder := httptest.NewRecorder()
 
 	engine.ServeHTTP(recorder, req)
@@ -601,8 +605,17 @@ func TestModerationHandlerListWebhookDeliveries(t *testing.T) {
 	if response.Items[0].ID != 5 {
 		t.Fatalf("item id = %d, want 5", response.Items[0].ID)
 	}
-	if repository.webhookDeliveryStatus != moderation.WebhookDeliveryFailed {
-		t.Fatalf("status filter = %q, want failed", repository.webhookDeliveryStatus)
+	if repository.webhookDeliveryFilter.Status != moderation.WebhookDeliveryFailed {
+		t.Fatalf("status filter = %q, want failed", repository.webhookDeliveryFilter.Status)
+	}
+	if repository.webhookDeliveryFilter.ClientID == nil || *repository.webhookDeliveryFilter.ClientID != 11 {
+		t.Fatalf("client id filter = %#v, want 11", repository.webhookDeliveryFilter.ClientID)
+	}
+	if repository.webhookDeliveryFilter.RequestID != "request-123" {
+		t.Fatalf("request id filter = %q, want request-123", repository.webhookDeliveryFilter.RequestID)
+	}
+	if repository.webhookDeliveryFilter.Limit != 10 {
+		t.Fatalf("limit filter = %d, want 10", repository.webhookDeliveryFilter.Limit)
 	}
 }
 
@@ -789,6 +802,7 @@ type moderationHandlerRepository struct {
 	caseID                uint
 	webhookClientFound    bool
 	webhookDeliveryID     uint
+	webhookDeliveryFilter moderation.WebhookDeliveryFilter
 	webhookDeliveryStatus moderation.WebhookDeliveryStatus
 	reviewerID            uint
 	finalStatus           moderation.ReviewStatus
@@ -866,10 +880,9 @@ func (r *moderationHandlerRepository) GetWebhookDelivery(
 
 func (r *moderationHandlerRepository) ListWebhookDeliveries(
 	ctx context.Context,
-	status moderation.WebhookDeliveryStatus,
-	limit int,
+	filter moderation.WebhookDeliveryFilter,
 ) ([]models.WebhookDelivery, error) {
-	r.webhookDeliveryStatus = status
+	r.webhookDeliveryFilter = filter
 	return r.webhookDeliveries, nil
 }
 

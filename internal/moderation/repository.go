@@ -241,19 +241,24 @@ func (r *GormRepository) GetWebhookDelivery(ctx context.Context, deliveryID uint
 // ListWebhookDeliveries returns recent webhook delivery records for operators.
 func (r *GormRepository) ListWebhookDeliveries(
 	ctx context.Context,
-	status WebhookDeliveryStatus,
-	limit int,
+	filter WebhookDeliveryFilter,
 ) ([]models.WebhookDelivery, error) {
 	if r == nil || r.db == nil {
 		return nil, apperrors.ConfigurationError("moderation database is not configured")
 	}
 
 	query := r.db.WithContext(ctx).Model(&models.WebhookDelivery{})
-	if status != "" {
-		query = query.Where("status = ?", string(status))
+	if filter.Status != "" {
+		query = query.Where("status = ?", string(filter.Status))
 	}
-	if limit > 0 {
-		query = query.Limit(limit)
+	if filter.ClientID != nil {
+		query = query.Where("client_id = ?", *filter.ClientID)
+	}
+	if filter.RequestID != "" {
+		query = query.Where("request_id = ?", filter.RequestID)
+	}
+	if filter.Limit > 0 {
+		query = query.Limit(filter.Limit)
 	}
 
 	var deliveries []models.WebhookDelivery

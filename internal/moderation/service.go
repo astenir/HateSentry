@@ -53,11 +53,7 @@ type Repository interface {
 	GetClient(ctx context.Context, clientID uint) (models.ClientApplication, bool, error)
 	SaveWebhookDelivery(ctx context.Context, delivery *models.WebhookDelivery) error
 	GetWebhookDelivery(ctx context.Context, deliveryID uint) (models.WebhookDelivery, error)
-	ListWebhookDeliveries(
-		ctx context.Context,
-		status WebhookDeliveryStatus,
-		limit int,
-	) ([]models.WebhookDelivery, error)
+	ListWebhookDeliveries(ctx context.Context, filter WebhookDeliveryFilter) ([]models.WebhookDelivery, error)
 	ClaimFailedWebhookDelivery(
 		ctx context.Context,
 		deliveryID uint,
@@ -123,6 +119,22 @@ type HistoryFilter struct {
 	ClientID   *uint
 	ExternalID string
 	Limit      int
+}
+
+// WebhookDeliveryListInput contains raw operator query filters for callback delivery records.
+type WebhookDeliveryListInput struct {
+	Status    string
+	ClientID  string
+	RequestID string
+	Limit     string
+}
+
+// WebhookDeliveryFilter contains validated callback delivery list filters.
+type WebhookDeliveryFilter struct {
+	Status    WebhookDeliveryStatus
+	ClientID  *uint
+	RequestID string
+	Limit     int
 }
 
 // Service coordinates provider analysis, policy decisions, and persistence.
@@ -717,8 +729,7 @@ func (s *Service) GetStats(ctx context.Context, reviewerID uint) (StatsOutput, e
 func (s *Service) ListWebhookDeliveries(
 	ctx context.Context,
 	operatorID uint,
-	status string,
-	limit string,
+	input WebhookDeliveryListInput,
 ) (ListWebhookDeliveriesOutput, error) {
 	if operatorID == 0 {
 		return ListWebhookDeliveriesOutput{}, apperrors.Unauthorized("User not authenticated")
@@ -727,16 +738,12 @@ func (s *Service) ListWebhookDeliveries(
 		return ListWebhookDeliveriesOutput{}, apperrors.ConfigurationError("moderation repository is not configured")
 	}
 
-	normalizedStatus, err := normalizeWebhookDeliveryStatusFilter(status)
-	if err != nil {
-		return ListWebhookDeliveriesOutput{}, err
-	}
-	normalizedLimit, err := normalizeWebhookDeliveryListLimit(limit)
+	filter, err := normalizeWebhookDeliveryFilter(input)
 	if err != nil {
 		return ListWebhookDeliveriesOutput{}, err
 	}
 
-	deliveries, err := s.repository.ListWebhookDeliveries(ctx, normalizedStatus, normalizedLimit)
+	deliveries, err := s.repository.ListWebhookDeliveries(ctx, filter)
 	if err != nil {
 		return ListWebhookDeliveriesOutput{}, err
 	}
@@ -1107,6 +1114,37 @@ func normalizeWebhookDeliveryStatusFilter(status string) (WebhookDeliveryStatus,
 	default:
 		return "", apperrors.ValidationError("status must be succeeded, failed, or retrying")
 	}
+}
+
+func normalizeWebhookDeliveryFilter(input WebhookDeliveryListInput) (WebhookDeliveryFilter, error) {
+	status, err := normalizeWebhookDeliveryStatusFilter(input.Status)
+	if err != nil {
+		return WebhookDeliveryFilter{}, err
+	}
+
+	clientID, err := normalizeOptionalUintFilter(input.ClientID, "client_id")
+	if err != nil {
+		return WebhookDeliveryFilter{}, err
+	}
+
+	requestID := strings.TrimSpace(input.RequestID)
+	if len(requestID) > maxRequestIDLength {
+		return WebhookDeliveryFilter{}, apperrors.ValidationError(
+			fmt.Sprintf("request_id must not exceed %d characters", maxRequestIDLength),
+		)
+	}
+
+	limit, err := normalizeWebhookDeliveryListLimit(input.Limit)
+	if err != nil {
+		return WebhookDeliveryFilter{}, err
+	}
+
+	return WebhookDeliveryFilter{
+		Status:    status,
+		ClientID:  clientID,
+		RequestID: requestID,
+		Limit:     limit,
+	}, nil
 }
 
 func normalizeWebhookDeliveryListLimit(limit string) (int, error) {

@@ -177,8 +177,21 @@ func TestGormRepositoryWebhookDeliveryClaimIntegration(t *testing.T) {
 	if err := db.WithContext(ctx).Create(&client).Error; err != nil {
 		t.Fatalf("create client application: %v", err)
 	}
+	otherClient := models.ClientApplication{
+		UserID:        user.ID,
+		Name:          "Webhook Claim Other Client",
+		APIKeyHash:    uuid.New().String(),
+		APIKeyPrefix:  "hs_other",
+		Status:        "active",
+		WebhookURL:    "https://example.com/moderation/webhook",
+		WebhookSecret: "whsec_other",
+	}
+	if err := db.WithContext(ctx).Create(&otherClient).Error; err != nil {
+		t.Fatalf("create other client application: %v", err)
+	}
 
 	requestID := uuid.New().String()
+	otherRequestID := uuid.New().String()
 	httpStatus := 500
 	delivery := models.WebhookDelivery{
 		DeliveryID:    uuid.New().String(),
@@ -195,19 +208,70 @@ func TestGormRepositoryWebhookDeliveryClaimIntegration(t *testing.T) {
 	if err := db.WithContext(ctx).Create(&delivery).Error; err != nil {
 		t.Fatalf("create webhook delivery: %v", err)
 	}
+	sameClientOtherRequestDelivery := models.WebhookDelivery{
+		DeliveryID:    uuid.New().String(),
+		RequestID:     otherRequestID,
+		ClientID:      client.ID,
+		Event:         "moderation.final_decision",
+		Status:        string(WebhookDeliveryFailed),
+		AttemptCount:  1,
+		LastAttemptAt: time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC),
+		ErrorMessage:  "webhook returned status 500",
+		Payload:       `{"event":"moderation.final_decision","request_id":"` + otherRequestID + `"}`,
+	}
+	if err := db.WithContext(ctx).Create(&sameClientOtherRequestDelivery).Error; err != nil {
+		t.Fatalf("create same-client other-request webhook delivery: %v", err)
+	}
+	otherClientSameRequestDelivery := models.WebhookDelivery{
+		DeliveryID:    uuid.New().String(),
+		RequestID:     requestID,
+		ClientID:      otherClient.ID,
+		Event:         "moderation.final_decision",
+		Status:        string(WebhookDeliveryFailed),
+		AttemptCount:  1,
+		LastAttemptAt: time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC),
+		ErrorMessage:  "webhook returned status 500",
+		Payload:       `{"event":"moderation.final_decision","request_id":"` + requestID + `"}`,
+	}
+	if err := db.WithContext(ctx).Create(&otherClientSameRequestDelivery).Error; err != nil {
+		t.Fatalf("create other-client same-request webhook delivery: %v", err)
+	}
 
 	t.Cleanup(func() {
-		db.Unscoped().Where("client_id = ?", client.ID).Delete(&models.WebhookDelivery{})
+		db.Unscoped().
+			Where("id IN ?", []uint{
+				delivery.ID,
+				sameClientOtherRequestDelivery.ID,
+				otherClientSameRequestDelivery.ID,
+			}).
+			Delete(&models.WebhookDelivery{})
+		db.Unscoped().Delete(&models.ClientApplication{}, otherClient.ID)
 		db.Unscoped().Delete(&models.ClientApplication{}, client.ID)
 		db.Unscoped().Delete(&models.User{}, user.ID)
 	})
 
-	listed, err := repository.ListWebhookDeliveries(ctx, WebhookDeliveryFailed, 10)
+	listed, err := repository.ListWebhookDeliveries(ctx, WebhookDeliveryFilter{
+		Status: WebhookDeliveryFailed,
+		Limit:  10,
+	})
 	if err != nil {
 		t.Fatalf("ListWebhookDeliveries() error = %v", err)
 	}
 	if !containsWebhookDelivery(listed, delivery.ID) {
 		t.Fatalf("failed webhook deliveries did not include delivery id %d", delivery.ID)
+	}
+
+	filtered, err := repository.ListWebhookDeliveries(ctx, WebhookDeliveryFilter{
+		Status:    WebhookDeliveryFailed,
+		ClientID:  &client.ID,
+		RequestID: requestID,
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatalf("ListWebhookDeliveries() filtered error = %v", err)
+	}
+	if len(filtered) != 1 || filtered[0].ID != delivery.ID {
+		t.Fatalf("filtered deliveries = %#v, want delivery id %d", filtered, delivery.ID)
 	}
 
 	const workers = 8

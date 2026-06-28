@@ -229,8 +229,12 @@ func (h *ModerationHandler) ListWebhookDeliveries(c *gin.Context) {
 	result, err := h.service.ListWebhookDeliveries(
 		c.Request.Context(),
 		claims.UserID,
-		c.Query("status"),
-		c.Query("limit"),
+		moderation.WebhookDeliveryListInput{
+			Status:    c.Query("status"),
+			ClientID:  c.Query("client_id"),
+			RequestID: c.Query("request_id"),
+			Limit:     c.Query("limit"),
+		},
 	)
 	if err != nil {
 		apperrors.Handle(c, err)
