@@ -756,6 +756,32 @@ func (s *Service) ListWebhookDeliveries(
 	return ListWebhookDeliveriesOutput{Items: items}, nil
 }
 
+// GetWebhookDelivery returns one callback delivery record for an authenticated operator.
+func (s *Service) GetWebhookDelivery(
+	ctx context.Context,
+	operatorID uint,
+	deliveryID string,
+) (WebhookDeliveryOutput, error) {
+	if operatorID == 0 {
+		return WebhookDeliveryOutput{}, apperrors.Unauthorized("User not authenticated")
+	}
+	if s.repository == nil {
+		return WebhookDeliveryOutput{}, apperrors.ConfigurationError("moderation repository is not configured")
+	}
+
+	parsedDeliveryID, err := parseWebhookDeliveryID(deliveryID)
+	if err != nil {
+		return WebhookDeliveryOutput{}, err
+	}
+
+	delivery, err := s.repository.GetWebhookDelivery(ctx, parsedDeliveryID)
+	if err != nil {
+		return WebhookDeliveryOutput{}, err
+	}
+
+	return webhookDeliveryOutputFromModel(delivery), nil
+}
+
 // RetryWebhookDelivery re-sends a failed final-decision webhook delivery.
 func (s *Service) RetryWebhookDelivery(
 	ctx context.Context,

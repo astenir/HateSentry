@@ -250,6 +250,17 @@ func TestGormRepositoryWebhookDeliveryClaimIntegration(t *testing.T) {
 		db.Unscoped().Delete(&models.User{}, user.ID)
 	})
 
+	stored, err := repository.GetWebhookDelivery(ctx, delivery.ID)
+	if err != nil {
+		t.Fatalf("GetWebhookDelivery() error = %v", err)
+	}
+	if stored.ID != delivery.ID {
+		t.Fatalf("GetWebhookDelivery() id = %d, want %d", stored.ID, delivery.ID)
+	}
+	if stored.RequestID != requestID {
+		t.Fatalf("GetWebhookDelivery() request id = %q, want %q", stored.RequestID, requestID)
+	}
+
 	listed, err := repository.ListWebhookDeliveries(ctx, WebhookDeliveryFilter{
 		Status: WebhookDeliveryFailed,
 		Limit:  10,

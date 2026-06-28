@@ -244,6 +244,31 @@ func (h *ModerationHandler) ListWebhookDeliveries(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
+// GetWebhookDelivery returns one final-decision webhook delivery record.
+func (h *ModerationHandler) GetWebhookDelivery(c *gin.Context) {
+	claims, exists := auth.GetClaims(c)
+	if !exists {
+		apperrors.RespondWithError(c, apperrors.Unauthorized("User not authenticated"))
+		return
+	}
+	if h.service == nil {
+		apperrors.RespondWithError(c, apperrors.ConfigurationError("moderation service is not configured"))
+		return
+	}
+
+	result, err := h.service.GetWebhookDelivery(
+		c.Request.Context(),
+		claims.UserID,
+		c.Param("id"),
+	)
+	if err != nil {
+		apperrors.Handle(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
 // RetryWebhookDelivery retries a failed final-decision webhook delivery.
 func (h *ModerationHandler) RetryWebhookDelivery(c *gin.Context) {
 	claims, exists := auth.GetClaims(c)

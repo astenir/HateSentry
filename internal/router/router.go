@@ -160,6 +160,7 @@ func (r *Router) Setup() *gin.Engine {
 		admin.POST("/clients/:id/api-key/rotate", clientHandler.RotateAPIKey)
 		admin.GET("/moderation/results", moderationHandler.ListHistory)
 		admin.GET("/webhook-deliveries", moderationHandler.ListWebhookDeliveries)
+		admin.GET("/webhook-deliveries/:id", moderationHandler.GetWebhookDelivery)
 		admin.POST("/webhook-deliveries/:id/retry", moderationHandler.RetryWebhookDelivery)
 	}
 

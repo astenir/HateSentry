@@ -1099,6 +1099,35 @@ Authorization: Bearer <admin-token>
 }
 ```
 
+### 查询单条 Webhook 投递记录
+
+管理员可以用内部数字 `id` 查看单条 Webhook 投递记录。响应不包含原始回调 payload。
+
+**端点**: `GET /admin/webhook-deliveries/:id`
+
+**请求头**:
+```http
+Authorization: Bearer <admin-token>
+```
+
+**响应** (200 OK):
+```json
+{
+  "id": 5,
+  "delivery_id": "550e8400-e29b-41d4-a716-446655440000",
+  "request_id": "550e8400-e29b-41d4-a716-446655440000",
+  "client_id": 11,
+  "event": "moderation.final_decision",
+  "status": "failed",
+  "attempt_count": 1,
+  "last_attempt_at": "2026-06-28T12:00:00Z",
+  "http_status": 500,
+  "error_message": "webhook returned status 500",
+  "created_at": "2026-06-28T12:00:00Z",
+  "updated_at": "2026-06-28T12:00:00Z"
+}
+```
+
 ### 手动重试 Webhook 投递
 
 管理员可以对失败的 Webhook 投递记录发起一次手动重试。路径中的 `:id` 是投递记录的内部数字 ID，可通过投递记录查询接口获取。

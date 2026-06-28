@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"hatesentry/internal/auth"
+	apperrors "hatesentry/internal/errors"
 	"hatesentry/internal/models"
 	"hatesentry/internal/moderation"
 	"hatesentry/internal/webhooks"
@@ -619,6 +620,122 @@ func TestModerationHandlerListWebhookDeliveries(t *testing.T) {
 	}
 }
 
+func TestModerationHandlerGetWebhookDelivery(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	httpStatus := 500
+	repository := &moderationHandlerRepository{
+		webhookDelivery: models.WebhookDelivery{
+			ID:            5,
+			DeliveryID:    "delivery-123",
+			RequestID:     "request-123",
+			ClientID:      11,
+			Event:         "moderation.final_decision",
+			Status:        string(moderation.WebhookDeliveryFailed),
+			AttemptCount:  2,
+			LastAttemptAt: time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC),
+			HTTPStatus:    &httpStatus,
+			ErrorMessage:  "webhook returned status 500",
+		},
+	}
+	handler := NewModerationHandler(moderation.NewService(
+		moderationHandlerAnalyzer{},
+		repository,
+		moderation.DefaultPolicy(),
+	))
+
+	engine := gin.New()
+	engine.GET("/api/v1/admin/webhook-deliveries/:id", func(c *gin.Context) {
+		c.Set(auth.UserContextKey, &auth.Claims{
+			UserID:   42,
+			Username: "reviewer",
+			Role:     "admin",
+		})
+		handler.GetWebhookDelivery(c)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/webhook-deliveries/5", nil)
+	recorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	var response moderation.WebhookDeliveryOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.ID != 5 {
+		t.Fatalf("ID = %d, want 5", response.ID)
+	}
+	if response.Status != moderation.WebhookDeliveryFailed {
+		t.Fatalf("Status = %q, want failed", response.Status)
+	}
+	if response.HTTPStatus == nil || *response.HTTPStatus != 500 {
+		t.Fatalf("HTTPStatus = %#v, want 500", response.HTTPStatus)
+	}
+	if repository.webhookDeliveryID != 5 {
+		t.Fatalf("webhook delivery id = %d, want 5", repository.webhookDeliveryID)
+	}
+}
+
+func TestModerationHandlerGetWebhookDeliveryErrors(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name       string
+		path       string
+		repository *moderationHandlerRepository
+		wantStatus int
+	}{
+		{
+			name:       "invalid id",
+			path:       "/api/v1/admin/webhook-deliveries/abc",
+			repository: &moderationHandlerRepository{},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name: "missing record",
+			path: "/api/v1/admin/webhook-deliveries/999",
+			repository: &moderationHandlerRepository{
+				err: apperrors.RecordNotFound("Webhook delivery not found"),
+			},
+			wantStatus: http.StatusNotFound,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := NewModerationHandler(moderation.NewService(
+				moderationHandlerAnalyzer{},
+				tt.repository,
+				moderation.DefaultPolicy(),
+			))
+
+			engine := gin.New()
+			engine.GET("/api/v1/admin/webhook-deliveries/:id", func(c *gin.Context) {
+				c.Set(auth.UserContextKey, &auth.Claims{
+					UserID:   42,
+					Username: "reviewer",
+					Role:     "admin",
+				})
+				handler.GetWebhookDelivery(c)
+			})
+
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			recorder := httptest.NewRecorder()
+
+			engine.ServeHTTP(recorder, req)
+
+			if recorder.Code != tt.wantStatus {
+				t.Fatalf("status = %d, body = %s, want %d", recorder.Code, recorder.Body.String(), tt.wantStatus)
+			}
+		})
+	}
+}
+
 func TestModerationHandlerApproveReviewCase(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -809,6 +926,7 @@ type moderationHandlerRepository struct {
 	finalDecision         moderation.Decision
 	notes                 string
 	reviewedAt            time.Time
+	err                   error
 }
 
 func (r *moderationHandlerRepository) SaveCheck(
@@ -874,6 +992,9 @@ func (r *moderationHandlerRepository) GetWebhookDelivery(
 	ctx context.Context,
 	deliveryID uint,
 ) (models.WebhookDelivery, error) {
+	if r.err != nil {
+		return models.WebhookDelivery{}, r.err
+	}
 	r.webhookDeliveryID = deliveryID
 	return r.webhookDelivery, nil
 }

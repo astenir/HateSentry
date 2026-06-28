@@ -64,6 +64,7 @@ func TestSetupRegistersCoreRoutes(t *testing.T) {
 		"POST /api/v1/admin/clients/:id/api-key/rotate",
 		"GET /api/v1/admin/moderation/results",
 		"GET /api/v1/admin/webhook-deliveries",
+		"GET /api/v1/admin/webhook-deliveries/:id",
 		"POST /api/v1/admin/webhook-deliveries/:id/retry",
 		"GET /metrics",
 	}
@@ -369,6 +370,16 @@ func TestSetupRequiresAdminForClientRoutes(t *testing.T) {
 
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("webhook delivery list status = %d, want 403", recorder.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/webhook-deliveries/5", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	recorder = httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("webhook delivery detail status = %d, want 403", recorder.Code)
 	}
 }
 

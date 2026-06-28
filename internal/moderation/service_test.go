@@ -1276,6 +1276,55 @@ func TestServiceRetryWebhookDelivery(t *testing.T) {
 	}
 }
 
+func TestServiceGetWebhookDelivery(t *testing.T) {
+	httpStatus := 500
+	repository := &fakeRepository{
+		webhookDeliveryStored: models.WebhookDelivery{
+			ID:            5,
+			DeliveryID:    "delivery-123",
+			RequestID:     "request-123",
+			ClientID:      11,
+			Event:         "moderation.final_decision",
+			Status:        string(WebhookDeliveryFailed),
+			AttemptCount:  2,
+			LastAttemptAt: time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC),
+			HTTPStatus:    &httpStatus,
+			ErrorMessage:  "webhook returned status 500",
+		},
+	}
+	service := NewService(fakeAnalyzer{}, repository, DefaultPolicy())
+
+	output, err := service.GetWebhookDelivery(context.Background(), 9, "5")
+	if err != nil {
+		t.Fatalf("GetWebhookDelivery() error = %v", err)
+	}
+
+	if repository.webhookDeliveryID != 5 {
+		t.Fatalf("delivery id = %d, want 5", repository.webhookDeliveryID)
+	}
+	if output.ID != 5 {
+		t.Fatalf("ID = %d, want 5", output.ID)
+	}
+	if output.Status != WebhookDeliveryFailed {
+		t.Fatalf("Status = %q, want failed", output.Status)
+	}
+	if output.HTTPStatus == nil || *output.HTTPStatus != 500 {
+		t.Fatalf("HTTPStatus = %#v, want 500", output.HTTPStatus)
+	}
+}
+
+func TestServiceGetWebhookDeliveryValidatesID(t *testing.T) {
+	service := NewService(fakeAnalyzer{}, &fakeRepository{}, DefaultPolicy())
+
+	_, err := service.GetWebhookDelivery(context.Background(), 9, "abc")
+	if err == nil {
+		t.Fatal("GetWebhookDelivery() error = nil, want validation error")
+	}
+	if !strings.Contains(err.Error(), "delivery id must be a positive integer") {
+		t.Fatalf("GetWebhookDelivery() error = %q, want delivery id validation", err.Error())
+	}
+}
+
 func TestServiceListWebhookDeliveries(t *testing.T) {
 	repository := &fakeRepository{
 		webhookDeliveries: []models.WebhookDelivery{

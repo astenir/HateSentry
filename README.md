@@ -608,7 +608,7 @@ make create-user
 - 同一客户端的 `external_id` 幂等查询。
 - API Key 客户端限流：`POST /api/v1/moderation/check` 默认按客户端 ID 每分钟 60 次。
 - 基础 Webhook 最终决策回调：向客户端 HTTPS `webhook_url` 同步单次发送 `allow` / `block` 或人工复核后的最终决策，并使用 HMAC-SHA256 签名。
-- Webhook 最新投递状态、尝试次数持久化、管理端按 `status`、`client_id`、`request_id` 查询和失败手动重试：`GET /api/v1/admin/webhook-deliveries`、`POST /api/v1/admin/webhook-deliveries/:id/retry`。
+- Webhook 最新投递状态、尝试次数持久化、管理端按 `status`、`client_id`、`request_id` 查询、单条查询和失败手动重试：`GET /api/v1/admin/webhook-deliveries`、`GET /api/v1/admin/webhook-deliveries/:id`、`POST /api/v1/admin/webhook-deliveries/:id/retry`。
 - 服务端策略决策：`allow`、`review`、`block`。
 - 可配置策略阈值和策略版本。
 - 审核请求与结果持久化。
