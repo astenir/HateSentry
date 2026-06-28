@@ -56,7 +56,7 @@
 - **1000-1999**: 通用错误
 - **2000-2999**: 认证和授权错误
 - **3000-3999**: 数据库错误
-- **4000-4999**: 检测服务错误
+- **4000-4999**: 审核服务错误
 - **5000-5999**: 缓存错误
 - **6000-6999**: 消息队列错误
 - **7000-7999**: 外部服务错误
@@ -95,13 +95,13 @@
 | `DUPLICATE_RECORD` | 409 | medium | 记录重复 | 唯一键冲突 |
 | `DATABASE_CONNECTION_ERROR` | 500 | critical | 数据库连接失败 | 连接池耗尽、网络问题 |
 
-#### 检测服务错误 (4000-4999)
+#### 审核服务错误 (4000-4999)
 
 | 错误码 | HTTP 状态 | 严重度 | 说明 | 常见原因 |
 |--------|-----------|---------|------|---------|
-| `DETECTION_FAILED` | 500 | critical | 检测失败 | AI 服务异常 |
-| `CONTENT_REQUIRED` | 400 | medium | 需要提供内容 | 缺少必需的文本或图片 |
-| `IMAGE_REQUIRED` | 400 | medium | 需要提供图片 | 图片分析需要图片数据 |
+| `DETECTION_FAILED` | 500 | critical | 旧检测请求失败 | 旧 `/detection/*` 路径或 AI 服务异常 |
+| `CONTENT_REQUIRED` | 400 | medium | 需要提供文本内容 | 文本审核请求缺少 `content` |
+| `IMAGE_REQUIRED` | 400 | medium | 需要提供图片 | 仅适用于旧检测路径；图片审核不是当前 MVP 主线 |
 | `INVALID_CONTENT` | 400 | medium | 无效的内容格式 | 内容格式不支持 |
 | `AI_PROVIDER_ERROR` | 500 | critical | AI 提供者错误 | OpenAI/第三方服务异常 |
 | `MODEL_UNAVAILABLE` | 503 | critical | 模型不可用 | 模型加载失败 |
@@ -194,16 +194,16 @@
 - 调整 Token 有效期配置
 - 同步服务器时间
 
-### 2. 检测服务错误
+### 2. 审核服务错误
 
-#### 场景 2.1: AI 检测失败
+#### 场景 2.1: AI 审核失败
 
 **错误响应:**
 ```json
 {
   "error": "AI_PROVIDER_ERROR",
   "code": "AI_PROVIDER_ERROR",
-  "message": "Failed to process detection request",
+  "message": "Failed to process moderation request",
   "details": "OpenAI API timeout after 30s",
   "severity": "critical",
   "trace_id": "abc-123",
@@ -229,14 +229,14 @@
 - 切换到备用 AI 提供者
 - 购买额外的 API 配额
 
-#### 场景 2.2: 内容验证失败
+#### 场景 2.2: 文本内容验证失败
 
 **错误响应:**
 ```json
 {
   "error": "CONTENT_REQUIRED",
   "code": "CONTENT_REQUIRED",
-  "message": "Content or image URL must be provided",
+  "message": "content is required",
   "severity": "medium",
   "trace_id": "abc-123",
   "timestamp": "2026-04-09T15:00:00Z"
@@ -244,17 +244,17 @@
 ```
 
 **可能原因:**
-1. 请求中未提供内容
-2. 内容格式不正确
-3. 图片 URL 无效
+1. `/api/v1/moderation/check` 请求中未提供 `content`
+2. `content` 为空字符串或超过当前服务限制
+3. 请求体不是合法 JSON
 
 **排查步骤:**
 1. 检查请求 JSON 结构
-2. 验证字段名称是否正确
-3. 测试图片 URL 是否可访问
+2. 确认字段名称为 `content`
+3. 确认调用的是当前主线 `/api/v1/moderation/check`，不是旧 `/api/v1/detection/*`
 
 **解决方案:**
-- 提供有效的文本内容或图片 URL
+- 提供有效的文本内容
 - 检查 API 文档确认请求格式
 
 ### 3. 数据库错误
@@ -551,7 +551,7 @@ rabbitmqctl list_consumers
 
 | 指标 | 阈值 | 告警级别 | 说明 |
 |--------|--------|-----------|------|
-| 检测请求量 | 异常下降 | WARNING | 服务不可用 |
+| 审核请求量 | 异常下降 | WARNING | 服务不可用 |
 | AI 调用失败率 | > 10% | WARNING | AI 服务问题 |
 | 用户登录失败率 | > 20% | CRITICAL | 可能有攻击 |
 
@@ -825,7 +825,7 @@ for _, task := range tasks {
 | 通用 | 1xxx | INTERNAL_ERROR, BAD_REQUEST |
 | 认证 | 2xxx | INVALID_TOKEN, INVALID_CREDENTIALS |
 | 数据库 | 3xxx | DATABASE_ERROR, RECORD_NOT_FOUND |
-| 检测 | 4xxx | DETECTION_FAILED, AI_PROVIDER_ERROR |
+| 审核 | 4xxx | DETECTION_FAILED, AI_PROVIDER_ERROR |
 | 缓存 | 5xxx | CACHE_ERROR, REDIS_UNAVAILABLE |
 | 队列 | 6xxx | QUEUE_ERROR, PUBLISH_FAILED |
 | 外部 | 7xxx | EXTERNAL_SERVICE_ERROR, TIMEOUT |
