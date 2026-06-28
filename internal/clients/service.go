@@ -26,6 +26,7 @@ const (
 type Repository interface {
 	CreateClient(ctx context.Context, client *models.ClientApplication) error
 	ListClients(ctx context.Context) ([]models.ClientApplication, error)
+	GetClient(ctx context.Context, clientID uint) (models.ClientApplication, error)
 	UpdateClientName(ctx context.Context, clientID uint, name string) (models.ClientApplication, error)
 	UpdateClientStatus(ctx context.Context, clientID uint, status string) (models.ClientApplication, error)
 	UpdateClientPolicyVersion(ctx context.Context, clientID uint, policyVersion string) (models.ClientApplication, error)
@@ -191,6 +192,28 @@ func (s *Service) ListClients(ctx context.Context) ([]ListOutput, error) {
 	}
 
 	return output, nil
+}
+
+// GetClient returns one external client for admin/operator views.
+func (s *Service) GetClient(ctx context.Context, operatorID uint, clientID string) (ListOutput, error) {
+	if operatorID == 0 {
+		return ListOutput{}, apperrors.Unauthorized("User not authenticated")
+	}
+	if s.repository == nil {
+		return ListOutput{}, apperrors.ConfigurationError("client repository is not configured")
+	}
+
+	parsedClientID, err := parseClientID(clientID)
+	if err != nil {
+		return ListOutput{}, err
+	}
+
+	client, err := s.repository.GetClient(ctx, parsedClientID)
+	if err != nil {
+		return ListOutput{}, err
+	}
+
+	return clientListOutput(client), nil
 }
 
 // UpdateClientName changes the display name for an external client.

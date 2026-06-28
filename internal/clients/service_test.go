@@ -249,6 +249,96 @@ func TestServiceListClientsDoesNotExposeSecrets(t *testing.T) {
 	}
 }
 
+func TestServiceGetClientDoesNotExposeSecrets(t *testing.T) {
+	createdAt := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
+	updatedAt := time.Date(2026, 6, 28, 12, 5, 0, 0, time.UTC)
+	repository := &fakeRepository{
+		getClient: models.ClientApplication{
+			ID:            11,
+			Name:          "blog",
+			Status:        StatusActive,
+			APIKeyHash:    "secret-hash",
+			APIKeyPrefix:  "hs_live_abc",
+			WebhookSecret: "whsec_secret",
+			WebhookURL:    "https://example.com/moderation",
+			PolicyVersion: "default-v1",
+			CreatedAt:     createdAt,
+			UpdatedAt:     updatedAt,
+		},
+	}
+	service := NewService(repository)
+
+	output, err := service.GetClient(context.Background(), 42, "11")
+	if err != nil {
+		t.Fatalf("GetClient() error = %v", err)
+	}
+
+	if repository.getClientID != 11 {
+		t.Fatalf("get client id = %d, want 11", repository.getClientID)
+	}
+	if output.ID != 11 {
+		t.Fatalf("ID = %d, want 11", output.ID)
+	}
+	if output.APIKeyPrefix != "hs_live_abc" {
+		t.Fatalf("APIKeyPrefix = %q, want hs_live_abc", output.APIKeyPrefix)
+	}
+	if output.WebhookURL != "https://example.com/moderation" {
+		t.Fatalf("WebhookURL = %q, want existing webhook URL", output.WebhookURL)
+	}
+	if output.PolicyVersion != "default-v1" {
+		t.Fatalf("PolicyVersion = %q, want default-v1", output.PolicyVersion)
+	}
+	if strings.Contains(output.APIKeyPrefix, "secret-hash") {
+		t.Fatal("output exposed API key hash")
+	}
+}
+
+func TestServiceGetClientRejectsInvalidInput(t *testing.T) {
+	service := NewService(&fakeRepository{})
+
+	tests := []struct {
+		name       string
+		operatorID uint
+		clientID   string
+		wantErr    string
+	}{
+		{
+			name:     "missing operator",
+			clientID: "11",
+			wantErr:  "User not authenticated",
+		},
+		{
+			name:       "missing client id",
+			operatorID: 42,
+			wantErr:    "client id is required",
+		},
+		{
+			name:       "bad client id",
+			operatorID: 42,
+			clientID:   "abc",
+			wantErr:    "client id must be a positive integer",
+		},
+		{
+			name:       "zero client id",
+			operatorID: 42,
+			clientID:   "0",
+			wantErr:    "client id must be a positive integer",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := service.GetClient(context.Background(), tt.operatorID, tt.clientID)
+			if err == nil {
+				t.Fatal("GetClient() error = nil, want validation error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("GetClient() error = %q, want %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestServiceUpdateClientName(t *testing.T) {
 	createdAt := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
 	updatedAt := time.Date(2026, 6, 28, 12, 5, 0, 0, time.UTC)
@@ -906,6 +996,8 @@ func TestServiceRotateClientAPIKeyRejectsInvalidInput(t *testing.T) {
 type fakeRepository struct {
 	client              *models.ClientApplication
 	clients             []models.ClientApplication
+	getClient           models.ClientApplication
+	getClientID         uint
 	nameClient          models.ClientApplication
 	nameClientID        uint
 	name                string
@@ -964,6 +1056,16 @@ func (r *fakeRepository) ListClients(ctx context.Context) ([]models.ClientApplic
 	}
 
 	return r.clients, nil
+}
+
+func (r *fakeRepository) GetClient(ctx context.Context, clientID uint) (models.ClientApplication, error) {
+	if r.err != nil {
+		return models.ClientApplication{}, r.err
+	}
+
+	r.getClientID = clientID
+	r.getClient.ID = clientID
+	return r.getClient, nil
 }
 
 func (r *fakeRepository) UpdateClientName(

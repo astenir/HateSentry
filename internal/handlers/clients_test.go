@@ -172,6 +172,89 @@ func TestClientHandlerRotateAPIKeyRequiresUser(t *testing.T) {
 	}
 }
 
+func TestClientHandlerGet(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	repository := &clientHandlerRepository{
+		getClient: models.ClientApplication{
+			ID:            11,
+			Name:          "blog",
+			Status:        clients.StatusActive,
+			APIKeyHash:    "secret-hash",
+			APIKeyPrefix:  "hs_live_abc",
+			WebhookSecret: "whsec_secret",
+			WebhookURL:    "https://example.com/moderation",
+			PolicyVersion: "default-v1",
+			CreatedAt:     time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC),
+			UpdatedAt:     time.Date(2026, 6, 28, 12, 10, 0, 0, time.UTC),
+		},
+	}
+	handler := NewClientHandler(clients.NewService(repository))
+
+	engine := gin.New()
+	engine.GET("/api/v1/admin/clients/:id", func(c *gin.Context) {
+		c.Set(auth.UserContextKey, &auth.Claims{
+			UserID:   42,
+			Username: "admin",
+			Role:     "admin",
+		})
+		handler.Get(c)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/clients/11", nil)
+	recorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	if strings.Contains(body, "secret-hash") || strings.Contains(body, "whsec_secret") {
+		t.Fatalf("response leaked secret material: %s", body)
+	}
+
+	var response clients.ListOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.ID != 11 {
+		t.Fatalf("ID = %d, want 11", response.ID)
+	}
+	if response.Name != "blog" {
+		t.Fatalf("Name = %q, want blog", response.Name)
+	}
+	if response.APIKeyPrefix != "hs_live_abc" {
+		t.Fatalf("APIKeyPrefix = %q, want hs_live_abc", response.APIKeyPrefix)
+	}
+	if response.WebhookURL != "https://example.com/moderation" {
+		t.Fatalf("WebhookURL = %q, want existing webhook URL", response.WebhookURL)
+	}
+	if response.PolicyVersion != "default-v1" {
+		t.Fatalf("PolicyVersion = %q, want default-v1", response.PolicyVersion)
+	}
+	if repository.getClientID != 11 {
+		t.Fatalf("get client id = %d, want 11", repository.getClientID)
+	}
+}
+
+func TestClientHandlerGetRequiresUser(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	handler := NewClientHandler(clients.NewService(&clientHandlerRepository{}))
+	engine := gin.New()
+	engine.GET("/api/v1/admin/clients/:id", handler.Get)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/clients/11", nil)
+	recorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", recorder.Code)
+	}
+}
+
 func TestClientHandlerUpdateName(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -561,6 +644,8 @@ func TestClientHandlerUpdateWebhookRequiresUser(t *testing.T) {
 type clientHandlerRepository struct {
 	client              *models.ClientApplication
 	clients             []models.ClientApplication
+	getClient           models.ClientApplication
+	getClientID         uint
 	nameClient          models.ClientApplication
 	nameClientID        uint
 	name                string
@@ -602,6 +687,19 @@ func (r *clientHandlerRepository) ListClients(ctx context.Context) ([]models.Cli
 	}
 
 	return r.clients, nil
+}
+
+func (r *clientHandlerRepository) GetClient(
+	ctx context.Context,
+	clientID uint,
+) (models.ClientApplication, error) {
+	if r.err != nil {
+		return models.ClientApplication{}, r.err
+	}
+
+	r.getClientID = clientID
+	r.getClient.ID = clientID
+	return r.getClient, nil
 }
 
 func (r *clientHandlerRepository) UpdateClientName(

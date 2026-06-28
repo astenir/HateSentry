@@ -188,6 +188,7 @@ func (r *Router) Setup() *gin.Engine {
 	{
 		admin.POST("/clients", clientHandler.Create)
 		admin.GET("/clients", clientHandler.List)
+		admin.GET("/clients/:id", clientHandler.Get)
 		admin.POST("/clients/:id/activate", clientHandler.Activate)
 		admin.POST("/clients/:id/deactivate", clientHandler.Deactivate)
 		admin.POST("/clients/:id/name", clientHandler.UpdateName)

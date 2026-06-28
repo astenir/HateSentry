@@ -218,6 +218,14 @@ Content-Type: application/json
 
 更新名称不会改变客户端状态、API Key、Webhook 或策略配置，响应不会返回 API Key 哈希或 Webhook secret。
 
+#### 查询单个外部客户端
+```http
+GET /api/v1/admin/clients/:id
+Authorization: Bearer <admin-token>
+```
+
+响应返回客户端当前状态、API Key 前缀、Webhook URL 和策略版本，不返回完整 API Key、API Key 哈希或 Webhook secret。
+
 #### 查询可用审核策略
 ```http
 GET /api/v1/admin/moderation/policies
@@ -667,7 +675,7 @@ make create-user
 - 单条复核记录查询：`GET /api/v1/reviews/:id`。
 - 复核与审核统计：`GET /api/v1/reviews/stats`。
 - 复核处理接口：`POST /api/v1/reviews/:id/approve`、`reject`、`mark-mistake`。
-- 外部客户端管理：`POST /api/v1/admin/clients`、`GET /api/v1/admin/clients`。
+- 外部客户端管理：`POST /api/v1/admin/clients`、`GET /api/v1/admin/clients`、`GET /api/v1/admin/clients/:id`。
 - 外部客户端名称更新：`POST /api/v1/admin/clients/:id/name`。
 - 外部客户端状态管理：`POST /api/v1/admin/clients/:id/deactivate`、`POST /api/v1/admin/clients/:id/activate`。
 - 外部客户端策略更新：`POST /api/v1/admin/clients/:id/policy`。

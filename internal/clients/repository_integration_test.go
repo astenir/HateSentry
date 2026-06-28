@@ -149,6 +149,90 @@ func TestGormRepositoryUpdateClientStatusRevokesAPIKeyIntegration(t *testing.T) 
 	}
 }
 
+func TestGormRepositoryGetClientIntegration(t *testing.T) {
+	dsn := os.Getenv("HATESENTRY_TEST_DSN")
+	if strings.TrimSpace(dsn) == "" {
+		t.Skip("HATESENTRY_TEST_DSN is required for integration repository tests")
+	}
+
+	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+	if err := db.AutoMigrate(
+		&models.User{},
+		&models.ClientApplication{},
+	); err != nil {
+		t.Fatalf("auto migrate test database: %v", err)
+	}
+
+	ctx := context.Background()
+	repository := NewGormRepository(db)
+	suffix := strings.ReplaceAll(uuid.New().String(), "-", "")[:12]
+	user := models.User{
+		Username: "it-client-get-" + suffix,
+		Email:    "it-client-get-" + suffix + "@example.test",
+		Password: "not-used",
+		Role:     "admin",
+		Status:   "active",
+		APIKey:   "it_client_get_" + suffix,
+	}
+	if err := db.WithContext(ctx).Create(&user).Error; err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	apiKey, err := auth.GenerateAPIKey()
+	if err != nil {
+		t.Fatalf("GenerateAPIKey() error = %v", err)
+	}
+	client := models.ClientApplication{
+		UserID:        user.ID,
+		Name:          "integration detail client",
+		APIKeyHash:    auth.HashAPIKey(apiKey),
+		APIKeyPrefix:  auth.APIKeyPrefix(apiKey),
+		Status:        StatusActive,
+		WebhookURL:    "https://example.com/moderation/webhook",
+		WebhookSecret: "whsec_detail_integration",
+		PolicyVersion: "default-v1",
+	}
+	if err := db.WithContext(ctx).Create(&client).Error; err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+
+	t.Cleanup(func() {
+		db.Unscoped().Delete(&models.ClientApplication{}, client.ID)
+		db.Unscoped().Delete(&models.User{}, user.ID)
+	})
+
+	found, err := repository.GetClient(ctx, client.ID)
+	if err != nil {
+		t.Fatalf("GetClient() error = %v", err)
+	}
+	if found.ID != client.ID {
+		t.Fatalf("ID = %d, want %d", found.ID, client.ID)
+	}
+	if found.Name != "integration detail client" {
+		t.Fatalf("Name = %q, want integration detail client", found.Name)
+	}
+	if found.APIKeyHash != auth.HashAPIKey(apiKey) {
+		t.Fatal("APIKeyHash does not match persisted key")
+	}
+	if found.APIKeyPrefix != auth.APIKeyPrefix(apiKey) {
+		t.Fatalf("APIKeyPrefix = %q, want persisted prefix", found.APIKeyPrefix)
+	}
+	if found.WebhookSecret != "whsec_detail_integration" {
+		t.Fatal("WebhookSecret does not match persisted secret")
+	}
+
+	_, err = repository.GetClient(ctx, client.ID+999999)
+	if err == nil {
+		t.Fatal("GetClient() missing error = nil, want record not found")
+	}
+	if !strings.Contains(err.Error(), "Client not found") {
+		t.Fatalf("GetClient() missing error = %q, want Client not found", err.Error())
+	}
+}
+
 func TestGormRepositoryRotateClientAPIKeyIntegration(t *testing.T) {
 	dsn := os.Getenv("HATESENTRY_TEST_DSN")
 	if strings.TrimSpace(dsn) == "" {

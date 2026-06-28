@@ -51,6 +51,23 @@ func (r *GormRepository) ListClients(ctx context.Context) ([]models.ClientApplic
 	return clients, nil
 }
 
+// GetClient returns one client record by ID.
+func (r *GormRepository) GetClient(ctx context.Context, clientID uint) (models.ClientApplication, error) {
+	if r == nil || r.db == nil {
+		return models.ClientApplication{}, apperrors.ConfigurationError("client database is not configured")
+	}
+
+	var client models.ClientApplication
+	if err := r.db.WithContext(ctx).First(&client, clientID).Error; err != nil {
+		if stderrors.Is(err, gorm.ErrRecordNotFound) {
+			return models.ClientApplication{}, apperrors.RecordNotFound("Client not found")
+		}
+		return models.ClientApplication{}, apperrors.DatabaseError(err, "failed to retrieve client")
+	}
+
+	return client, nil
+}
+
 // UpdateClientName changes a client application's display name.
 func (r *GormRepository) UpdateClientName(
 	ctx context.Context,
