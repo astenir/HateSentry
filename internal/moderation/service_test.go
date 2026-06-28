@@ -765,6 +765,122 @@ func TestServiceListReviewCasesDefaultsToPending(t *testing.T) {
 	}
 }
 
+func TestServiceGetReviewCaseReturnsStoredCase(t *testing.T) {
+	createdAt := time.Date(2026, 6, 28, 11, 0, 0, 0, time.UTC)
+	reviewedAt := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
+	clientID := uint(11)
+	reviewerID := uint(42)
+	repository := &fakeRepository{
+		reviewCaseStored: StoredReviewCase{
+			Case: models.ReviewCase{
+				ID:            3,
+				RequestID:     "request-123",
+				UserID:        7,
+				ClientID:      &clientID,
+				Status:        string(ReviewStatusApproved),
+				ReviewerID:    &reviewerID,
+				FinalDecision: string(DecisionAllow),
+				ReviewNotes:   "looks safe",
+				ReviewedAt:    &reviewedAt,
+				CreatedAt:     createdAt,
+			},
+			Request: models.ModerationRequest{
+				RequestID:  "request-123",
+				UserID:     7,
+				ClientID:   &clientID,
+				Content:    "stored content",
+				Source:     "comment",
+				ExternalID: "comment_123",
+				ActorID:    "user_456",
+			},
+			Result: models.ModerationResult{
+				RequestID:     "request-123",
+				UserID:        7,
+				ClientID:      &clientID,
+				RiskScore:     0.6,
+				Labels:        `["harassment"]`,
+				Decision:      string(DecisionReview),
+				Reason:        "Needs operator review.",
+				PolicyVersion: "default-v1",
+			},
+		},
+	}
+	service := NewService(fakeAnalyzer{}, repository, DefaultPolicy())
+
+	output, err := service.GetReviewCase(context.Background(), 9, " 3 ")
+	if err != nil {
+		t.Fatalf("GetReviewCase() error = %v", err)
+	}
+
+	if repository.caseID != 3 {
+		t.Fatalf("caseID = %d, want 3", repository.caseID)
+	}
+	if output.ID != 3 {
+		t.Fatalf("ID = %d, want 3", output.ID)
+	}
+	if output.ClientID == nil || *output.ClientID != 11 {
+		t.Fatalf("ClientID = %#v, want 11", output.ClientID)
+	}
+	if output.Status != ReviewStatusApproved {
+		t.Fatalf("Status = %q, want approved", output.Status)
+	}
+	if output.PolicyDecision != DecisionReview {
+		t.Fatalf("PolicyDecision = %q, want review", output.PolicyDecision)
+	}
+	if output.FinalDecision != DecisionAllow {
+		t.Fatalf("FinalDecision = %q, want allow", output.FinalDecision)
+	}
+	if output.ReviewerID == nil || *output.ReviewerID != 42 {
+		t.Fatalf("ReviewerID = %#v, want 42", output.ReviewerID)
+	}
+	if output.ReviewedAt == nil || !output.ReviewedAt.Equal(reviewedAt) {
+		t.Fatalf("ReviewedAt = %v, want %v", output.ReviewedAt, reviewedAt)
+	}
+	if !equalStrings(output.Labels, []string{"harassment"}) {
+		t.Fatalf("Labels = %#v, want harassment", output.Labels)
+	}
+}
+
+func TestServiceGetReviewCaseRejectsInvalidInput(t *testing.T) {
+	service := NewService(fakeAnalyzer{}, &fakeRepository{}, DefaultPolicy())
+
+	tests := []struct {
+		name       string
+		reviewerID uint
+		caseID     string
+		wantErr    string
+	}{
+		{
+			name:    "missing reviewer",
+			caseID:  "3",
+			wantErr: "User not authenticated",
+		},
+		{
+			name:       "missing case id",
+			reviewerID: 9,
+			wantErr:    "review case id is required",
+		},
+		{
+			name:       "invalid case id",
+			reviewerID: 9,
+			caseID:     "abc",
+			wantErr:    "review case id must be a positive integer",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := service.GetReviewCase(context.Background(), tt.reviewerID, tt.caseID)
+			if err == nil {
+				t.Fatal("GetReviewCase() error = nil, want validation error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("GetReviewCase() error = %q, want %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestServiceGetStatsMapsStoredCounts(t *testing.T) {
 	repository := &fakeRepository{
 		stats: StoredStats{
@@ -1417,6 +1533,7 @@ type fakeRepository struct {
 	webhookClient                   models.ClientApplication
 	webhookClientFound              bool
 	reviewCases                     []StoredReviewCase
+	reviewCaseStored                StoredReviewCase
 	finalized                       StoredReviewCase
 	stats                           StoredStats
 	userID                          uint
@@ -1629,6 +1746,14 @@ func (r *fakeRepository) ListReviewCases(
 	}
 	r.reviewStatus = status
 	return r.reviewCases, nil
+}
+
+func (r *fakeRepository) GetReviewCase(ctx context.Context, caseID uint) (StoredReviewCase, error) {
+	if r.err != nil {
+		return StoredReviewCase{}, r.err
+	}
+	r.caseID = caseID
+	return r.reviewCaseStored, nil
 }
 
 func (r *fakeRepository) GetStats(ctx context.Context) (StoredStats, error) {

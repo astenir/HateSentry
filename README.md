@@ -229,6 +229,12 @@ GET /api/v1/reviews?status=pending
 Authorization: Bearer <admin-token>
 ```
 
+#### 查看单条复核记录
+```http
+GET /api/v1/reviews/:id
+Authorization: Bearer <admin-token>
+```
+
 #### 查看复核与审核统计
 ```http
 GET /api/v1/reviews/stats
@@ -592,6 +598,7 @@ make create-user
 - 审核结果查询接口：`GET /api/v1/moderation/results/:request_id`。
 - 管理端最近审核历史查询：`GET /api/v1/admin/moderation/results`，支持按 `decision`、`client_id`、`external_id` 过滤，默认返回 50 条，最多 100 条。
 - 人工复核队列：`GET /api/v1/reviews?status=pending`。
+- 单条复核记录查询：`GET /api/v1/reviews/:id`。
 - 复核与审核统计：`GET /api/v1/reviews/stats`。
 - 复核处理接口：`POST /api/v1/reviews/:id/approve`、`reject`、`mark-mistake`。
 - 外部客户端管理：`POST /api/v1/admin/clients`、`GET /api/v1/admin/clients`。

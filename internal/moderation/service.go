@@ -73,6 +73,7 @@ type Repository interface {
 	) (models.WebhookDelivery, error)
 	GetStats(ctx context.Context) (StoredStats, error)
 	ListReviewCases(ctx context.Context, status ReviewStatus) ([]StoredReviewCase, error)
+	GetReviewCase(ctx context.Context, caseID uint) (StoredReviewCase, error)
 	FinalizeReviewCase(
 		ctx context.Context,
 		caseID uint,
@@ -548,6 +549,28 @@ func (s *Service) ListReviewCases(ctx context.Context, reviewerID uint, status s
 	}
 
 	return output, nil
+}
+
+// GetReviewCase retrieves one review case for an authenticated operator.
+func (s *Service) GetReviewCase(ctx context.Context, reviewerID uint, caseID string) (ReviewCaseOutput, error) {
+	if reviewerID == 0 {
+		return ReviewCaseOutput{}, apperrors.Unauthorized("User not authenticated")
+	}
+	if s.repository == nil {
+		return ReviewCaseOutput{}, apperrors.ConfigurationError("moderation repository is not configured")
+	}
+
+	parsedCaseID, err := parseReviewCaseID(caseID)
+	if err != nil {
+		return ReviewCaseOutput{}, err
+	}
+
+	stored, err := s.repository.GetReviewCase(ctx, parsedCaseID)
+	if err != nil {
+		return ReviewCaseOutput{}, err
+	}
+
+	return mapReviewCaseOutput(stored)
 }
 
 // ApproveReviewCase finalizes a pending case as allowed by human review.

@@ -452,6 +452,24 @@ func (r *GormRepository) ListReviewCases(
 	return storedCases, nil
 }
 
+// GetReviewCase retrieves one review case with its moderation request/result details.
+func (r *GormRepository) GetReviewCase(ctx context.Context, caseID uint) (StoredReviewCase, error) {
+	if r == nil || r.db == nil {
+		return StoredReviewCase{}, apperrors.ConfigurationError("moderation database is not configured")
+	}
+
+	var reviewCase models.ReviewCase
+	err := reviewCaseByIDQuery(r.db.WithContext(ctx), caseID).First(&reviewCase).Error
+	if err != nil {
+		if stderrors.Is(err, gorm.ErrRecordNotFound) {
+			return StoredReviewCase{}, apperrors.RecordNotFound("Review case not found")
+		}
+		return StoredReviewCase{}, apperrors.DatabaseError(err, "failed to retrieve review case")
+	}
+
+	return r.loadStoredReviewCase(ctx, reviewCase)
+}
+
 // FinalizeReviewCase records the human final decision for a pending review case.
 func (r *GormRepository) FinalizeReviewCase(
 	ctx context.Context,

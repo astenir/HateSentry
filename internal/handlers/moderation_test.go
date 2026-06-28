@@ -409,6 +409,85 @@ func TestModerationHandlerListReviewCases(t *testing.T) {
 	}
 }
 
+func TestModerationHandlerGetReviewCase(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	reviewerID := uint(42)
+	repository := &moderationHandlerRepository{
+		reviewCaseStored: moderation.StoredReviewCase{
+			Case: models.ReviewCase{
+				ID:            3,
+				RequestID:     "request-123",
+				UserID:        42,
+				Status:        string(moderation.ReviewStatusApproved),
+				ReviewerID:    &reviewerID,
+				FinalDecision: string(moderation.DecisionAllow),
+				ReviewNotes:   "looks safe",
+				CreatedAt:     time.Date(2026, 6, 28, 11, 0, 0, 0, time.UTC),
+			},
+			Request: models.ModerationRequest{
+				RequestID: "request-123",
+				UserID:    42,
+				Content:   "stored content",
+				Source:    "comment",
+			},
+			Result: models.ModerationResult{
+				RequestID:     "request-123",
+				UserID:        42,
+				RiskScore:     0.6,
+				Labels:        `["harassment"]`,
+				Decision:      string(moderation.DecisionReview),
+				Reason:        "Needs operator review.",
+				PolicyVersion: "default-v1",
+			},
+		},
+	}
+	handler := NewModerationHandler(moderation.NewService(
+		moderationHandlerAnalyzer{},
+		repository,
+		moderation.DefaultPolicy(),
+	))
+
+	engine := gin.New()
+	engine.GET("/api/v1/reviews/:id", func(c *gin.Context) {
+		c.Set(auth.UserContextKey, &auth.Claims{
+			UserID:   42,
+			Username: "reviewer",
+			Role:     "admin",
+		})
+		handler.GetReviewCase(c)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/reviews/3", nil)
+	recorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "raw_output") {
+		t.Fatalf("response leaked raw output: %s", recorder.Body.String())
+	}
+
+	var response moderation.ReviewCaseOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.ID != 3 {
+		t.Fatalf("ID = %d, want 3", response.ID)
+	}
+	if response.Status != moderation.ReviewStatusApproved {
+		t.Fatalf("Status = %q, want approved", response.Status)
+	}
+	if response.FinalDecision != moderation.DecisionAllow {
+		t.Fatalf("FinalDecision = %q, want allow", response.FinalDecision)
+	}
+	if repository.caseID != 3 {
+		t.Fatalf("repository caseID = %d, want 3", repository.caseID)
+	}
+}
+
 func TestModerationHandlerGetReviewStats(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -701,6 +780,7 @@ type moderationHandlerRepository struct {
 	historyItems          []moderation.StoredHistoryItem
 	historyFilter         moderation.HistoryFilter
 	reviewCases           []moderation.StoredReviewCase
+	reviewCaseStored      moderation.StoredReviewCase
 	finalized             moderation.StoredReviewCase
 	stats                 moderation.StoredStats
 	userID                uint
@@ -831,6 +911,14 @@ func (r *moderationHandlerRepository) ListReviewCases(
 ) ([]moderation.StoredReviewCase, error) {
 	r.reviewStatus = status
 	return r.reviewCases, nil
+}
+
+func (r *moderationHandlerRepository) GetReviewCase(
+	ctx context.Context,
+	caseID uint,
+) (moderation.StoredReviewCase, error) {
+	r.caseID = caseID
+	return r.reviewCaseStored, nil
 }
 
 func (r *moderationHandlerRepository) GetStats(ctx context.Context) (moderation.StoredStats, error) {

@@ -53,6 +53,7 @@ func TestSetupRegistersCoreRoutes(t *testing.T) {
 		"GET /api/v1/moderation/results/:request_id",
 		"GET /api/v1/reviews",
 		"GET /api/v1/reviews/stats",
+		"GET /api/v1/reviews/:id",
 		"POST /api/v1/reviews/:id/approve",
 		"POST /api/v1/reviews/:id/reject",
 		"POST /api/v1/reviews/:id/mark-mistake",
@@ -109,6 +110,15 @@ func TestSetupProtectsModerationResultRoute(t *testing.T) {
 
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", recorder.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/reviews/3", nil)
+	recorder = httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("detail status = %d, want 401", recorder.Code)
 	}
 }
 
@@ -252,6 +262,16 @@ func TestSetupRequiresAdminForReviewRoutes(t *testing.T) {
 
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("stats status = %d, want 403", recorder.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/reviews/3", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	recorder = httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("detail status = %d, want 403", recorder.Code)
 	}
 }
 

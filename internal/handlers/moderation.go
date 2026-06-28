@@ -168,6 +168,31 @@ func (h *ModerationHandler) ListReviewCases(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"items": results})
 }
 
+// GetReviewCase returns one review case for operator inspection.
+func (h *ModerationHandler) GetReviewCase(c *gin.Context) {
+	claims, exists := auth.GetClaims(c)
+	if !exists {
+		apperrors.RespondWithError(c, apperrors.Unauthorized("User not authenticated"))
+		return
+	}
+	if h.service == nil {
+		apperrors.RespondWithError(c, apperrors.ConfigurationError("moderation service is not configured"))
+		return
+	}
+
+	result, err := h.service.GetReviewCase(
+		c.Request.Context(),
+		claims.UserID,
+		c.Param("id"),
+	)
+	if err != nil {
+		apperrors.Handle(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
 // GetReviewStats returns aggregate moderation and review workflow metrics.
 func (h *ModerationHandler) GetReviewStats(c *gin.Context) {
 	claims, exists := auth.GetClaims(c)

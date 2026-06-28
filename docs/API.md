@@ -446,7 +446,40 @@ Authorization: Bearer <admin-token>
 }
 ```
 
-### 2. 通过复核
+### 2. 查看单条复核记录
+
+**端点**: `GET /reviews/:id`
+
+**请求头**:
+```
+Authorization: Bearer <admin-token>
+```
+
+**响应** (200 OK):
+```json
+{
+  "id": 3,
+  "request_id": "550e8400-e29b-41d4-a716-446655440000",
+  "user_id": 7,
+  "content": "user submitted text",
+  "source": "comment",
+  "external_id": "comment_123",
+  "actor_id": "user_456",
+  "status": "approved",
+  "policy_decision": "review",
+  "final_decision": "allow",
+  "risk_score": 0.6,
+  "labels": ["harassment"],
+  "reason": "Brief explanation suitable for operators",
+  "policy_version": "default-v1",
+  "reviewer_id": 42,
+  "review_notes": "内容可发布",
+  "reviewed_at": "2026-06-28T11:05:00Z",
+  "created_at": "2026-06-28T11:00:00Z"
+}
+```
+
+### 3. 通过复核
 
 将待复核内容标记为可发布，人工最终决策为 `allow`。
 
@@ -487,7 +520,7 @@ Content-Type: application/json
 }
 ```
 
-### 3. 拒绝复核
+### 4. 拒绝复核
 
 将待复核内容标记为应拦截，人工最终决策为 `block`。
 
@@ -508,7 +541,7 @@ Content-Type: application/json
 
 响应字段与通过复核一致，其中 `status` 为 `rejected`，`final_decision` 为 `block`。
 
-### 4. 标记误判
+### 5. 标记误判
 
 将待复核内容标记为策略或 provider 处理误判，同时记录人工最终决策。`final_decision` 必须是 `allow` 或 `block`。
 
@@ -530,7 +563,7 @@ Content-Type: application/json
 
 响应字段与通过复核一致，其中 `status` 为 `mistake`。
 
-### 5. 复核与审核统计
+### 6. 复核与审核统计
 
 返回当前审核工作流的最小运营统计。`allowed` / `blocked` 会把自动策略终态和人工复核终态合并统计；待复核内容只计入 `pending_review`，不会提前计入 `allowed` 或 `blocked`。
 

@@ -87,6 +87,20 @@ func TestGormRepositoryReviewWorkflowIntegration(t *testing.T) {
 		t.Fatalf("pending review cases did not include request %q", requestID)
 	}
 
+	storedCase, err := repository.GetReviewCase(ctx, reviewCase.ID)
+	if err != nil {
+		t.Fatalf("GetReviewCase() error = %v", err)
+	}
+	if storedCase.Case.ID != reviewCase.ID {
+		t.Fatalf("review case id = %d, want %d", storedCase.Case.ID, reviewCase.ID)
+	}
+	if storedCase.Request.RequestID != requestID {
+		t.Fatalf("stored request id = %q, want %q", storedCase.Request.RequestID, requestID)
+	}
+	if storedCase.Result.Decision != string(DecisionReview) {
+		t.Fatalf("stored decision = %q, want review", storedCase.Result.Decision)
+	}
+
 	reviewedAt := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
 	finalized, err := repository.FinalizeReviewCase(
 		ctx,

@@ -142,6 +142,7 @@ func (r *Router) Setup() *gin.Engine {
 		{
 			reviews.GET("", moderationHandler.ListReviewCases)
 			reviews.GET("/stats", moderationHandler.GetReviewStats)
+			reviews.GET("/:id", moderationHandler.GetReviewCase)
 			reviews.POST("/:id/approve", moderationHandler.ApproveReviewCase)
 			reviews.POST("/:id/reject", moderationHandler.RejectReviewCase)
 			reviews.POST("/:id/mark-mistake", moderationHandler.MarkReviewMistake)
