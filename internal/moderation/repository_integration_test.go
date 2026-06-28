@@ -144,6 +144,99 @@ func TestGormRepositoryReviewWorkflowIntegration(t *testing.T) {
 	}
 }
 
+func TestGormRepositoryGetResultForClientIntegration(t *testing.T) {
+	dsn := os.Getenv("HATESENTRY_TEST_DSN")
+	if strings.TrimSpace(dsn) == "" {
+		t.Skip("HATESENTRY_TEST_DSN is required for integration repository tests")
+	}
+
+	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+	if err := db.AutoMigrate(
+		&models.User{},
+		&models.ClientApplication{},
+		&models.ModerationRequest{},
+		&models.ModerationResult{},
+	); err != nil {
+		t.Fatalf("auto migrate test database: %v", err)
+	}
+
+	repository := NewGormRepository(db)
+	requestID := uuid.New().String()
+	ctx := context.Background()
+	user := createIntegrationUser(t, ctx, db, "client-result")
+	client := models.ClientApplication{
+		UserID:       user.ID,
+		Name:         "Client Result Test",
+		APIKeyHash:   uuid.New().String(),
+		APIKeyPrefix: "hs_result",
+		Status:       "active",
+	}
+	if err := db.WithContext(ctx).Create(&client).Error; err != nil {
+		t.Fatalf("create client application: %v", err)
+	}
+	otherClient := models.ClientApplication{
+		UserID:       user.ID,
+		Name:         "Client Result Other",
+		APIKeyHash:   uuid.New().String(),
+		APIKeyPrefix: "hs_other",
+		Status:       "active",
+	}
+	if err := db.WithContext(ctx).Create(&otherClient).Error; err != nil {
+		t.Fatalf("create other client application: %v", err)
+	}
+
+	t.Cleanup(func() {
+		db.Unscoped().Where("request_id = ?", requestID).Delete(&models.ModerationResult{})
+		db.Unscoped().Where("request_id = ?", requestID).Delete(&models.ModerationRequest{})
+		db.Unscoped().Delete(&models.ClientApplication{}, otherClient.ID)
+		db.Unscoped().Delete(&models.ClientApplication{}, client.ID)
+		db.Unscoped().Delete(&models.User{}, user.ID)
+	})
+
+	request := &models.ModerationRequest{
+		RequestID: requestID,
+		UserID:    user.ID,
+		ClientID:  &client.ID,
+		Content:   "client owned content",
+		Source:    "comment",
+		Status:    "completed",
+	}
+	result := &models.ModerationResult{
+		RequestID:     requestID,
+		UserID:        user.ID,
+		ClientID:      &client.ID,
+		Provider:      "test-provider",
+		Model:         "test-model",
+		RiskScore:     0.6,
+		Labels:        `["harassment"]`,
+		Decision:      string(DecisionReview),
+		Reason:        "Needs review.",
+		PolicyVersion: "default-v1",
+	}
+	if err := repository.SaveCheck(ctx, request, result, nil); err != nil {
+		t.Fatalf("SaveCheck() error = %v", err)
+	}
+
+	stored, err := repository.GetResultForClient(ctx, user.ID, client.ID, requestID)
+	if err != nil {
+		t.Fatalf("GetResultForClient() owner error = %v", err)
+	}
+	if stored.Request.RequestID != requestID {
+		t.Fatalf("stored request id = %q, want %q", stored.Request.RequestID, requestID)
+	}
+
+	_, err = repository.GetResultForClient(ctx, user.ID, otherClient.ID, requestID)
+	if err == nil {
+		t.Fatal("GetResultForClient() with other client error = nil, want not found")
+	}
+	if !strings.Contains(err.Error(), "Moderation result not found") {
+		t.Fatalf("GetResultForClient() with other client error = %q, want not found", err.Error())
+	}
+}
+
 func TestGormRepositoryWebhookDeliveryClaimIntegration(t *testing.T) {
 	dsn := os.Getenv("HATESENTRY_TEST_DSN")
 	if strings.TrimSpace(dsn) == "" {

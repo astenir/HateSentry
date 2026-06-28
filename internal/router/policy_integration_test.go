@@ -228,6 +228,33 @@ func TestRouterClientPolicyAssignmentIntegration(t *testing.T) {
 		t.Fatalf("policy_version = %q, want strict-v1", checkOutput.PolicyVersion)
 	}
 
+	resultRequest := httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/moderation/results/"+checkOutput.RequestID,
+		nil,
+	)
+	resultRequest.Header.Set("X-API-Key", created.APIKey)
+	resultRecorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(resultRecorder, resultRequest)
+
+	if resultRecorder.Code != http.StatusOK {
+		t.Fatalf("result status = %d, want 200, body = %s", resultRecorder.Code, resultRecorder.Body.String())
+	}
+	var resultOutput moderation.ResultOutput
+	if err := json.Unmarshal(resultRecorder.Body.Bytes(), &resultOutput); err != nil {
+		t.Fatalf("decode result response: %v", err)
+	}
+	if resultOutput.RequestID != checkOutput.RequestID {
+		t.Fatalf("result request_id = %q, want %q", resultOutput.RequestID, checkOutput.RequestID)
+	}
+	if resultOutput.ClientID == nil || *resultOutput.ClientID != created.ID {
+		t.Fatalf("result client_id = %#v, want %d", resultOutput.ClientID, created.ID)
+	}
+	if resultOutput.Decision != moderation.DecisionBlock {
+		t.Fatalf("result decision = %q, want block", resultOutput.Decision)
+	}
+
 	resetRequest := httptest.NewRequest(
 		http.MethodPost,
 		"/api/v1/admin/clients/"+createdID(created.ID)+"/policy",

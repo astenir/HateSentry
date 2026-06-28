@@ -234,7 +234,72 @@ func TestModerationHandlerGetResult(t *testing.T) {
 	}
 }
 
-func TestModerationHandlerGetResultRequiresUser(t *testing.T) {
+func TestModerationHandlerGetResultAcceptsAPIKeyPrincipal(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	clientID := uint(11)
+	repository := &moderationHandlerRepository{
+		stored: moderation.StoredResult{
+			Request: models.ModerationRequest{
+				RequestID:  "request-123",
+				UserID:     42,
+				ClientID:   &clientID,
+				Content:    "stored content",
+				Source:     "comment",
+				ExternalID: "comment_123",
+				Status:     "completed",
+			},
+			Result: models.ModerationResult{
+				RequestID:     "request-123",
+				UserID:        42,
+				ClientID:      &clientID,
+				Provider:      "test-provider",
+				Model:         "test-model",
+				RiskScore:     0.6,
+				Labels:        `["harassment"]`,
+				Decision:      string(moderation.DecisionReview),
+				Reason:        "Needs review.",
+				PolicyVersion: "default-v1",
+				CreatedAt:     time.Date(2026, 6, 28, 10, 30, 0, 0, time.UTC),
+			},
+		},
+	}
+	handler := NewModerationHandler(moderation.NewService(
+		moderationHandlerAnalyzer{},
+		repository,
+		moderation.DefaultPolicy(),
+	))
+
+	engine := gin.New()
+	engine.GET("/api/v1/moderation/results/:request_id", func(c *gin.Context) {
+		c.Set(auth.APIKeyContextKey, auth.APIKeyPrincipal{
+			ClientID: clientID,
+			UserID:   42,
+			Name:     "blog",
+		})
+		handler.GetResult(c)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/moderation/results/request-123", nil)
+	recorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if repository.userID != 42 {
+		t.Fatalf("repository userID = %d, want 42", repository.userID)
+	}
+	if repository.clientID != clientID {
+		t.Fatalf("repository clientID = %d, want %d", repository.clientID, clientID)
+	}
+	if repository.requestID != "request-123" {
+		t.Fatalf("repository requestID = %q, want request-123", repository.requestID)
+	}
+}
+
+func TestModerationHandlerGetResultRequiresPrincipal(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	handler := NewModerationHandler(moderation.NewService(
@@ -1001,6 +1066,7 @@ type moderationHandlerRepository struct {
 	finalized             moderation.StoredReviewCase
 	stats                 moderation.StoredStats
 	userID                uint
+	clientID              uint
 	requestID             string
 	reviewStatus          moderation.ReviewStatus
 	caseID                uint
@@ -1039,6 +1105,18 @@ func (r *moderationHandlerRepository) GetResult(
 	requestID string,
 ) (moderation.StoredResult, error) {
 	r.userID = userID
+	r.requestID = requestID
+	return r.stored, nil
+}
+
+func (r *moderationHandlerRepository) GetResultForClient(
+	ctx context.Context,
+	userID uint,
+	clientID uint,
+	requestID string,
+) (moderation.StoredResult, error) {
+	r.userID = userID
+	r.clientID = clientID
 	r.requestID = requestID
 	return r.stored, nil
 }

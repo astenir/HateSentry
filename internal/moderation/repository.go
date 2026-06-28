@@ -93,6 +93,41 @@ func (r *GormRepository) GetResult(ctx context.Context, userID uint, requestID s
 	}, nil
 }
 
+// GetResultForClient retrieves a client-owned moderation request and result pair.
+func (r *GormRepository) GetResultForClient(
+	ctx context.Context,
+	userID uint,
+	clientID uint,
+	requestID string,
+) (StoredResult, error) {
+	if r == nil || r.db == nil {
+		return StoredResult{}, apperrors.ConfigurationError("moderation database is not configured")
+	}
+
+	var request models.ModerationRequest
+	if err := clientScopedResultQuery(r.db.WithContext(ctx), userID, clientID, requestID).
+		First(&request).Error; err != nil {
+		if stderrors.Is(err, gorm.ErrRecordNotFound) {
+			return StoredResult{}, apperrors.RecordNotFound("Moderation result not found")
+		}
+		return StoredResult{}, apperrors.DatabaseError(err, "failed to retrieve moderation request")
+	}
+
+	var result models.ModerationResult
+	if err := clientScopedResultQuery(r.db.WithContext(ctx), userID, clientID, requestID).
+		First(&result).Error; err != nil {
+		if stderrors.Is(err, gorm.ErrRecordNotFound) {
+			return StoredResult{}, apperrors.RecordNotFound("Moderation result not found")
+		}
+		return StoredResult{}, apperrors.DatabaseError(err, "failed to retrieve moderation result")
+	}
+
+	return StoredResult{
+		Request: request,
+		Result:  result,
+	}, nil
+}
+
 // FindResultByClientExternalID retrieves an existing client-owned result for idempotency.
 func (r *GormRepository) FindResultByClientExternalID(
 	ctx context.Context,
@@ -570,6 +605,10 @@ func (r *GormRepository) FinalizeReviewCase(
 
 func userScopedResultQuery(db *gorm.DB, userID uint, requestID string) *gorm.DB {
 	return db.Where("user_id = ? AND request_id = ?", userID, requestID)
+}
+
+func clientScopedResultQuery(db *gorm.DB, userID uint, clientID uint, requestID string) *gorm.DB {
+	return db.Where("user_id = ? AND client_id = ? AND request_id = ?", userID, clientID, requestID)
 }
 
 func clientExternalIDQuery(db *gorm.DB, clientID uint, externalID string) *gorm.DB {

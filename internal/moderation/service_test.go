@@ -894,6 +894,66 @@ func TestServiceGetResultReturnsStoredRecord(t *testing.T) {
 	}
 }
 
+func TestServiceGetClientResultReturnsClientScopedRecord(t *testing.T) {
+	clientID := uint(11)
+	service := NewService(fakeAnalyzer{}, &fakeRepository{
+		stored: StoredResult{
+			Request: models.ModerationRequest{
+				RequestID: "request-123",
+				UserID:    7,
+				ClientID:  &clientID,
+				Content:   "stored content",
+				Source:    "comment",
+				Status:    "completed",
+			},
+			Result: models.ModerationResult{
+				RequestID:     "request-123",
+				UserID:        7,
+				ClientID:      &clientID,
+				Provider:      "test-provider",
+				Model:         "test-model",
+				RiskScore:     0.6,
+				Labels:        `["harassment"]`,
+				Decision:      string(DecisionReview),
+				Reason:        "Needs review.",
+				PolicyVersion: "default-v1",
+				CreatedAt:     time.Date(2026, 6, 28, 10, 30, 0, 0, time.UTC),
+			},
+		},
+	}, DefaultPolicy())
+
+	output, err := service.GetClientResult(context.Background(), 7, clientID, " request-123 ")
+	if err != nil {
+		t.Fatalf("GetClientResult() error = %v", err)
+	}
+
+	if output.RequestID != "request-123" {
+		t.Fatalf("RequestID = %q, want request-123", output.RequestID)
+	}
+	repository := service.repository.(*fakeRepository)
+	if repository.userID != 7 {
+		t.Fatalf("repository userID = %d, want 7", repository.userID)
+	}
+	if repository.clientID != clientID {
+		t.Fatalf("repository clientID = %d, want %d", repository.clientID, clientID)
+	}
+	if repository.requestID != "request-123" {
+		t.Fatalf("repository requestID = %q, want request-123", repository.requestID)
+	}
+}
+
+func TestServiceGetClientResultRejectsMissingClient(t *testing.T) {
+	service := NewService(fakeAnalyzer{}, &fakeRepository{}, DefaultPolicy())
+
+	_, err := service.GetClientResult(context.Background(), 7, 0, "request-123")
+	if err == nil {
+		t.Fatal("GetClientResult() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "API key client not authenticated") {
+		t.Fatalf("GetClientResult() error = %q, want client auth error", err.Error())
+	}
+}
+
 func TestServiceGetResultRejectsInvalidInput(t *testing.T) {
 	service := NewService(fakeAnalyzer{}, &fakeRepository{}, DefaultPolicy())
 
@@ -2246,6 +2306,21 @@ func (r *fakeRepository) GetResult(ctx context.Context, userID uint, requestID s
 		return StoredResult{}, r.err
 	}
 	r.userID = userID
+	r.requestID = requestID
+	return r.stored, nil
+}
+
+func (r *fakeRepository) GetResultForClient(
+	ctx context.Context,
+	userID uint,
+	clientID uint,
+	requestID string,
+) (StoredResult, error) {
+	if r.err != nil {
+		return StoredResult{}, r.err
+	}
+	r.userID = userID
+	r.clientID = clientID
 	r.requestID = requestID
 	return r.stored, nil
 }

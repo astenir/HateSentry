@@ -56,6 +56,7 @@ type Repository interface {
 		reviewCase *models.ReviewCase,
 	) error
 	GetResult(ctx context.Context, userID uint, requestID string) (StoredResult, error)
+	GetResultForClient(ctx context.Context, userID uint, clientID uint, requestID string) (StoredResult, error)
 	FindResultByClientExternalID(ctx context.Context, clientID uint, externalID string) (StoredResult, bool, error)
 	ListHistory(ctx context.Context, filter HistoryFilter) ([]StoredHistoryItem, error)
 	GetClient(ctx context.Context, clientID uint) (models.ClientApplication, bool, error)
@@ -506,23 +507,47 @@ func (s *Service) policyForCheck(ctx context.Context, userID uint, clientID uint
 
 // GetResult retrieves a stored moderation result owned by the authenticated user.
 func (s *Service) GetResult(ctx context.Context, userID uint, requestID string) (ResultOutput, error) {
-	requestID = strings.TrimSpace(requestID)
+	requestID, err := normalizeResultRequestID(requestID)
+	if err != nil {
+		return ResultOutput{}, err
+	}
 	if userID == 0 {
 		return ResultOutput{}, apperrors.Unauthorized("User not authenticated")
-	}
-	if requestID == "" {
-		return ResultOutput{}, apperrors.ValidationError("request_id is required")
-	}
-	if len(requestID) > maxRequestIDLength {
-		return ResultOutput{}, apperrors.ValidationError(
-			fmt.Sprintf("request_id must not exceed %d characters", maxRequestIDLength),
-		)
 	}
 	if s.repository == nil {
 		return ResultOutput{}, apperrors.ConfigurationError("moderation repository is not configured")
 	}
 
 	stored, err := s.repository.GetResult(ctx, userID, requestID)
+	if err != nil {
+		return ResultOutput{}, err
+	}
+
+	return resultOutputFromStored(stored)
+}
+
+// GetClientResult retrieves a stored moderation result owned by an authenticated API key client.
+func (s *Service) GetClientResult(
+	ctx context.Context,
+	userID uint,
+	clientID uint,
+	requestID string,
+) (ResultOutput, error) {
+	requestID, err := normalizeResultRequestID(requestID)
+	if err != nil {
+		return ResultOutput{}, err
+	}
+	if userID == 0 {
+		return ResultOutput{}, apperrors.Unauthorized("User not authenticated")
+	}
+	if clientID == 0 {
+		return ResultOutput{}, apperrors.Unauthorized("API key client not authenticated")
+	}
+	if s.repository == nil {
+		return ResultOutput{}, apperrors.ConfigurationError("moderation repository is not configured")
+	}
+
+	stored, err := s.repository.GetResultForClient(ctx, userID, clientID, requestID)
 	if err != nil {
 		return ResultOutput{}, err
 	}
@@ -1268,6 +1293,19 @@ func validateCheckInput(input CheckInput) (CheckInput, error) {
 	}
 
 	return input, nil
+}
+
+func normalizeResultRequestID(requestID string) (string, error) {
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return "", apperrors.ValidationError("request_id is required")
+	}
+	if len(requestID) > maxRequestIDLength {
+		return "", apperrors.ValidationError(
+			fmt.Sprintf("request_id must not exceed %d characters", maxRequestIDLength),
+		)
+	}
+	return requestID, nil
 }
 
 func normalizeReviewStatus(status string) (ReviewStatus, error) {

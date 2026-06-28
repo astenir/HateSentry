@@ -147,6 +147,7 @@ func (r *Router) Setup() *gin.Engine {
 	moderationAccess.Use(clientRateLimitMiddleware(r.rateLimiter, r.clientRateLimit))
 	{
 		moderationAccess.POST("/check", moderationHandler.Check)
+		moderationAccess.GET("/results/:request_id", moderationHandler.GetResult)
 	}
 
 	// Protected routes
@@ -167,12 +168,6 @@ func (r *Router) Setup() *gin.Engine {
 			detection.POST("/detect", detectionHandler.Detect)
 			detection.GET("/result/:id", detectionHandler.GetResult)
 			detection.GET("/history", detectionHandler.GetHistory)
-		}
-
-		// Moderation
-		moderation := protected.Group("/moderation")
-		{
-			moderation.GET("/results/:request_id", moderationHandler.GetResult)
 		}
 
 		// Reviews

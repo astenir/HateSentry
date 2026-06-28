@@ -90,9 +90,9 @@ func moderationPrincipal(c *gin.Context) (checkPrincipal, bool) {
 	return checkPrincipal{}, false
 }
 
-// GetResult retrieves a stored moderation result for the authenticated user.
+// GetResult retrieves a stored moderation result for the authenticated principal.
 func (h *ModerationHandler) GetResult(c *gin.Context) {
-	claims, exists := auth.GetClaims(c)
+	principal, exists := moderationPrincipal(c)
 	if !exists {
 		apperrors.RespondWithError(c, apperrors.Unauthorized("User not authenticated"))
 		return
@@ -102,11 +102,24 @@ func (h *ModerationHandler) GetResult(c *gin.Context) {
 		return
 	}
 
-	result, err := h.service.GetResult(
-		c.Request.Context(),
-		claims.UserID,
-		c.Param("request_id"),
+	var (
+		result moderation.ResultOutput
+		err    error
 	)
+	if principal.ClientID != 0 {
+		result, err = h.service.GetClientResult(
+			c.Request.Context(),
+			principal.UserID,
+			principal.ClientID,
+			c.Param("request_id"),
+		)
+	} else {
+		result, err = h.service.GetResult(
+			c.Request.Context(),
+			principal.UserID,
+			c.Param("request_id"),
+		)
+	}
 	if err != nil {
 		apperrors.Handle(c, err)
 		return
