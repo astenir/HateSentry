@@ -307,6 +307,253 @@ func TestRouterClientPolicyAssignmentIntegration(t *testing.T) {
 	}
 }
 
+func TestRouterExternalClientReviewWorkflowIntegration(t *testing.T) {
+	dsn := os.Getenv("HATESENTRY_TEST_DSN")
+	if strings.TrimSpace(dsn) == "" {
+		t.Skip("HATESENTRY_TEST_DSN is required for router integration tests")
+	}
+
+	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+	if err := db.AutoMigrate(
+		&models.User{},
+		&models.ClientApplication{},
+		&models.ModerationRequest{},
+		&models.ModerationResult{},
+		&models.ReviewCase{},
+		&models.WebhookDelivery{},
+	); err != nil {
+		t.Fatalf("auto migrate test database: %v", err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	jwtManager := auth.NewJWTManager(&config.JWTConfig{
+		Secret:      "test-secret",
+		ExpireHours: 1,
+		Issuer:      "hatesentry-test",
+	})
+	policies, err := moderation.NewPolicySet(moderation.DefaultPolicy())
+	if err != nil {
+		t.Fatalf("NewPolicySet() error = %v", err)
+	}
+	router := NewRouterWithPolicies(
+		db,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		jwtManager,
+		policies,
+		config.ModerationRateLimitConfig{},
+	)
+	router.moderationAnalyzer = routerPolicyAnalyzer{
+		suggestion: moderation.ProviderSuggestion{
+			RiskScore: 0.6,
+			Labels:    []string{"harassment"},
+			Reason:    "Needs operator review.",
+			RawOutput: `{"risk_score":0.6,"labels":["harassment"],"reason":"Needs operator review."}`,
+		},
+		provider: moderation.ProviderInfo{
+			Provider: "test-provider",
+			Model:    "test-model",
+		},
+	}
+	engine := router.Setup()
+
+	ctx := context.Background()
+	suffix := strings.ReplaceAll(uuid.New().String(), "-", "")[:12]
+	user := models.User{
+		Username: "it-router-workflow-" + suffix,
+		Email:    "it-router-workflow-" + suffix + "@example.test",
+		Password: "not-used",
+		Role:     "admin",
+		Status:   "active",
+		APIKey:   "it_router_workflow_" + suffix,
+	}
+	if err := db.WithContext(ctx).Create(&user).Error; err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	var (
+		clientID  uint
+		requestID string
+	)
+	t.Cleanup(func() {
+		if clientID != 0 {
+			db.Unscoped().Where("client_id = ?", clientID).Delete(&models.WebhookDelivery{})
+		}
+		if requestID != "" {
+			db.Unscoped().Where("request_id = ?", requestID).Delete(&models.WebhookDelivery{})
+		}
+		db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.ReviewCase{})
+		db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.ModerationResult{})
+		db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.ModerationRequest{})
+		db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.ClientApplication{})
+		db.Unscoped().Delete(&models.User{}, user.ID)
+	})
+
+	token, err := jwtManager.GenerateToken(user.ID, user.Username, user.Role)
+	if err != nil {
+		t.Fatalf("GenerateToken() error = %v", err)
+	}
+
+	createRequest := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/admin/clients",
+		bytes.NewBufferString(`{"name":"workflow client","policy_version":"default-v1"}`),
+	)
+	createRequest.Header.Set("Authorization", "Bearer "+token)
+	createRequest.Header.Set("Content-Type", "application/json")
+	createRecorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(createRecorder, createRequest)
+
+	if createRecorder.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, want 201, body = %s", createRecorder.Code, createRecorder.Body.String())
+	}
+	var created clients.CreateOutput
+	if err := json.Unmarshal(createRecorder.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	if created.APIKey == "" {
+		t.Fatal("created API key is empty")
+	}
+	clientID = created.ID
+
+	checkRequest := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/moderation/check",
+		bytes.NewBufferString(`{"content":"please review this comment","source":"comment","external_id":"`+suffix+`"}`),
+	)
+	checkRequest.Header.Set("X-API-Key", created.APIKey)
+	checkRequest.Header.Set("Content-Type", "application/json")
+	checkRecorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(checkRecorder, checkRequest)
+
+	if checkRecorder.Code != http.StatusOK {
+		t.Fatalf("check status = %d, want 200, body = %s", checkRecorder.Code, checkRecorder.Body.String())
+	}
+	var checkOutput moderation.CheckOutput
+	if err := json.Unmarshal(checkRecorder.Body.Bytes(), &checkOutput); err != nil {
+		t.Fatalf("decode check response: %v", err)
+	}
+	if checkOutput.Decision != moderation.DecisionReview {
+		t.Fatalf("check decision = %q, want review", checkOutput.Decision)
+	}
+	if checkOutput.ReviewStatus != string(moderation.ReviewStatusPending) {
+		t.Fatalf("check review_status = %q, want pending", checkOutput.ReviewStatus)
+	}
+	if checkOutput.FinalDecision != "" {
+		t.Fatalf("check final_decision = %q, want empty before review", checkOutput.FinalDecision)
+	}
+	if checkOutput.RequestID == "" {
+		t.Fatal("check request_id is empty")
+	}
+	requestID = checkOutput.RequestID
+
+	listRequest := httptest.NewRequest(http.MethodGet, "/api/v1/reviews?status=pending", nil)
+	listRequest.Header.Set("Authorization", "Bearer "+token)
+	listRecorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(listRecorder, listRequest)
+
+	if listRecorder.Code != http.StatusOK {
+		t.Fatalf("list reviews status = %d, want 200, body = %s", listRecorder.Code, listRecorder.Body.String())
+	}
+	var reviewList struct {
+		Items []moderation.ReviewCaseOutput `json:"items"`
+	}
+	if err := json.Unmarshal(listRecorder.Body.Bytes(), &reviewList); err != nil {
+		t.Fatalf("decode review list response: %v", err)
+	}
+	review, found := findReviewCase(reviewList.Items, checkOutput.RequestID)
+	if !found {
+		t.Fatalf("review case for request_id %q was not listed in pending queue", checkOutput.RequestID)
+	}
+	if review.Status != moderation.ReviewStatusPending {
+		t.Fatalf("review status = %q, want pending", review.Status)
+	}
+	if review.PolicyDecision != moderation.DecisionReview {
+		t.Fatalf("review policy decision = %q, want review", review.PolicyDecision)
+	}
+	if review.ClientID == nil || *review.ClientID != created.ID {
+		t.Fatalf("review client_id = %#v, want %d", review.ClientID, created.ID)
+	}
+
+	approveRequest := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/reviews/"+createdID(review.ID)+"/approve",
+		bytes.NewBufferString(`{"notes":"approved by integration test"}`),
+	)
+	approveRequest.Header.Set("Authorization", "Bearer "+token)
+	approveRequest.Header.Set("Content-Type", "application/json")
+	approveRecorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(approveRecorder, approveRequest)
+
+	if approveRecorder.Code != http.StatusOK {
+		t.Fatalf("approve status = %d, want 200, body = %s", approveRecorder.Code, approveRecorder.Body.String())
+	}
+	var approved moderation.ReviewCaseOutput
+	if err := json.Unmarshal(approveRecorder.Body.Bytes(), &approved); err != nil {
+		t.Fatalf("decode approve response: %v", err)
+	}
+	if approved.Status != moderation.ReviewStatusApproved {
+		t.Fatalf("approved status = %q, want approved", approved.Status)
+	}
+	if approved.FinalDecision != moderation.DecisionAllow {
+		t.Fatalf("approved final_decision = %q, want allow", approved.FinalDecision)
+	}
+	if approved.ReviewerID == nil || *approved.ReviewerID != user.ID {
+		t.Fatalf("approved reviewer_id = %#v, want %d", approved.ReviewerID, user.ID)
+	}
+	if approved.ReviewedAt == nil {
+		t.Fatal("approved reviewed_at is nil")
+	}
+
+	resultRequest := httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/moderation/results/"+checkOutput.RequestID,
+		nil,
+	)
+	resultRequest.Header.Set("X-API-Key", created.APIKey)
+	resultRecorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(resultRecorder, resultRequest)
+
+	if resultRecorder.Code != http.StatusOK {
+		t.Fatalf("result status = %d, want 200, body = %s", resultRecorder.Code, resultRecorder.Body.String())
+	}
+	publicBody := resultRecorder.Body.String()
+	if strings.Contains(publicBody, "raw_output") ||
+		strings.Contains(publicBody, "reviewer_id") ||
+		strings.Contains(publicBody, "review_notes") {
+		t.Fatalf("public result response exposed internal review/provider fields: %s", publicBody)
+	}
+	var result moderation.ResultOutput
+	if err := json.Unmarshal(resultRecorder.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode result response: %v", err)
+	}
+	if result.RequestID != checkOutput.RequestID {
+		t.Fatalf("result request_id = %q, want %q", result.RequestID, checkOutput.RequestID)
+	}
+	if result.Decision != moderation.DecisionReview {
+		t.Fatalf("result decision = %q, want original policy decision review", result.Decision)
+	}
+	if result.ReviewStatus != string(moderation.ReviewStatusApproved) {
+		t.Fatalf("result review_status = %q, want approved", result.ReviewStatus)
+	}
+	if result.FinalDecision != string(moderation.DecisionAllow) {
+		t.Fatalf("result final_decision = %q, want allow", result.FinalDecision)
+	}
+	if result.ReviewedAt == nil {
+		t.Fatal("result reviewed_at is nil")
+	}
+}
+
 type routerPolicyAnalyzer struct {
 	suggestion moderation.ProviderSuggestion
 	provider   moderation.ProviderInfo
@@ -321,4 +568,13 @@ func (a routerPolicyAnalyzer) AnalyzeText(
 
 func createdID(id uint) string {
 	return strconv.FormatUint(uint64(id), 10)
+}
+
+func findReviewCase(items []moderation.ReviewCaseOutput, requestID string) (moderation.ReviewCaseOutput, bool) {
+	for _, item := range items {
+		if item.RequestID == requestID {
+			return item, true
+		}
+	}
+	return moderation.ReviewCaseOutput{}, false
 }
