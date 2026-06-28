@@ -2,20 +2,23 @@ package config
 
 import (
 	"hatesentry/internal/errors"
+	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/spf13/viper"
 )
 
 type Config struct {
-	Server     ServerConfig     `mapstructure:"server"`
-	Database   DatabaseConfig   `mapstructure:"database"`
-	Redis      RedisConfig      `mapstructure:"redis"`
-	RabbitMQ   RabbitMQConfig   `mapstructure:"rabbitmq"`
-	JWT        JWTConfig        `mapstructure:"jwt"`
-	AI         AIConfig         `mapstructure:"ai"`
-	Detection  DetectionConfig  `mapstructure:"detection"`
-	Logging    LoggingConfig    `mapstructure:"logging"`
+	Server    ServerConfig    `mapstructure:"server"`
+	Database  DatabaseConfig  `mapstructure:"database"`
+	Redis     RedisConfig     `mapstructure:"redis"`
+	RabbitMQ  RabbitMQConfig  `mapstructure:"rabbitmq"`
+	JWT       JWTConfig       `mapstructure:"jwt"`
+	AI        AIConfig        `mapstructure:"ai"`
+	Detection DetectionConfig `mapstructure:"detection"`
+	Logging   LoggingConfig   `mapstructure:"logging"`
 }
 
 type ServerConfig struct {
@@ -103,40 +106,121 @@ type LoggingConfig struct {
 }
 
 func Load(configPath string) (*Config, error) {
-	viper.SetConfigFile(configPath)
-	viper.SetConfigType("yaml")
+	loader := viper.New()
+	loader.SetConfigFile(configPath)
+	loader.SetConfigType("yaml")
 
 	// Set defaults
-	viper.SetDefault("server.host", "0.0.0.0")
-	viper.SetDefault("server.port", 8080)
-	viper.SetDefault("server.mode", "debug")
+	loader.SetDefault("server.host", "0.0.0.0")
+	loader.SetDefault("server.port", 8080)
+	loader.SetDefault("server.mode", "debug")
 
-	// Bind environment variables
-	viper.AutomaticEnv()
-	viper.SetEnvPrefix("HATESENTRY")
-
-	if err := viper.ReadInConfig(); err != nil {
+	if err := loader.ReadInConfig(); err != nil {
 		return nil, errors.ConfigurationError("failed to read config file").WithDetails(err.Error())
 	}
 
 	var config Config
-	if err := viper.Unmarshal(&config); err != nil {
+	if err := loader.Unmarshal(&config); err != nil {
 		return nil, errors.ConfigurationError("failed to unmarshal config").WithDetails(err.Error())
 	}
 
-	// Override with environment variables if set
-	if dbHost := viper.GetString("DB_HOST"); dbHost != "" {
-		config.Database.Host = dbHost
-	}
-	if dbPass := viper.GetString("DB_PASSWORD"); dbPass != "" {
-		config.Database.Password = dbPass
-	}
-	if jwtSecret := viper.GetString("JWT_SECRET"); jwtSecret != "" {
-		config.JWT.Secret = jwtSecret
-	}
-	if openaiKey := viper.GetString("OPENAI_API_KEY"); openaiKey != "" {
-		config.AI.OpenAI.APIKey = openaiKey
+	if err := applyEnvironmentOverrides(&config); err != nil {
+		return nil, err
 	}
 
 	return &config, nil
+}
+
+func applyEnvironmentOverrides(config *Config) error {
+	overrideString("DB_HOST", &config.Database.Host)
+	overrideString("DB_USERNAME", &config.Database.Username)
+	overrideString("DB_PASSWORD", &config.Database.Password)
+	overrideString("DB_DATABASE", &config.Database.Database)
+	overrideString("REDIS_HOST", &config.Redis.Host)
+	overrideString("REDIS_PASSWORD", &config.Redis.Password)
+	overrideString("RABBITMQ_HOST", &config.RabbitMQ.Host)
+	overrideString("RABBITMQ_USERNAME", &config.RabbitMQ.Username)
+	overrideString("RABBITMQ_PASSWORD", &config.RabbitMQ.Password)
+	overrideString("RABBITMQ_VHOST", &config.RabbitMQ.Vhost)
+	overrideString("RABBITMQ_QUEUE", &config.RabbitMQ.Queue)
+	overrideString("RABBITMQ_EXCHANGE", &config.RabbitMQ.Exchange)
+	overrideString("RABBITMQ_ROUTING_KEY", &config.RabbitMQ.RoutingKey)
+	if err := overrideRequiredString("JWT_SECRET", &config.JWT.Secret); err != nil {
+		return err
+	}
+	overrideString("OPENAI_API_KEY", &config.AI.OpenAI.APIKey)
+	overrideString("OPENAI_BASE_URL", &config.AI.OpenAI.BaseURL)
+	overrideString("OPENAI_MODEL", &config.AI.OpenAI.Model)
+	overrideString("OLLAMA_BASE_URL", &config.AI.Ollama.BaseURL)
+	overrideString("OLLAMA_MODEL", &config.AI.Ollama.Model)
+	overrideString("LOG_LEVEL", &config.Logging.Level)
+	overrideString("LOG_FORMAT", &config.Logging.Format)
+	overrideString("LOG_OUTPUT", &config.Logging.Output)
+
+	if err := overridePort("DB_PORT", &config.Database.Port); err != nil {
+		return err
+	}
+	if err := overridePort("REDIS_PORT", &config.Redis.Port); err != nil {
+		return err
+	}
+	if err := overrideInt("REDIS_DB", &config.Redis.DB); err != nil {
+		return err
+	}
+	if err := overridePort("RABBITMQ_PORT", &config.RabbitMQ.Port); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func overrideString(name string, target *string) {
+	if value, ok := os.LookupEnv(name); ok {
+		*target = value
+	}
+}
+
+func overrideRequiredString(name string, target *string) error {
+	value, ok := os.LookupEnv(name)
+	if !ok {
+		return nil
+	}
+	if strings.TrimSpace(value) == "" {
+		return errors.ConfigurationError("invalid environment variable").WithDetails(name + " must not be empty")
+	}
+
+	*target = value
+	return nil
+}
+
+func overrideInt(name string, target *int) error {
+	value, ok := os.LookupEnv(name)
+	if !ok {
+		return nil
+	}
+
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return errors.ConfigurationError("invalid environment variable").WithDetails(name + " must be an integer")
+	}
+
+	*target = parsed
+	return nil
+}
+
+func overridePort(name string, target *int) error {
+	value, ok := os.LookupEnv(name)
+	if !ok {
+		return nil
+	}
+
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return errors.ConfigurationError("invalid environment variable").WithDetails(name + " must be an integer")
+	}
+	if parsed < 1 || parsed > 65535 {
+		return errors.ConfigurationError("invalid environment variable").WithDetails(name + " must be between 1 and 65535")
+	}
+
+	*target = parsed
+	return nil
 }
