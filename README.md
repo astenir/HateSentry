@@ -523,8 +523,12 @@ ADMIN_BOOTSTRAP_TOKEN=
 JWT_SECRET=your-secret-key-change-in-production
 
 # AI 服务
+AI_PROVIDER=openai
 OPENAI_API_KEY=your-openai-api-key
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_MODEL=gpt-4o-mini
 OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=llama3
 
 # 内容审核策略
 MODERATION_POLICY_VERSION=default-v1
@@ -541,6 +545,8 @@ MODERATION_WEBHOOK_RETRY_MAX_ATTEMPTS=3
 LOG_LEVEL=info
 LOG_FORMAT=json
 ```
+
+`AI_PROVIDER` 可设置为 `openai` 或 `ollama`，用于不修改 YAML 的情况下切换文本审核 provider。使用 Docker Compose 中的 Ollama 服务时，`OLLAMA_BASE_URL` 应设置为 `http://ollama:11434`；在宿主机直接运行应用并连接本机 Ollama 时，使用 `http://localhost:11434`。
 
 ## 🏗️ 项目结构
 

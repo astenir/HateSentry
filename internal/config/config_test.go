@@ -27,6 +27,7 @@ func TestLoadOverridesComposeEnvironment(t *testing.T) {
 	t.Setenv("RABBITMQ_PASSWORD", "queue_password")
 	t.Setenv("ADMIN_BOOTSTRAP_TOKEN", "bootstrap_secret")
 	t.Setenv("JWT_SECRET", "jwt_secret")
+	t.Setenv("AI_PROVIDER", "ollama")
 	t.Setenv("OPENAI_API_KEY", "openai_secret")
 	t.Setenv("OLLAMA_BASE_URL", "http://ollama:11434")
 	t.Setenv("MODERATION_POLICY_VERSION", "custom-v1")
@@ -88,6 +89,9 @@ func TestLoadOverridesComposeEnvironment(t *testing.T) {
 	}
 	if cfg.AI.OpenAI.APIKey != "openai_secret" {
 		t.Fatalf("AI.OpenAI.APIKey = %q, want openai_secret", cfg.AI.OpenAI.APIKey)
+	}
+	if cfg.AI.Provider != "ollama" {
+		t.Fatalf("AI.Provider = %q, want ollama", cfg.AI.Provider)
 	}
 	if cfg.AI.Ollama.BaseURL != "http://ollama:11434" {
 		t.Fatalf("AI.Ollama.BaseURL = %q, want http://ollama:11434", cfg.AI.Ollama.BaseURL)
@@ -238,6 +242,19 @@ func TestLoadRejectsInvalidBooleanEnvironment(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "MODERATION_WEBHOOK_RETRY_ENABLED must be a boolean") {
 		t.Fatalf("Load() error = %q, want webhook retry enabled detail", err.Error())
+	}
+}
+
+func TestLoadRejectsInvalidAIProviderEnvironment(t *testing.T) {
+	configPath := writeTestConfig(t)
+	t.Setenv("AI_PROVIDER", "anthropic")
+
+	_, err := Load(configPath)
+	if err == nil {
+		t.Fatal("Load() error = nil, want invalid AI provider error")
+	}
+	if !strings.Contains(err.Error(), "AI_PROVIDER must be openai or ollama") {
+		t.Fatalf("Load() error = %q, want AI_PROVIDER detail", err.Error())
 	}
 }
 

@@ -19,8 +19,12 @@ services:
       - RABBITMQ_PASSWORD=guest
       - ADMIN_BOOTSTRAP_TOKEN=${ADMIN_BOOTSTRAP_TOKEN:-}
       - JWT_SECRET=your-production-secret-key-change-me
+      - AI_PROVIDER=${AI_PROVIDER:-openai}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-your-openai-api-key}
-      - OLLAMA_BASE_URL=http://ollama:11434
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://ollama:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3}
       - MODERATION_WEBHOOK_RETRY_ENABLED=${MODERATION_WEBHOOK_RETRY_ENABLED:-true}
       - MODERATION_WEBHOOK_RETRY_INTERVAL=${MODERATION_WEBHOOK_RETRY_INTERVAL:-1m}
       - MODERATION_WEBHOOK_RETRY_BATCH_SIZE=${MODERATION_WEBHOOK_RETRY_BATCH_SIZE:-10}
@@ -104,9 +108,9 @@ services:
   #   networks:
   #     - hatesentry-network
   #   restart: unless-stopped
-    # Uncomment and customize to pull specific models
-    # command: >
-    #   sh -c "ollama serve & sleep 5 && ollama pull llava:13b && wait"
+  #   # Uncomment and customize to pull the model configured by OLLAMA_MODEL.
+  #   command: >
+  #     sh -c "ollama serve & sleep 5 && ollama pull llama3 && wait"
 
 volumes:
   mysql-data:

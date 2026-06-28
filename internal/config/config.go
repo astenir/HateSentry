@@ -145,6 +145,7 @@ func Load(configPath string) (*Config, error) {
 	loader.SetDefault("server.host", "0.0.0.0")
 	loader.SetDefault("server.port", 8080)
 	loader.SetDefault("server.mode", "debug")
+	loader.SetDefault("ai.provider", "openai")
 	loader.SetDefault("moderation.policy.version", "default-v1")
 	loader.SetDefault("moderation.policy.review_threshold", 0.4)
 	loader.SetDefault("moderation.policy.block_threshold", 0.75)
@@ -175,6 +176,11 @@ func Load(configPath string) (*Config, error) {
 }
 
 func validateConfig(config *Config) error {
+	switch strings.TrimSpace(config.AI.Provider) {
+	case "openai", "ollama":
+	default:
+		return errors.ConfigurationError("invalid AI provider").WithDetails("AI_PROVIDER must be openai or ollama")
+	}
 	if config.Moderation.ClientRateLimit.Limit < 0 {
 		return errors.ConfigurationError("invalid moderation client rate limit").WithDetails("limit must be zero or greater")
 	}
@@ -229,6 +235,7 @@ func applyEnvironmentOverrides(config *Config) error {
 	if err := overrideRequiredString("JWT_SECRET", &config.JWT.Secret); err != nil {
 		return err
 	}
+	overrideString("AI_PROVIDER", &config.AI.Provider)
 	overrideString("OPENAI_API_KEY", &config.AI.OpenAI.APIKey)
 	overrideString("OPENAI_BASE_URL", &config.AI.OpenAI.BaseURL)
 	overrideString("OPENAI_MODEL", &config.AI.OpenAI.Model)
