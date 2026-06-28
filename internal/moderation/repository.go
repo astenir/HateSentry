@@ -3,11 +3,13 @@ package moderation
 import (
 	"context"
 	stderrors "errors"
+	"strings"
 	"time"
 
 	apperrors "hatesentry/internal/errors"
 	"hatesentry/internal/models"
 
+	"github.com/go-sql-driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -35,6 +37,9 @@ func (r *GormRepository) SaveCheck(
 
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(request).Error; err != nil {
+			if isDuplicateKeyError(err) {
+				return apperrors.Conflict("Moderation request already exists for this client external_id")
+			}
 			return err
 		}
 		if err := tx.Create(result).Error; err != nil {
@@ -48,6 +53,10 @@ func (r *GormRepository) SaveCheck(
 		return nil
 	})
 	if err != nil {
+		var appErr *apperrors.AppError
+		if stderrors.As(err, &appErr) {
+			return appErr
+		}
 		return apperrors.DatabaseError(err, "failed to save moderation records")
 	}
 
@@ -82,6 +91,43 @@ func (r *GormRepository) GetResult(ctx context.Context, userID uint, requestID s
 		Request: request,
 		Result:  result,
 	}, nil
+}
+
+// FindResultByClientExternalID retrieves an existing client-owned result for idempotency.
+func (r *GormRepository) FindResultByClientExternalID(
+	ctx context.Context,
+	clientID uint,
+	externalID string,
+) (StoredResult, bool, error) {
+	if r == nil || r.db == nil {
+		return StoredResult{}, false, apperrors.ConfigurationError("moderation database is not configured")
+	}
+
+	var request models.ModerationRequest
+	err := clientExternalIDQuery(r.db.WithContext(ctx), clientID, externalID).
+		Order("created_at DESC").
+		First(&request).Error
+	if err != nil {
+		if stderrors.Is(err, gorm.ErrRecordNotFound) {
+			return StoredResult{}, false, nil
+		}
+		return StoredResult{}, false, apperrors.DatabaseError(err, "failed to retrieve moderation request")
+	}
+
+	var result models.ModerationResult
+	err = userScopedResultQuery(r.db.WithContext(ctx), request.UserID, request.RequestID).
+		First(&result).Error
+	if err != nil {
+		if stderrors.Is(err, gorm.ErrRecordNotFound) {
+			return StoredResult{}, false, nil
+		}
+		return StoredResult{}, false, apperrors.DatabaseError(err, "failed to retrieve moderation result")
+	}
+
+	return StoredResult{
+		Request: request,
+		Result:  result,
+	}, true, nil
 }
 
 // ListReviewCases retrieves review cases by workflow status.
@@ -170,6 +216,22 @@ func (r *GormRepository) FinalizeReviewCase(
 
 func userScopedResultQuery(db *gorm.DB, userID uint, requestID string) *gorm.DB {
 	return db.Where("user_id = ? AND request_id = ?", userID, requestID)
+}
+
+func clientExternalIDQuery(db *gorm.DB, clientID uint, externalID string) *gorm.DB {
+	return db.Where("client_id = ? AND external_id = ?", clientID, externalID)
+}
+
+func isDuplicateKeyError(err error) bool {
+	var mysqlErr *mysql.MySQLError
+	if stderrors.As(err, &mysqlErr) {
+		return mysqlErr.Number == 1062
+	}
+
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "duplicate entry") ||
+		strings.Contains(message, "unique constraint") ||
+		strings.Contains(message, "duplicate key")
 }
 
 func reviewCaseListQuery(db *gorm.DB, status ReviewStatus) *gorm.DB {

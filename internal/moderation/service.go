@@ -3,6 +3,7 @@ package moderation
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -37,6 +38,7 @@ type Repository interface {
 		reviewCase *models.ReviewCase,
 	) error
 	GetResult(ctx context.Context, userID uint, requestID string) (StoredResult, error)
+	FindResultByClientExternalID(ctx context.Context, clientID uint, externalID string) (StoredResult, bool, error)
 	ListReviewCases(ctx context.Context, status ReviewStatus) ([]StoredReviewCase, error)
 	FinalizeReviewCase(
 		ctx context.Context,
@@ -81,6 +83,7 @@ func NewService(analyzer Analyzer, repository Repository, policy Policy) *Servic
 // CheckInput is the service input for a text moderation check.
 type CheckInput struct {
 	UserID     uint
+	ClientID   uint
 	Content    string
 	Source     string
 	ExternalID string
@@ -100,6 +103,7 @@ type CheckOutput struct {
 // ResultOutput is the stable public representation of a stored moderation result.
 type ResultOutput struct {
 	RequestID     string    `json:"request_id"`
+	ClientID      *uint     `json:"client_id,omitempty"`
 	Content       string    `json:"content"`
 	Source        string    `json:"source"`
 	ExternalID    string    `json:"external_id,omitempty"`
@@ -120,6 +124,7 @@ type ReviewCaseOutput struct {
 	ID             uint         `json:"id"`
 	RequestID      string       `json:"request_id"`
 	UserID         uint         `json:"user_id"`
+	ClientID       *uint        `json:"client_id,omitempty"`
 	Content        string       `json:"content"`
 	Source         string       `json:"source"`
 	ExternalID     string       `json:"external_id,omitempty"`
@@ -150,6 +155,21 @@ func (s *Service) Check(ctx context.Context, input CheckInput) (CheckOutput, err
 		return CheckOutput{}, apperrors.ConfigurationError("moderation repository is not configured")
 	}
 
+	if normalized.ClientID != 0 && normalized.ExternalID != "" {
+		stored, found, err := s.repository.FindResultByClientExternalID(
+			ctx,
+			normalized.ClientID,
+			normalized.ExternalID,
+		)
+		if err != nil {
+			return CheckOutput{}, err
+		}
+		if found {
+			return checkOutputFromStored(stored)
+		}
+	}
+	idempotencyKey := clientExternalIDIdempotencyKey(normalized.ClientID, normalized.ExternalID)
+
 	suggestion, provider, err := s.analyzer.AnalyzeText(ctx, normalized.Content)
 	if err != nil {
 		return CheckOutput{}, err
@@ -167,17 +187,20 @@ func (s *Service) Check(ctx context.Context, input CheckInput) (CheckOutput, err
 	}
 
 	request := &models.ModerationRequest{
-		RequestID:  requestID,
-		UserID:     normalized.UserID,
-		Content:    normalized.Content,
-		Source:     normalized.Source,
-		ExternalID: normalized.ExternalID,
-		ActorID:    normalized.ActorID,
-		Status:     "completed",
+		RequestID:      requestID,
+		UserID:         normalized.UserID,
+		ClientID:       optionalUint(normalized.ClientID),
+		IdempotencyKey: optionalString(idempotencyKey),
+		Content:        normalized.Content,
+		Source:         normalized.Source,
+		ExternalID:     normalized.ExternalID,
+		ActorID:        normalized.ActorID,
+		Status:         "completed",
 	}
 	result := &models.ModerationResult{
 		RequestID:     requestID,
 		UserID:        normalized.UserID,
+		ClientID:      optionalUint(normalized.ClientID),
 		Provider:      provider.Provider,
 		Model:         provider.Model,
 		RawOutput:     suggestion.RawOutput,
@@ -192,11 +215,25 @@ func (s *Service) Check(ctx context.Context, input CheckInput) (CheckOutput, err
 		reviewCase = &models.ReviewCase{
 			RequestID: requestID,
 			UserID:    normalized.UserID,
+			ClientID:  optionalUint(normalized.ClientID),
 			Status:    string(ReviewStatusPending),
 		}
 	}
 
 	if err := s.repository.SaveCheck(ctx, request, result, reviewCase); err != nil {
+		if idempotencyKey != "" && isConflictError(err) {
+			stored, found, lookupErr := s.repository.FindResultByClientExternalID(
+				ctx,
+				normalized.ClientID,
+				normalized.ExternalID,
+			)
+			if lookupErr != nil {
+				return CheckOutput{}, lookupErr
+			}
+			if found {
+				return checkOutputFromStored(stored)
+			}
+		}
 		return CheckOutput{}, err
 	}
 
@@ -233,6 +270,10 @@ func (s *Service) GetResult(ctx context.Context, userID uint, requestID string) 
 		return ResultOutput{}, err
 	}
 
+	return resultOutputFromStored(stored)
+}
+
+func resultOutputFromStored(stored StoredResult) (ResultOutput, error) {
 	labels, err := decodeLabels(stored.Result.Labels)
 	if err != nil {
 		return ResultOutput{}, err
@@ -240,6 +281,7 @@ func (s *Service) GetResult(ctx context.Context, userID uint, requestID string) 
 
 	return ResultOutput{
 		RequestID:     stored.Request.RequestID,
+		ClientID:      stored.Request.ClientID,
 		Content:       stored.Request.Content,
 		Source:        stored.Request.Source,
 		ExternalID:    stored.Request.ExternalID,
@@ -253,6 +295,22 @@ func (s *Service) GetResult(ctx context.Context, userID uint, requestID string) 
 		Reason:        stored.Result.Reason,
 		PolicyVersion: stored.Result.PolicyVersion,
 		CreatedAt:     stored.Result.CreatedAt,
+	}, nil
+}
+
+func checkOutputFromStored(stored StoredResult) (CheckOutput, error) {
+	labels, err := decodeLabels(stored.Result.Labels)
+	if err != nil {
+		return CheckOutput{}, err
+	}
+
+	return CheckOutput{
+		RequestID:     stored.Result.RequestID,
+		Decision:      Decision(stored.Result.Decision),
+		RiskScore:     stored.Result.RiskScore,
+		Labels:        labels,
+		Reason:        stored.Result.Reason,
+		PolicyVersion: stored.Result.PolicyVersion,
 	}, nil
 }
 
@@ -461,6 +519,40 @@ func parseReviewCaseID(caseID string) (uint, error) {
 	return uint(parsed), nil
 }
 
+func optionalUint(value uint) *uint {
+	if value == 0 {
+		return nil
+	}
+
+	return &value
+}
+
+func optionalString(value string) *string {
+	if value == "" {
+		return nil
+	}
+
+	return &value
+}
+
+func clientExternalIDIdempotencyKey(clientID uint, externalID string) string {
+	if clientID == 0 || externalID == "" {
+		return ""
+	}
+
+	return fmt.Sprintf("%d:%s", clientID, externalID)
+}
+
+func isConflictError(err error) bool {
+	var appErr *apperrors.AppError
+	if errors.As(err, &appErr) {
+		return appErr.Code == apperrors.ErrCodeConflict ||
+			appErr.Code == apperrors.ErrCodeDuplicateRecord
+	}
+
+	return false
+}
+
 func mapReviewCaseOutput(stored StoredReviewCase) (ReviewCaseOutput, error) {
 	labels, err := decodeLabels(stored.Result.Labels)
 	if err != nil {
@@ -471,6 +563,7 @@ func mapReviewCaseOutput(stored StoredReviewCase) (ReviewCaseOutput, error) {
 		ID:             stored.Case.ID,
 		RequestID:      stored.Case.RequestID,
 		UserID:         stored.Case.UserID,
+		ClientID:       stored.Case.ClientID,
 		Content:        stored.Request.Content,
 		Source:         stored.Request.Source,
 		ExternalID:     stored.Request.ExternalID,

@@ -20,6 +20,22 @@ type User struct {
 	APIKey    string         `gorm:"uniqueIndex;size:64" json:"api_key"`
 }
 
+// ClientApplication represents an external application that can call moderation APIs.
+type ClientApplication struct {
+	ID            uint           `gorm:"primarykey" json:"id"`
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
+	DeletedAt     gorm.DeletedAt `gorm:"index" json:"-"`
+	UserID        uint           `gorm:"not null;index" json:"user_id"`
+	User          User           `gorm:"foreignKey:UserID" json:"user,omitempty"`
+	Name          string         `gorm:"size:100;not null" json:"name"`
+	APIKeyHash    string         `gorm:"uniqueIndex;size:64;not null" json:"-"`
+	APIKeyPrefix  string         `gorm:"size:20;index" json:"api_key_prefix"`
+	Status        string         `gorm:"size:20;not null;index;default:'active'" json:"status"`
+	WebhookURL    string         `gorm:"size:500" json:"webhook_url,omitempty"`
+	PolicyVersion string         `gorm:"size:50" json:"policy_version,omitempty"`
+}
+
 // DetectionRequest represents a detection request
 type DetectionRequest struct {
 	ID          uint           `gorm:"primarykey" json:"id"`
@@ -55,36 +71,41 @@ type DetectionResult struct {
 
 // ModerationRequest stores the original text moderation request for auditability.
 type ModerationRequest struct {
-	ID         uint           `gorm:"primarykey" json:"id"`
-	CreatedAt  time.Time      `json:"created_at"`
-	UpdatedAt  time.Time      `json:"updated_at"`
-	DeletedAt  gorm.DeletedAt `gorm:"index" json:"-"`
-	RequestID  string         `gorm:"uniqueIndex;size:64;not null" json:"request_id"`
-	UserID     uint           `gorm:"not null;index" json:"user_id"`
-	User       User           `gorm:"foreignKey:UserID" json:"user,omitempty"`
-	Content    string         `gorm:"type:text;not null" json:"content"`
-	Source     string         `gorm:"size:50;index" json:"source"`
-	ExternalID string         `gorm:"size:128;index" json:"external_id,omitempty"`
-	ActorID    string         `gorm:"size:128;index" json:"actor_id,omitempty"`
-	Status     string         `gorm:"size:20;index;default:'completed'" json:"status"`
+	ID             uint              `gorm:"primarykey" json:"id"`
+	CreatedAt      time.Time         `json:"created_at"`
+	UpdatedAt      time.Time         `json:"updated_at"`
+	DeletedAt      gorm.DeletedAt    `gorm:"index" json:"-"`
+	RequestID      string            `gorm:"uniqueIndex;size:64;not null" json:"request_id"`
+	UserID         uint              `gorm:"not null;index" json:"user_id"`
+	User           User              `gorm:"foreignKey:UserID" json:"user,omitempty"`
+	ClientID       *uint             `gorm:"index" json:"client_id,omitempty"`
+	Client         ClientApplication `gorm:"foreignKey:ClientID" json:"client,omitempty"`
+	IdempotencyKey *string           `gorm:"uniqueIndex;size:200" json:"-"`
+	Content        string            `gorm:"type:text;not null" json:"content"`
+	Source         string            `gorm:"size:50;index" json:"source"`
+	ExternalID     string            `gorm:"size:128;index" json:"external_id,omitempty"`
+	ActorID        string            `gorm:"size:128;index" json:"actor_id,omitempty"`
+	Status         string            `gorm:"size:20;index;default:'completed'" json:"status"`
 }
 
 // ModerationResult stores the provider suggestion and service-owned decision.
 type ModerationResult struct {
-	ID            uint           `gorm:"primarykey" json:"id"`
-	CreatedAt     time.Time      `json:"created_at"`
-	UpdatedAt     time.Time      `json:"updated_at"`
-	DeletedAt     gorm.DeletedAt `gorm:"index" json:"-"`
-	RequestID     string         `gorm:"uniqueIndex;size:64;not null" json:"request_id"`
-	UserID        uint           `gorm:"not null;index" json:"user_id"`
-	Provider      string         `gorm:"size:50" json:"provider"`
-	Model         string         `gorm:"size:100" json:"model"`
-	RawOutput     string         `gorm:"type:longtext" json:"-"`
-	RiskScore     float64        `gorm:"not null" json:"risk_score"`
-	Labels        string         `gorm:"type:text" json:"labels"`
-	Decision      string         `gorm:"size:20;not null;index" json:"decision"`
-	Reason        string         `gorm:"type:text" json:"reason"`
-	PolicyVersion string         `gorm:"size:50;not null;index" json:"policy_version"`
+	ID            uint              `gorm:"primarykey" json:"id"`
+	CreatedAt     time.Time         `json:"created_at"`
+	UpdatedAt     time.Time         `json:"updated_at"`
+	DeletedAt     gorm.DeletedAt    `gorm:"index" json:"-"`
+	RequestID     string            `gorm:"uniqueIndex;size:64;not null" json:"request_id"`
+	UserID        uint              `gorm:"not null;index" json:"user_id"`
+	ClientID      *uint             `gorm:"index" json:"client_id,omitempty"`
+	Client        ClientApplication `gorm:"foreignKey:ClientID" json:"client,omitempty"`
+	Provider      string            `gorm:"size:50" json:"provider"`
+	Model         string            `gorm:"size:100" json:"model"`
+	RawOutput     string            `gorm:"type:longtext" json:"-"`
+	RiskScore     float64           `gorm:"not null" json:"risk_score"`
+	Labels        string            `gorm:"type:text" json:"labels"`
+	Decision      string            `gorm:"size:20;not null;index" json:"decision"`
+	Reason        string            `gorm:"type:text" json:"reason"`
+	PolicyVersion string            `gorm:"size:50;not null;index" json:"policy_version"`
 }
 
 // ReviewCase tracks human review for moderation results that need operator judgment.
@@ -95,6 +116,7 @@ type ReviewCase struct {
 	DeletedAt     gorm.DeletedAt `gorm:"index" json:"-"`
 	RequestID     string         `gorm:"uniqueIndex;size:64;not null" json:"request_id"`
 	UserID        uint           `gorm:"not null;index" json:"user_id"`
+	ClientID      *uint          `gorm:"index" json:"client_id,omitempty"`
 	Status        string         `gorm:"size:20;not null;index;default:'pending'" json:"status"`
 	ReviewerID    *uint          `gorm:"index" json:"reviewer_id,omitempty"`
 	FinalDecision string         `gorm:"size:20;index" json:"final_decision,omitempty"`

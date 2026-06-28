@@ -80,6 +80,7 @@ func Initialize(cfg *config.DatabaseConfig) error {
 func AutoMigrate() error {
 	return DB.AutoMigrate(
 		&models.User{},
+		&models.ClientApplication{},
 		&models.DetectionRequest{},
 		&models.DetectionResult{},
 		&models.ModerationRequest{},

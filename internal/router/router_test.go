@@ -6,6 +6,7 @@ import (
 	"hatesentry/internal/moderation"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -50,6 +51,8 @@ func TestSetupRegistersCoreRoutes(t *testing.T) {
 		"POST /api/v1/reviews/:id/approve",
 		"POST /api/v1/reviews/:id/reject",
 		"POST /api/v1/reviews/:id/mark-mistake",
+		"POST /api/v1/admin/clients",
+		"GET /api/v1/admin/clients",
 		"GET /metrics",
 	}
 
@@ -88,6 +91,37 @@ func TestSetupProtectsModerationResultRoute(t *testing.T) {
 		"/api/v1/moderation/results/request-123",
 		nil,
 	)
+	recorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", recorder.Code)
+	}
+}
+
+func TestSetupProtectsModerationCheckRoute(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	jwtManager := auth.NewJWTManager(&config.JWTConfig{
+		Secret:      "test-secret",
+		ExpireHours: 1,
+		Issuer:      "hatesentry-test",
+	})
+
+	router := NewRouter(
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		jwtManager,
+		moderation.DefaultPolicy(),
+	)
+
+	engine := router.Setup()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/moderation/check", nil)
 	recorder := httptest.NewRecorder()
 
 	engine.ServeHTTP(recorder, req)
@@ -161,6 +195,68 @@ func TestSetupRequiresAdminForReviewRoutes(t *testing.T) {
 
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", recorder.Code)
+	}
+}
+
+func TestSetupRequiresAdminForClientRoutes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	jwtManager := auth.NewJWTManager(&config.JWTConfig{
+		Secret:      "test-secret",
+		ExpireHours: 1,
+		Issuer:      "hatesentry-test",
+	})
+	token, err := jwtManager.GenerateToken(7, "submitter", "user")
+	if err != nil {
+		t.Fatalf("GenerateToken() error = %v", err)
+	}
+
+	router := NewRouter(
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		jwtManager,
+		moderation.DefaultPolicy(),
+	)
+
+	engine := router.Setup()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/clients", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	recorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", recorder.Code)
+	}
+}
+
+func TestCORSAllowsAPIKeyHeader(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	engine := gin.New()
+	engine.Use(corsMiddleware())
+	engine.OPTIONS("/preflight", func(c *gin.Context) {
+		c.Status(http.StatusNoContent)
+	})
+
+	req := httptest.NewRequest(http.MethodOptions, "/preflight", nil)
+	req.Header.Set("Origin", "https://example.com")
+	req.Header.Set("Access-Control-Request-Method", http.MethodPost)
+	req.Header.Set("Access-Control-Request-Headers", "X-API-Key")
+	recorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", recorder.Code)
+	}
+	allowedHeaders := recorder.Header().Get("Access-Control-Allow-Headers")
+	if !strings.Contains(allowedHeaders, "X-API-Key") {
+		t.Fatalf("Access-Control-Allow-Headers = %q, want X-API-Key", allowedHeaders)
 	}
 }
 

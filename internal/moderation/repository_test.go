@@ -74,6 +74,27 @@ func TestReviewCaseByIDQueryFiltersByCaseID(t *testing.T) {
 	}
 }
 
+func TestClientExternalIDQueryFiltersByClientAndExternalID(t *testing.T) {
+	db := openDryRunDB(t)
+
+	stmt := clientExternalIDQuery(db, 11, "comment_123").
+		Find(&models.ModerationRequest{}).
+		Statement
+
+	sql := stmt.SQL.String()
+	if !strings.Contains(sql, "client_id") {
+		t.Fatalf("SQL = %q, want client_id filter", sql)
+	}
+	if !strings.Contains(sql, "external_id") {
+		t.Fatalf("SQL = %q, want external_id filter", sql)
+	}
+
+	wantVars := []interface{}{uint(11), "comment_123"}
+	if !reflect.DeepEqual(stmt.Vars, wantVars) {
+		t.Fatalf("Vars = %#v, want %#v", stmt.Vars, wantVars)
+	}
+}
+
 func openDryRunDB(t *testing.T) *gorm.DB {
 	t.Helper()
 

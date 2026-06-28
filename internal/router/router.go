@@ -4,6 +4,7 @@ import (
 	"hatesentry/internal/ai"
 	"hatesentry/internal/auth"
 	"hatesentry/internal/cache"
+	"hatesentry/internal/clients"
 	"hatesentry/internal/handlers"
 	"hatesentry/internal/moderation"
 	"hatesentry/internal/observability"
@@ -59,6 +60,9 @@ func (r *Router) Setup() *gin.Engine {
 	r.engine.Use(observability.MetricsMiddleware())
 
 	// Handlers
+	clientRepository := clients.NewGormRepository(r.db)
+	clientService := clients.NewService(clientRepository)
+	clientHandler := handlers.NewClientHandler(clientService)
 	authHandler := handlers.NewAuthHandler(r.db, r.jwtManager)
 	detectionHandler := handlers.NewDetectionHandler(
 		r.db,
@@ -84,6 +88,13 @@ func (r *Router) Setup() *gin.Engine {
 		public.GET("/health", healthHandler.Health)
 	}
 
+	// Moderation check supports either operator JWT or external client API key.
+	moderationAccess := r.engine.Group("/api/v1/moderation")
+	moderationAccess.Use(r.jwtManager.AuthOrAPIKeyMiddleware(clientRepository))
+	{
+		moderationAccess.POST("/check", moderationHandler.Check)
+	}
+
 	// Protected routes
 	protected := r.engine.Group("/api/v1")
 	protected.Use(r.jwtManager.AuthMiddleware())
@@ -107,7 +118,6 @@ func (r *Router) Setup() *gin.Engine {
 		// Moderation
 		moderation := protected.Group("/moderation")
 		{
-			moderation.POST("/check", moderationHandler.Check)
 			moderation.GET("/results/:request_id", moderationHandler.GetResult)
 		}
 
@@ -126,7 +136,8 @@ func (r *Router) Setup() *gin.Engine {
 	admin := r.engine.Group("/api/v1/admin")
 	admin.Use(r.jwtManager.AuthMiddleware(), r.jwtManager.RequireRole("admin"))
 	{
-		// Add admin endpoints as needed
+		admin.POST("/clients", clientHandler.Create)
+		admin.GET("/clients", clientHandler.List)
 	}
 
 	// Register metrics endpoint
@@ -140,7 +151,7 @@ func corsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Header("Access-Control-Allow-Origin", "*")
 		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization")
+		c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, X-API-Key")
 
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(204)

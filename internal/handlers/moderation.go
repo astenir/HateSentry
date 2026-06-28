@@ -38,7 +38,7 @@ type ReviewActionRequest struct {
 
 // Check runs a synchronous text moderation check.
 func (h *ModerationHandler) Check(c *gin.Context) {
-	claims, exists := auth.GetClaims(c)
+	principal, exists := moderationPrincipal(c)
 	if !exists {
 		apperrors.RespondWithError(c, apperrors.Unauthorized("User not authenticated"))
 		return
@@ -55,7 +55,8 @@ func (h *ModerationHandler) Check(c *gin.Context) {
 	}
 
 	result, err := h.service.Check(c.Request.Context(), moderation.CheckInput{
-		UserID:     claims.UserID,
+		UserID:     principal.UserID,
+		ClientID:   principal.ClientID,
 		Content:    req.Content,
 		Source:     req.Source,
 		ExternalID: req.ExternalID,
@@ -67,6 +68,26 @@ func (h *ModerationHandler) Check(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, result)
+}
+
+type checkPrincipal struct {
+	UserID   uint
+	ClientID uint
+}
+
+func moderationPrincipal(c *gin.Context) (checkPrincipal, bool) {
+	if claims, exists := auth.GetClaims(c); exists {
+		return checkPrincipal{UserID: claims.UserID}, true
+	}
+
+	if principal, exists := auth.GetAPIKeyPrincipal(c); exists {
+		return checkPrincipal{
+			UserID:   principal.UserID,
+			ClientID: principal.ClientID,
+		}, true
+	}
+
+	return checkPrincipal{}, false
 }
 
 // GetResult retrieves a stored moderation result for the authenticated user.

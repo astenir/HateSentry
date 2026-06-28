@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	apperrors "hatesentry/internal/errors"
 	"hatesentry/internal/models"
 )
 
@@ -87,6 +88,168 @@ func TestServiceCheckPersistsDecision(t *testing.T) {
 	}
 	if !equalStrings(persistedLabels, output.Labels) {
 		t.Fatalf("persisted labels = %#v, want %#v", persistedLabels, output.Labels)
+	}
+}
+
+func TestServiceCheckPersistsClientID(t *testing.T) {
+	repository := &fakeRepository{}
+	service := NewService(
+		fakeAnalyzer{
+			suggestion: ProviderSuggestion{
+				RiskScore: 0.6,
+				Labels:    []string{"harassment"},
+				Reason:    "Needs operator review.",
+				RawOutput: `{"risk_score":0.6,"labels":["harassment"],"reason":"Needs operator review."}`,
+			},
+			provider: ProviderInfo{Provider: "test-provider", Model: "test-model"},
+		},
+		repository,
+		DefaultPolicy(),
+	)
+
+	output, err := service.Check(context.Background(), CheckInput{
+		UserID:     7,
+		ClientID:   11,
+		Content:    "review this text",
+		ExternalID: "comment_123",
+	})
+	if err != nil {
+		t.Fatalf("Check() error = %v", err)
+	}
+
+	if output.Decision != DecisionReview {
+		t.Fatalf("Decision = %q, want review", output.Decision)
+	}
+	if repository.request.ClientID == nil || *repository.request.ClientID != 11 {
+		t.Fatalf("request ClientID = %#v, want 11", repository.request.ClientID)
+	}
+	if repository.request.IdempotencyKey == nil || *repository.request.IdempotencyKey != "11:comment_123" {
+		t.Fatalf("request IdempotencyKey = %#v, want 11:comment_123", repository.request.IdempotencyKey)
+	}
+	if repository.result.ClientID == nil || *repository.result.ClientID != 11 {
+		t.Fatalf("result ClientID = %#v, want 11", repository.result.ClientID)
+	}
+	if repository.reviewCase == nil {
+		t.Fatal("review case was not created")
+	}
+	if repository.reviewCase.ClientID == nil || *repository.reviewCase.ClientID != 11 {
+		t.Fatalf("review case ClientID = %#v, want 11", repository.reviewCase.ClientID)
+	}
+}
+
+func TestServiceCheckReturnsExistingClientExternalIDResult(t *testing.T) {
+	analyzerCalls := 0
+	service := NewService(
+		fakeAnalyzer{calls: &analyzerCalls},
+		&fakeRepository{
+			clientResultFound: true,
+			clientStored: StoredResult{
+				Request: models.ModerationRequest{
+					RequestID:  "request-123",
+					UserID:     7,
+					ClientID:   uintPtr(11),
+					Content:    "stored content",
+					ExternalID: "comment_123",
+					Source:     "comment",
+					Status:     "completed",
+				},
+				Result: models.ModerationResult{
+					RequestID:     "request-123",
+					UserID:        7,
+					ClientID:      uintPtr(11),
+					RiskScore:     0.6,
+					Labels:        `["harassment"]`,
+					Decision:      string(DecisionReview),
+					Reason:        "Needs operator review.",
+					PolicyVersion: "default-v1",
+				},
+			},
+		},
+		DefaultPolicy(),
+	)
+
+	output, err := service.Check(context.Background(), CheckInput{
+		UserID:     7,
+		ClientID:   11,
+		Content:    "new body should not be analyzed",
+		ExternalID: " comment_123 ",
+	})
+	if err != nil {
+		t.Fatalf("Check() error = %v", err)
+	}
+
+	if output.RequestID != "request-123" {
+		t.Fatalf("RequestID = %q, want existing request", output.RequestID)
+	}
+	if output.Decision != DecisionReview {
+		t.Fatalf("Decision = %q, want review", output.Decision)
+	}
+	if analyzerCalls != 0 {
+		t.Fatalf("analyzer calls = %d, want 0", analyzerCalls)
+	}
+}
+
+func TestServiceCheckReturnsExistingResultAfterDuplicateIdempotencySave(t *testing.T) {
+	analyzerCalls := 0
+	repository := &fakeRepository{
+		saveErr: apperrors.Conflict("Moderation request already exists for this client external_id"),
+		clientStored: StoredResult{
+			Request: models.ModerationRequest{
+				RequestID:  "request-123",
+				UserID:     7,
+				ClientID:   uintPtr(11),
+				Content:    "stored content",
+				ExternalID: "comment_123",
+				Source:     "comment",
+				Status:     "completed",
+			},
+			Result: models.ModerationResult{
+				RequestID:     "request-123",
+				UserID:        7,
+				ClientID:      uintPtr(11),
+				RiskScore:     0.8,
+				Labels:        `["hate"]`,
+				Decision:      string(DecisionBlock),
+				Reason:        "Policy threshold exceeded.",
+				PolicyVersion: "default-v1",
+			},
+		},
+		clientResultFoundAfterSave: true,
+	}
+	service := NewService(
+		fakeAnalyzer{
+			calls: &analyzerCalls,
+			suggestion: ProviderSuggestion{
+				RiskScore: 0.8,
+				Labels:    []string{"hate"},
+				Reason:    "Policy threshold exceeded.",
+			},
+		},
+		repository,
+		DefaultPolicy(),
+	)
+
+	output, err := service.Check(context.Background(), CheckInput{
+		UserID:     7,
+		ClientID:   11,
+		Content:    "new body lost duplicate insert race",
+		ExternalID: "comment_123",
+	})
+	if err != nil {
+		t.Fatalf("Check() error = %v", err)
+	}
+
+	if output.RequestID != "request-123" {
+		t.Fatalf("RequestID = %q, want existing request", output.RequestID)
+	}
+	if output.Decision != DecisionBlock {
+		t.Fatalf("Decision = %q, want block", output.Decision)
+	}
+	if analyzerCalls != 1 {
+		t.Fatalf("analyzer calls = %d, want 1 before duplicate save conflict", analyzerCalls)
+	}
+	if repository.findClientExternalIDCalls != 2 {
+		t.Fatalf("FindResultByClientExternalID calls = %d, want 2", repository.findClientExternalIDCalls)
 	}
 }
 
@@ -478,9 +641,13 @@ type fakeAnalyzer struct {
 	suggestion ProviderSuggestion
 	provider   ProviderInfo
 	err        error
+	calls      *int
 }
 
 func (a fakeAnalyzer) AnalyzeText(ctx context.Context, content string) (ProviderSuggestion, ProviderInfo, error) {
+	if a.calls != nil {
+		*a.calls = *a.calls + 1
+	}
 	if a.err != nil {
 		return ProviderSuggestion{}, ProviderInfo{}, a.err
 	}
@@ -488,22 +655,29 @@ func (a fakeAnalyzer) AnalyzeText(ctx context.Context, content string) (Provider
 }
 
 type fakeRepository struct {
-	request       *models.ModerationRequest
-	result        *models.ModerationResult
-	reviewCase    *models.ReviewCase
-	stored        StoredResult
-	reviewCases   []StoredReviewCase
-	finalized     StoredReviewCase
-	userID        uint
-	requestID     string
-	reviewStatus  ReviewStatus
-	caseID        uint
-	reviewerID    uint
-	finalStatus   ReviewStatus
-	finalDecision Decision
-	notes         string
-	reviewedAt    time.Time
-	err           error
+	request                    *models.ModerationRequest
+	result                     *models.ModerationResult
+	reviewCase                 *models.ReviewCase
+	stored                     StoredResult
+	clientStored               StoredResult
+	clientResultFound          bool
+	clientResultFoundAfterSave bool
+	findClientExternalIDCalls  int
+	reviewCases                []StoredReviewCase
+	finalized                  StoredReviewCase
+	userID                     uint
+	clientID                   uint
+	externalID                 string
+	requestID                  string
+	reviewStatus               ReviewStatus
+	caseID                     uint
+	reviewerID                 uint
+	finalStatus                ReviewStatus
+	finalDecision              Decision
+	notes                      string
+	reviewedAt                 time.Time
+	err                        error
+	saveErr                    error
 }
 
 func (r *fakeRepository) SaveCheck(
@@ -512,6 +686,9 @@ func (r *fakeRepository) SaveCheck(
 	result *models.ModerationResult,
 	reviewCase *models.ReviewCase,
 ) error {
+	if r.saveErr != nil {
+		return r.saveErr
+	}
 	if r.err != nil {
 		return r.err
 	}
@@ -534,6 +711,23 @@ func (r *fakeRepository) GetResult(ctx context.Context, userID uint, requestID s
 	r.userID = userID
 	r.requestID = requestID
 	return r.stored, nil
+}
+
+func (r *fakeRepository) FindResultByClientExternalID(
+	ctx context.Context,
+	clientID uint,
+	externalID string,
+) (StoredResult, bool, error) {
+	if r.err != nil {
+		return StoredResult{}, false, r.err
+	}
+	r.findClientExternalIDCalls++
+	r.clientID = clientID
+	r.externalID = externalID
+	if r.clientResultFoundAfterSave && r.findClientExternalIDCalls > 1 {
+		return r.clientStored, true, nil
+	}
+	return r.clientStored, r.clientResultFound, nil
 }
 
 func (r *fakeRepository) ListReviewCases(
@@ -566,4 +760,8 @@ func (r *fakeRepository) FinalizeReviewCase(
 	r.notes = notes
 	r.reviewedAt = reviewedAt
 	return r.finalized, nil
+}
+
+func uintPtr(value uint) *uint {
+	return &value
 }

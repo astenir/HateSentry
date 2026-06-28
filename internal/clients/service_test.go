@@ -1,0 +1,167 @@
+package clients
+
+import (
+	"context"
+	"strings"
+	"testing"
+	"time"
+
+	"hatesentry/internal/auth"
+	"hatesentry/internal/models"
+)
+
+func TestServiceCreateClientStoresHashedAPIKey(t *testing.T) {
+	repository := &fakeRepository{}
+	service := NewService(repository)
+
+	output, err := service.CreateClient(context.Background(), CreateInput{
+		UserID:        42,
+		Name:          " Blog comments ",
+		WebhookURL:    "https://example.com/moderation",
+		PolicyVersion: "default-v1",
+	})
+	if err != nil {
+		t.Fatalf("CreateClient() error = %v", err)
+	}
+
+	if output.APIKey == "" {
+		t.Fatal("APIKey is empty")
+	}
+	if !strings.HasPrefix(output.APIKey, "hs_live_") {
+		t.Fatalf("APIKey = %q, want hs_live_ prefix", output.APIKey)
+	}
+	if output.Name != "Blog comments" {
+		t.Fatalf("Name = %q, want trimmed name", output.Name)
+	}
+	if repository.client == nil {
+		t.Fatal("client was not persisted")
+	}
+	if repository.client.UserID != 42 {
+		t.Fatalf("UserID = %d, want 42", repository.client.UserID)
+	}
+	if repository.client.APIKeyHash == "" {
+		t.Fatal("APIKeyHash was not persisted")
+	}
+	if strings.Contains(repository.client.APIKeyHash, output.APIKey) {
+		t.Fatal("persisted APIKeyHash contains raw key")
+	}
+	if repository.client.APIKeyHash != auth.HashAPIKey(output.APIKey) {
+		t.Fatal("persisted APIKeyHash does not match returned key")
+	}
+	if repository.client.APIKeyPrefix != output.APIKeyPrefix {
+		t.Fatalf("APIKeyPrefix = %q, want %q", repository.client.APIKeyPrefix, output.APIKeyPrefix)
+	}
+}
+
+func TestServiceCreateClientRejectsInvalidInput(t *testing.T) {
+	service := NewService(&fakeRepository{})
+
+	tests := []struct {
+		name    string
+		input   CreateInput
+		wantErr string
+	}{
+		{
+			name: "missing user",
+			input: CreateInput{
+				Name: "blog",
+			},
+			wantErr: "User not authenticated",
+		},
+		{
+			name: "missing name",
+			input: CreateInput{
+				UserID: 42,
+			},
+			wantErr: "name is required",
+		},
+		{
+			name: "bad webhook scheme",
+			input: CreateInput{
+				UserID:     42,
+				Name:       "blog",
+				WebhookURL: "ftp://example.com/hook",
+			},
+			wantErr: "webhook_url must use http or https",
+		},
+		{
+			name: "relative webhook",
+			input: CreateInput{
+				UserID:     42,
+				Name:       "blog",
+				WebhookURL: "/hook",
+			},
+			wantErr: "webhook_url must be a valid absolute URL",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := service.CreateClient(context.Background(), tt.input)
+			if err == nil {
+				t.Fatal("CreateClient() error = nil, want error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("CreateClient() error = %q, want %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestServiceListClientsDoesNotExposeSecrets(t *testing.T) {
+	createdAt := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
+	service := NewService(&fakeRepository{
+		clients: []models.ClientApplication{
+			{
+				ID:           11,
+				Name:         "blog",
+				Status:       StatusActive,
+				APIKeyHash:   "secret-hash",
+				APIKeyPrefix: "hs_live_abc",
+				CreatedAt:    createdAt,
+				UpdatedAt:    createdAt,
+			},
+		},
+	})
+
+	output, err := service.ListClients(context.Background())
+	if err != nil {
+		t.Fatalf("ListClients() error = %v", err)
+	}
+
+	if len(output) != 1 {
+		t.Fatalf("len(output) = %d, want 1", len(output))
+	}
+	if output[0].ID != 11 {
+		t.Fatalf("ID = %d, want 11", output[0].ID)
+	}
+	if output[0].APIKeyPrefix != "hs_live_abc" {
+		t.Fatalf("APIKeyPrefix = %q, want hs_live_abc", output[0].APIKeyPrefix)
+	}
+}
+
+type fakeRepository struct {
+	client  *models.ClientApplication
+	clients []models.ClientApplication
+	err     error
+}
+
+func (r *fakeRepository) CreateClient(ctx context.Context, client *models.ClientApplication) error {
+	if r.err != nil {
+		return r.err
+	}
+
+	copied := *client
+	copied.ID = 11
+	r.client = &copied
+	client.ID = copied.ID
+	return nil
+}
+
+func (r *fakeRepository) ListClients(ctx context.Context) ([]models.ClientApplication, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+
+	return r.clients, nil
+}

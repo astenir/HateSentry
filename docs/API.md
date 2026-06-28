@@ -3,7 +3,7 @@
 ## 基础信息
 
 - **Base URL**: `http://localhost:8080/api/v1`
-- **认证方式**: JWT Bearer Token
+- **认证方式**: JWT Bearer Token；`POST /moderation/check` 也支持外部客户端 API Key
 - **Content-Type**: `application/json`
 
 ## 认证
@@ -107,9 +107,9 @@ Authorization: Bearer <token>
 }
 ```
 
-### 5. 重新生成 API Key
+### 5. 重新生成用户 API Key（旧接口）
 
-为当前用户生成新的 API Key。
+为当前用户生成新的旧版 API Key。外部系统接入文本审核时，应优先使用下面的“外部客户端”接口创建客户端 API Key。
 
 **端点**: `POST /auth/api-key/regenerate`
 
@@ -125,19 +125,94 @@ Authorization: Bearer <token>
 }
 ```
 
+## 外部客户端
+
+外部客户端用于小型应用、评论系统或论坛等系统接入文本审核 API。客户端由管理员创建，创建响应会返回一次明文 `api_key`；服务端只保存 API Key 哈希。
+
+### 1. 创建客户端
+
+**端点**: `POST /admin/clients`
+
+**请求头**:
+```
+Authorization: Bearer <admin-token>
+Content-Type: application/json
+```
+
+**请求体**:
+```json
+{
+  "name": "blog-comments",
+  "webhook_url": "https://example.com/moderation/webhook",
+  "policy_version": "default-v1"
+}
+```
+
+**字段说明**:
+- `name`: 必填，客户端名称。
+- `webhook_url`: 可选，预留给后续 webhook 回调；当前只保存配置，不会实际回调。
+- `policy_version`: 可选，预留给后续客户端策略分配；当前审核仍使用服务端全局策略配置。
+
+**响应** (201 Created):
+```json
+{
+  "id": 11,
+  "name": "blog-comments",
+  "status": "active",
+  "api_key": "hs_live_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "api_key_prefix": "hs_live_xxxx",
+  "webhook_url": "https://example.com/moderation/webhook",
+  "policy_version": "default-v1",
+  "created_at": "2026-06-28T12:00:00Z"
+}
+```
+
+### 2. 查询客户端
+
+**端点**: `GET /admin/clients`
+
+**请求头**:
+```
+Authorization: Bearer <admin-token>
+```
+
+**响应** (200 OK):
+```json
+{
+  "items": [
+    {
+      "id": 11,
+      "name": "blog-comments",
+      "status": "active",
+      "api_key_prefix": "hs_live_xxxx",
+      "webhook_url": "https://example.com/moderation/webhook",
+      "policy_version": "default-v1",
+      "created_at": "2026-06-28T12:00:00Z",
+      "updated_at": "2026-06-28T12:00:00Z"
+    }
+  ]
+}
+```
+
 ## 内容审核
 
 ### 1. 文本审核
 
 提交一段文本，服务会调用当前配置的 AI provider 生成风险建议，再由服务端默认策略生成最终业务决策。
 
-当前接口为同步处理，使用 JWT 认证；API Key 客户端接入和 webhook 回调仍属于后续集成能力。
+当前接口为同步处理，支持 JWT 认证或外部客户端 API Key 认证。Webhook 回调仍属于后续集成能力。
 
 **端点**: `POST /moderation/check`
 
-**请求头**:
+**JWT 请求头**:
 ```
 Authorization: Bearer <token>
+Content-Type: application/json
+```
+
+**API Key 请求头**:
+```
+X-API-Key: <client-api-key>
 Content-Type: application/json
 ```
 
@@ -156,6 +231,8 @@ Content-Type: application/json
 - `source`: 可选，内容来源，例如 `comment`、`forum_post`、`support_ticket`。为空时按 `api` 记录。
 - `external_id`: 可选，外部系统中的内容 ID。
 - `actor_id`: 可选，外部系统中的内容提交者 ID。
+
+使用 API Key 调用时，如果同一客户端重复提交相同 `external_id`，接口会返回既有审核结果，并通过数据库唯一键避免创建重复审核记录。未提供 `external_id` 时，每次调用都会创建新审核记录。
 
 **响应** (200 OK):
 ```json
@@ -198,6 +275,7 @@ Authorization: Bearer <token>
 ```json
 {
   "request_id": "550e8400-e29b-41d4-a716-446655440000",
+  "client_id": 11,
   "content": "user submitted text",
   "source": "comment",
   "external_id": "comment_123",
@@ -772,6 +850,6 @@ X-RateLimit-Reset: 1609459200
 
 ## Webhook 支持（计划中）
 
-支持通过 Webhook 推送异步检测结果。
+后续版本计划支持向客户端配置的 `webhook_url` 推送审核最终决策，并使用 HMAC 签名保护回调完整性。
 
 配置方式将在后续版本中提供。

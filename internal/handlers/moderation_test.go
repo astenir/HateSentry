@@ -72,6 +72,47 @@ func TestModerationHandlerCheck(t *testing.T) {
 	}
 }
 
+func TestModerationHandlerCheckAcceptsAPIKeyPrincipal(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	repository := &moderationHandlerRepository{}
+	handler := NewModerationHandler(moderation.NewService(
+		moderationHandlerAnalyzer{},
+		repository,
+		moderation.DefaultPolicy(),
+	))
+
+	engine := gin.New()
+	engine.POST("/api/v1/moderation/check", func(c *gin.Context) {
+		c.Set(auth.APIKeyContextKey, auth.APIKeyPrincipal{
+			ClientID: 11,
+			UserID:   42,
+			Name:     "blog",
+		})
+		handler.Check(c)
+	})
+
+	body := `{"content":"check this text","source":"comment","external_id":"comment_123"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/moderation/check", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if repository.request == nil {
+		t.Fatal("moderation request was not persisted")
+	}
+	if repository.request.UserID != 42 {
+		t.Fatalf("UserID = %d, want 42", repository.request.UserID)
+	}
+	if repository.request.ClientID == nil || *repository.request.ClientID != 11 {
+		t.Fatalf("ClientID = %#v, want 11", repository.request.ClientID)
+	}
+}
+
 func TestModerationHandlerCheckRequiresUser(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -421,6 +462,14 @@ func (r *moderationHandlerRepository) GetResult(
 	r.userID = userID
 	r.requestID = requestID
 	return r.stored, nil
+}
+
+func (r *moderationHandlerRepository) FindResultByClientExternalID(
+	ctx context.Context,
+	clientID uint,
+	externalID string,
+) (moderation.StoredResult, bool, error) {
+	return moderation.StoredResult{}, false, nil
 }
 
 func (r *moderationHandlerRepository) ListReviewCases(
