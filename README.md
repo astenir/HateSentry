@@ -194,6 +194,7 @@ Authorization: Bearer <token>
 GET /api/v1/moderation/results/:request_id
 X-API-Key: <client-api-key>
 ```
+如果该审核记录进入过人工复核，响应会额外返回 `review_status`；人工复核完成后还会返回 `final_decision` 和 `reviewed_at`。`decision` 保持为服务端策略决策，人工复核后的最终业务决定通过 `final_decision` 表示；复核备注和复核人 ID 只在管理员复核接口中返回。
 
 #### 管理端查询最近审核历史
 ```http
@@ -753,7 +754,7 @@ make create-user
 - Webhook 后台自动重试默认每分钟扫描失败或过期 `retrying` delivery，每批最多 10 条，最多尝试 3 次；可通过 `MODERATION_WEBHOOK_RETRY_*` 环境变量调整或关闭。
 - 密码不会在响应中返回，JWT Secret 可通过环境变量覆盖。
 - 文本审核入口会校验必填内容、内容长度和元数据长度。
-- 审核结果查询按当前登录用户和 `request_id` 过滤；API Key 查询还会按当前客户端过滤，避免跨用户或跨客户端读取。
+- 审核结果查询按当前登录用户和 `request_id` 过滤；API Key 查询还会按当前客户端过滤，避免跨用户或跨客户端读取。存在人工复核记录时，结果查询会返回复核状态和最终决定。
 - 管理端审核历史接口需要 JWT 管理员身份，返回最近审核记录，不返回 provider 原始输出。
 - 复核队列和复核处理需要管理员角色，人工处理人会记录为 `reviewer_id`。
 - API Key 客户端重复提交相同 `external_id` 时会复用既有结果；未提供 `external_id` 时每次调用都会创建新记录。

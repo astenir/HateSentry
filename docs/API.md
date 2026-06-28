@@ -501,7 +501,7 @@ API Key 调用会按客户端 ID 做请求级限流，覆盖 `POST /moderation/c
 
 ### 2. 获取文本审核结果
 
-根据 `request_id` 查询当前认证主体可访问的文本审核记录。JWT 调用按当前用户过滤；API Key 调用按当前客户端和所属用户同时过滤，不能读取同一账号下其他客户端的审核结果。接口返回审核结果和基础审计元数据，但不会返回 provider 原始输出。
+根据 `request_id` 查询当前认证主体可访问的文本审核记录。JWT 调用按当前用户过滤；API Key 调用按当前客户端和所属用户同时过滤，不能读取同一账号下其他客户端的审核结果。接口返回审核结果、基础审计元数据，以及存在人工复核记录时的复核状态和最终决定；但不会返回 provider 原始输出、复核备注或复核人 ID。
 
 **端点**: `GET /moderation/results/:request_id`
 
@@ -532,9 +532,14 @@ X-API-Key: <client-api-key>
   "labels": ["harassment", "identity_attack"],
   "reason": "Brief explanation suitable for operators",
   "policy_version": "default-v1",
+  "review_status": "approved",
+  "final_decision": "allow",
+  "reviewed_at": "2026-06-28T11:30:00Z",
   "created_at": "2026-06-28T10:30:00Z"
 }
 ```
+
+`review_status` 会在该审核记录存在人工复核记录时返回；`final_decision` 和 `reviewed_at` 只会在人工复核完成后返回，pending 复核不会包含这两个字段。`decision` 保持为服务端策略决策；人工复核后的最终业务决定通过 `final_decision` 表示。复核备注和复核人 ID 只在管理员复核接口中返回。
 
 ### 3. 管理端查询最近审核历史
 

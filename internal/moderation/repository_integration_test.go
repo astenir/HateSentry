@@ -159,6 +159,7 @@ func TestGormRepositoryGetResultForClientIntegration(t *testing.T) {
 		&models.ClientApplication{},
 		&models.ModerationRequest{},
 		&models.ModerationResult{},
+		&models.ReviewCase{},
 	); err != nil {
 		t.Fatalf("auto migrate test database: %v", err)
 	}
@@ -189,6 +190,7 @@ func TestGormRepositoryGetResultForClientIntegration(t *testing.T) {
 	}
 
 	t.Cleanup(func() {
+		db.Unscoped().Where("request_id = ?", requestID).Delete(&models.ReviewCase{})
 		db.Unscoped().Where("request_id = ?", requestID).Delete(&models.ModerationResult{})
 		db.Unscoped().Where("request_id = ?", requestID).Delete(&models.ModerationRequest{})
 		db.Unscoped().Delete(&models.ClientApplication{}, otherClient.ID)
@@ -219,6 +221,21 @@ func TestGormRepositoryGetResultForClientIntegration(t *testing.T) {
 	if err := repository.SaveCheck(ctx, request, result, nil); err != nil {
 		t.Fatalf("SaveCheck() error = %v", err)
 	}
+	reviewerID := uint(99)
+	reviewedAt := time.Date(2026, 6, 28, 11, 0, 0, 0, time.UTC)
+	reviewCase := models.ReviewCase{
+		RequestID:     requestID,
+		UserID:        user.ID,
+		ClientID:      &client.ID,
+		Status:        string(ReviewStatusApproved),
+		ReviewerID:    &reviewerID,
+		FinalDecision: string(DecisionAllow),
+		ReviewNotes:   "approved during integration test",
+		ReviewedAt:    &reviewedAt,
+	}
+	if err := db.WithContext(ctx).Create(&reviewCase).Error; err != nil {
+		t.Fatalf("create review case: %v", err)
+	}
 
 	stored, err := repository.GetResultForClient(ctx, user.ID, client.ID, requestID)
 	if err != nil {
@@ -226,6 +243,15 @@ func TestGormRepositoryGetResultForClientIntegration(t *testing.T) {
 	}
 	if stored.Request.RequestID != requestID {
 		t.Fatalf("stored request id = %q, want %q", stored.Request.RequestID, requestID)
+	}
+	if stored.ReviewCase == nil {
+		t.Fatal("stored review case = nil, want approved review case")
+	}
+	if stored.ReviewCase.FinalDecision != string(DecisionAllow) {
+		t.Fatalf("stored final decision = %q, want allow", stored.ReviewCase.FinalDecision)
+	}
+	if stored.ReviewCase.ReviewerID == nil || *stored.ReviewCase.ReviewerID != reviewerID {
+		t.Fatalf("stored reviewer id = %#v, want %d", stored.ReviewCase.ReviewerID, reviewerID)
 	}
 
 	_, err = repository.GetResultForClient(ctx, user.ID, otherClient.ID, requestID)

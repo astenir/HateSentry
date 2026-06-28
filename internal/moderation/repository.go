@@ -87,9 +87,15 @@ func (r *GormRepository) GetResult(ctx context.Context, userID uint, requestID s
 		return StoredResult{}, apperrors.DatabaseError(err, "failed to retrieve moderation result")
 	}
 
+	reviewCase, err := loadReviewCaseForRequest(ctx, r.db, request)
+	if err != nil {
+		return StoredResult{}, err
+	}
+
 	return StoredResult{
-		Request: request,
-		Result:  result,
+		Request:    request,
+		Result:     result,
+		ReviewCase: reviewCase,
 	}, nil
 }
 
@@ -122,9 +128,15 @@ func (r *GormRepository) GetResultForClient(
 		return StoredResult{}, apperrors.DatabaseError(err, "failed to retrieve moderation result")
 	}
 
+	reviewCase, err := loadReviewCaseForRequest(ctx, r.db, request)
+	if err != nil {
+		return StoredResult{}, err
+	}
+
 	return StoredResult{
-		Request: request,
-		Result:  result,
+		Request:    request,
+		Result:     result,
+		ReviewCase: reviewCase,
 	}, nil
 }
 
@@ -159,9 +171,15 @@ func (r *GormRepository) FindResultByClientExternalID(
 		return StoredResult{}, false, apperrors.DatabaseError(err, "failed to retrieve moderation result")
 	}
 
+	reviewCase, err := loadReviewCaseForRequest(ctx, r.db, request)
+	if err != nil {
+		return StoredResult{}, false, err
+	}
+
 	return StoredResult{
-		Request: request,
-		Result:  result,
+		Request:    request,
+		Result:     result,
+		ReviewCase: reviewCase,
 	}, true, nil
 }
 
@@ -673,6 +691,31 @@ func loadReviewCasesByRequestID(
 	}
 
 	return reviewCasesByID, nil
+}
+
+func loadReviewCaseForRequest(
+	ctx context.Context,
+	db *gorm.DB,
+	request models.ModerationRequest,
+) (*models.ReviewCase, error) {
+	var reviewCase models.ReviewCase
+	query := db.WithContext(ctx).
+		Where("user_id = ? AND request_id = ?", request.UserID, request.RequestID)
+	if request.ClientID != nil {
+		query = query.Where("client_id = ?", *request.ClientID)
+	} else {
+		query = query.Where("client_id IS NULL")
+	}
+
+	err := query.First(&reviewCase).Error
+	if err != nil {
+		if stderrors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, apperrors.DatabaseError(err, "failed to load review case")
+	}
+
+	return &reviewCase, nil
 }
 
 func isDuplicateKeyError(err error) bool {

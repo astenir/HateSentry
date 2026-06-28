@@ -159,6 +159,8 @@ func TestModerationHandlerCheckRequiresUser(t *testing.T) {
 func TestModerationHandlerGetResult(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
+	reviewedAt := time.Date(2026, 6, 28, 11, 30, 0, 0, time.UTC)
+	reviewerID := uint(99)
 	repository := &moderationHandlerRepository{
 		stored: moderation.StoredResult{
 			Request: models.ModerationRequest{
@@ -182,6 +184,15 @@ func TestModerationHandlerGetResult(t *testing.T) {
 				Reason:        "Contains abusive language.",
 				PolicyVersion: "default-v1",
 				CreatedAt:     time.Date(2026, 6, 28, 10, 30, 0, 0, time.UTC),
+			},
+			ReviewCase: &models.ReviewCase{
+				RequestID:     "request-123",
+				UserID:        42,
+				Status:        string(moderation.ReviewStatusApproved),
+				ReviewerID:    &reviewerID,
+				FinalDecision: string(moderation.DecisionAllow),
+				ReviewNotes:   "internal operator note",
+				ReviewedAt:    &reviewedAt,
 			},
 		},
 	}
@@ -212,6 +223,12 @@ func TestModerationHandlerGetResult(t *testing.T) {
 	if strings.Contains(recorder.Body.String(), "raw_output") {
 		t.Fatalf("response leaked raw output: %s", recorder.Body.String())
 	}
+	if strings.Contains(recorder.Body.String(), "reviewer_id") {
+		t.Fatalf("response leaked reviewer id: %s", recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "review_notes") {
+		t.Fatalf("response leaked review notes: %s", recorder.Body.String())
+	}
 
 	var response moderation.ResultOutput
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
@@ -225,6 +242,15 @@ func TestModerationHandlerGetResult(t *testing.T) {
 	}
 	if response.Provider != "test-provider" {
 		t.Fatalf("Provider = %q, want test-provider", response.Provider)
+	}
+	if response.ReviewStatus != string(moderation.ReviewStatusApproved) {
+		t.Fatalf("ReviewStatus = %q, want approved", response.ReviewStatus)
+	}
+	if response.FinalDecision != string(moderation.DecisionAllow) {
+		t.Fatalf("FinalDecision = %q, want allow", response.FinalDecision)
+	}
+	if response.ReviewedAt == nil || !response.ReviewedAt.Equal(reviewedAt) {
+		t.Fatalf("ReviewedAt = %v, want %v", response.ReviewedAt, reviewedAt)
 	}
 	if repository.userID != 42 {
 		t.Fatalf("repository userID = %d, want 42", repository.userID)

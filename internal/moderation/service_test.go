@@ -838,6 +838,8 @@ func TestServiceCheckRejectsInvalidInput(t *testing.T) {
 
 func TestServiceGetResultReturnsStoredRecord(t *testing.T) {
 	createdAt := time.Date(2026, 6, 28, 10, 30, 0, 0, time.UTC)
+	reviewedAt := time.Date(2026, 6, 28, 11, 30, 0, 0, time.UTC)
+	reviewerID := uint(42)
 	service := NewService(fakeAnalyzer{}, &fakeRepository{
 		stored: StoredResult{
 			Request: models.ModerationRequest{
@@ -862,6 +864,15 @@ func TestServiceGetResultReturnsStoredRecord(t *testing.T) {
 				PolicyVersion: "default-v1",
 				CreatedAt:     createdAt,
 			},
+			ReviewCase: &models.ReviewCase{
+				RequestID:     "request-123",
+				UserID:        7,
+				Status:        string(ReviewStatusApproved),
+				ReviewerID:    &reviewerID,
+				FinalDecision: string(DecisionAllow),
+				ReviewNotes:   "approved after context check",
+				ReviewedAt:    &reviewedAt,
+			},
 		},
 	}, DefaultPolicy())
 
@@ -884,6 +895,15 @@ func TestServiceGetResultReturnsStoredRecord(t *testing.T) {
 	}
 	if !output.CreatedAt.Equal(createdAt) {
 		t.Fatalf("CreatedAt = %v, want %v", output.CreatedAt, createdAt)
+	}
+	if output.ReviewStatus != string(ReviewStatusApproved) {
+		t.Fatalf("ReviewStatus = %q, want approved", output.ReviewStatus)
+	}
+	if output.FinalDecision != string(DecisionAllow) {
+		t.Fatalf("FinalDecision = %q, want allow", output.FinalDecision)
+	}
+	if output.ReviewedAt == nil || !output.ReviewedAt.Equal(reviewedAt) {
+		t.Fatalf("ReviewedAt = %v, want %v", output.ReviewedAt, reviewedAt)
 	}
 	repository := service.repository.(*fakeRepository)
 	if repository.userID != 7 {

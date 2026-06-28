@@ -99,8 +99,9 @@ type Repository interface {
 
 // StoredResult is the repository representation of a persisted moderation check.
 type StoredResult struct {
-	Request models.ModerationRequest
-	Result  models.ModerationResult
+	Request    models.ModerationRequest
+	Result     models.ModerationResult
+	ReviewCase *models.ReviewCase
 }
 
 // StoredReviewCase is the repository representation of a persisted review case.
@@ -220,21 +221,24 @@ type CheckOutput struct {
 
 // ResultOutput is the stable public representation of a stored moderation result.
 type ResultOutput struct {
-	RequestID     string    `json:"request_id"`
-	ClientID      *uint     `json:"client_id,omitempty"`
-	Content       string    `json:"content"`
-	Source        string    `json:"source"`
-	ExternalID    string    `json:"external_id,omitempty"`
-	ActorID       string    `json:"actor_id,omitempty"`
-	Status        string    `json:"status"`
-	Provider      string    `json:"provider"`
-	Model         string    `json:"model"`
-	Decision      Decision  `json:"decision"`
-	RiskScore     float64   `json:"risk_score"`
-	Labels        []string  `json:"labels"`
-	Reason        string    `json:"reason"`
-	PolicyVersion string    `json:"policy_version"`
-	CreatedAt     time.Time `json:"created_at"`
+	RequestID     string     `json:"request_id"`
+	ClientID      *uint      `json:"client_id,omitempty"`
+	Content       string     `json:"content"`
+	Source        string     `json:"source"`
+	ExternalID    string     `json:"external_id,omitempty"`
+	ActorID       string     `json:"actor_id,omitempty"`
+	Status        string     `json:"status"`
+	Provider      string     `json:"provider"`
+	Model         string     `json:"model"`
+	Decision      Decision   `json:"decision"`
+	RiskScore     float64    `json:"risk_score"`
+	Labels        []string   `json:"labels"`
+	Reason        string     `json:"reason"`
+	PolicyVersion string     `json:"policy_version"`
+	ReviewStatus  string     `json:"review_status,omitempty"`
+	FinalDecision string     `json:"final_decision,omitempty"`
+	ReviewedAt    *time.Time `json:"reviewed_at,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
 }
 
 // HistoryItemOutput is the operator view of one moderation history row.
@@ -561,7 +565,7 @@ func resultOutputFromStored(stored StoredResult) (ResultOutput, error) {
 		return ResultOutput{}, err
 	}
 
-	return ResultOutput{
+	output := ResultOutput{
 		RequestID:     stored.Request.RequestID,
 		ClientID:      stored.Request.ClientID,
 		Content:       stored.Request.Content,
@@ -577,7 +581,14 @@ func resultOutputFromStored(stored StoredResult) (ResultOutput, error) {
 		Reason:        stored.Result.Reason,
 		PolicyVersion: stored.Result.PolicyVersion,
 		CreatedAt:     stored.Result.CreatedAt,
-	}, nil
+	}
+	if stored.ReviewCase != nil {
+		output.ReviewStatus = stored.ReviewCase.Status
+		output.FinalDecision = stored.ReviewCase.FinalDecision
+		output.ReviewedAt = stored.ReviewCase.ReviewedAt
+	}
+
+	return output, nil
 }
 
 // ListHistory returns recent moderation audit records for an authenticated operator.
