@@ -90,19 +90,12 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		return
 	}
 
-	// Hash password
-	hashedPassword, err := auth.HashPassword(req.Password)
-	if err != nil {
-		apperrors.RespondWithError(c, err.(*apperrors.AppError))
-		return
-	}
-
 	// The process mutex avoids duplicate local work. The database lock inside
 	// createRegisteredUser serializes the role decision across API processes.
 	h.registrationMu.Lock()
 	defer h.registrationMu.Unlock()
 
-	user, appErr := h.createRegisteredUser(c.Request.Context(), req, hashedPassword)
+	user, appErr := h.createRegisteredUser(c.Request.Context(), req)
 	if appErr != nil {
 		apperrors.RespondWithError(c, appErr)
 		return
@@ -253,7 +246,6 @@ func generateAPIKey() string {
 func (h *AuthHandler) createRegisteredUser(
 	ctx context.Context,
 	req RegisterRequest,
-	hashedPassword string,
 ) (models.User, *apperrors.AppError) {
 	var user models.User
 	err := h.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -267,6 +259,15 @@ func (h *AuthHandler) createRegisteredUser(
 		role, appErr := h.nextRegistrationRole(tx, req)
 		if appErr != nil {
 			return appErr
+		}
+
+		hashedPassword, err := auth.HashPassword(req.Password)
+		if err != nil {
+			var appErr *apperrors.AppError
+			if stderrors.As(err, &appErr) {
+				return appErr
+			}
+			return apperrors.Internal("Failed to hash password")
 		}
 
 		user = models.User{

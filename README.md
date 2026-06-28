@@ -637,7 +637,7 @@ docker compose up -d mysql
 HATESENTRY_TEST_DSN='root:password@tcp(127.0.0.1:3306)/hatesentry?charset=utf8mb4&parseTime=True&loc=Local' make test-integration
 ```
 
-集成测试会通过 `go test -tags=integration ./...` 运行，需要可连接的 MySQL 测试库。
+集成测试会通过 `go test -tags=integration ./...` 运行，需要可连接的 MySQL 测试库。部分测试会创建并删除临时数据库，测试账号需要 `CREATE DATABASE` 和 `DROP DATABASE` 权限；本地 Docker 示例中的 `root` 账号已满足该要求。
 
 ### 测试覆盖率
 ```bash
