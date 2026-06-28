@@ -454,6 +454,11 @@ JWT_SECRET=your-secret-key-change-in-production
 OPENAI_API_KEY=your-openai-api-key
 OLLAMA_BASE_URL=http://localhost:11434
 
+# 内容审核策略
+MODERATION_POLICY_VERSION=default-v1
+MODERATION_REVIEW_THRESHOLD=0.4
+MODERATION_BLOCK_THRESHOLD=0.75
+
 # 日志
 LOG_LEVEL=info
 LOG_FORMAT=json

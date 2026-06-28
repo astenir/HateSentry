@@ -11,6 +11,7 @@ import (
 	"hatesentry/internal/errors"
 	"hatesentry/internal/handlers"
 	"hatesentry/internal/models"
+	"hatesentry/internal/moderation"
 	"hatesentry/internal/queue"
 	"hatesentry/internal/router"
 	"net/http"
@@ -25,13 +26,13 @@ import (
 
 // App represents the application
 type App struct {
-	config            *config.Config
-	router            *router.Router
-	rabbitMQManager   *queue.RabbitMQManager
-	detectionService  *ai.DetectionService
-	consumer          *queue.Consumer
-	detectionHandler  *handlers.DetectionHandler
-	logger            *zap.Logger
+	config           *config.Config
+	router           *router.Router
+	rabbitMQManager  *queue.RabbitMQManager
+	detectionService *ai.DetectionService
+	consumer         *queue.Consumer
+	detectionHandler *handlers.DetectionHandler
+	logger           *zap.Logger
 }
 
 // HandleDetectionTask implements queue.DetectionHandler interface
@@ -97,6 +98,15 @@ func (a *App) Run() error {
 		return errors.ConfigurationError("failed to load config").WithDetails(err.Error())
 	}
 	a.config = cfg
+
+	moderationPolicy, err := moderation.NewPolicy(
+		cfg.Moderation.Policy.Version,
+		cfg.Moderation.Policy.ReviewThreshold,
+		cfg.Moderation.Policy.BlockThreshold,
+	)
+	if err != nil {
+		return errors.ConfigurationError("invalid moderation policy").WithDetails(err.Error())
+	}
 
 	// Initialize logger
 	if err := a.initLogger(); err != nil {
@@ -165,6 +175,7 @@ func (a *App) Run() error {
 		detectionCache,
 		rateLimiter,
 		jwtManager,
+		moderationPolicy,
 	)
 	a.router = r
 
@@ -195,7 +206,7 @@ func (a *App) Run() error {
 
 	// Start server in goroutine
 	go func() {
-		a.logger.Info("Server starting", 
+		a.logger.Info("Server starting",
 			zap.String("address", server.Addr),
 			zap.String("mode", cfg.Server.Mode),
 		)

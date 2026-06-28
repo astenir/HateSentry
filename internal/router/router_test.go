@@ -3,6 +3,7 @@ package router
 import (
 	"hatesentry/internal/auth"
 	"hatesentry/internal/config"
+	"hatesentry/internal/moderation"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -27,6 +28,7 @@ func TestSetupRegistersCoreRoutes(t *testing.T) {
 		nil,
 		nil,
 		jwtManager,
+		moderation.DefaultPolicy(),
 	)
 
 	engine := router.Setup()
@@ -73,6 +75,7 @@ func TestSetupProtectsModerationResultRoute(t *testing.T) {
 		nil,
 		nil,
 		jwtManager,
+		moderation.DefaultPolicy(),
 	)
 
 	engine := router.Setup()

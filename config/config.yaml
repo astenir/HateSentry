@@ -70,6 +70,13 @@ detection:
   max_concurrent_requests: 100
   result_cache_ttl: 3600s
 
+# Moderation Configuration
+moderation:
+  policy:
+    version: "default-v1"
+    review_threshold: 0.4
+    block_threshold: 0.75
+
 # Logging Configuration
 logging:
   level: "info" # debug, info, warn, error

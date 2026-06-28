@@ -11,14 +11,15 @@ import (
 )
 
 type Config struct {
-	Server    ServerConfig    `mapstructure:"server"`
-	Database  DatabaseConfig  `mapstructure:"database"`
-	Redis     RedisConfig     `mapstructure:"redis"`
-	RabbitMQ  RabbitMQConfig  `mapstructure:"rabbitmq"`
-	JWT       JWTConfig       `mapstructure:"jwt"`
-	AI        AIConfig        `mapstructure:"ai"`
-	Detection DetectionConfig `mapstructure:"detection"`
-	Logging   LoggingConfig   `mapstructure:"logging"`
+	Server     ServerConfig     `mapstructure:"server"`
+	Database   DatabaseConfig   `mapstructure:"database"`
+	Redis      RedisConfig      `mapstructure:"redis"`
+	RabbitMQ   RabbitMQConfig   `mapstructure:"rabbitmq"`
+	JWT        JWTConfig        `mapstructure:"jwt"`
+	AI         AIConfig         `mapstructure:"ai"`
+	Detection  DetectionConfig  `mapstructure:"detection"`
+	Moderation ModerationConfig `mapstructure:"moderation"`
+	Logging    LoggingConfig    `mapstructure:"logging"`
 }
 
 type ServerConfig struct {
@@ -99,6 +100,16 @@ type DetectionConfig struct {
 	ResultCacheTTL      time.Duration `mapstructure:"result_cache_ttl"`
 }
 
+type ModerationConfig struct {
+	Policy ModerationPolicyConfig `mapstructure:"policy"`
+}
+
+type ModerationPolicyConfig struct {
+	Version         string  `mapstructure:"version"`
+	ReviewThreshold float64 `mapstructure:"review_threshold"`
+	BlockThreshold  float64 `mapstructure:"block_threshold"`
+}
+
 type LoggingConfig struct {
 	Level  string `mapstructure:"level"`
 	Format string `mapstructure:"format"`
@@ -114,6 +125,9 @@ func Load(configPath string) (*Config, error) {
 	loader.SetDefault("server.host", "0.0.0.0")
 	loader.SetDefault("server.port", 8080)
 	loader.SetDefault("server.mode", "debug")
+	loader.SetDefault("moderation.policy.version", "default-v1")
+	loader.SetDefault("moderation.policy.review_threshold", 0.4)
+	loader.SetDefault("moderation.policy.block_threshold", 0.75)
 
 	if err := loader.ReadInConfig(); err != nil {
 		return nil, errors.ConfigurationError("failed to read config file").WithDetails(err.Error())
@@ -153,6 +167,7 @@ func applyEnvironmentOverrides(config *Config) error {
 	overrideString("OPENAI_MODEL", &config.AI.OpenAI.Model)
 	overrideString("OLLAMA_BASE_URL", &config.AI.Ollama.BaseURL)
 	overrideString("OLLAMA_MODEL", &config.AI.Ollama.Model)
+	overrideString("MODERATION_POLICY_VERSION", &config.Moderation.Policy.Version)
 	overrideString("LOG_LEVEL", &config.Logging.Level)
 	overrideString("LOG_FORMAT", &config.Logging.Format)
 	overrideString("LOG_OUTPUT", &config.Logging.Output)
@@ -167,6 +182,12 @@ func applyEnvironmentOverrides(config *Config) error {
 		return err
 	}
 	if err := overridePort("RABBITMQ_PORT", &config.RabbitMQ.Port); err != nil {
+		return err
+	}
+	if err := overrideFloat("MODERATION_REVIEW_THRESHOLD", &config.Moderation.Policy.ReviewThreshold); err != nil {
+		return err
+	}
+	if err := overrideFloat("MODERATION_BLOCK_THRESHOLD", &config.Moderation.Policy.BlockThreshold); err != nil {
 		return err
 	}
 
@@ -201,6 +222,21 @@ func overrideInt(name string, target *int) error {
 	parsed, err := strconv.Atoi(value)
 	if err != nil {
 		return errors.ConfigurationError("invalid environment variable").WithDetails(name + " must be an integer")
+	}
+
+	*target = parsed
+	return nil
+}
+
+func overrideFloat(name string, target *float64) error {
+	value, ok := os.LookupEnv(name)
+	if !ok {
+		return nil
+	}
+
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return errors.ConfigurationError("invalid environment variable").WithDetails(name + " must be a number")
 	}
 
 	*target = parsed

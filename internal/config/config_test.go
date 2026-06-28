@@ -25,6 +25,9 @@ func TestLoadOverridesComposeEnvironment(t *testing.T) {
 	t.Setenv("JWT_SECRET", "jwt_secret")
 	t.Setenv("OPENAI_API_KEY", "openai_secret")
 	t.Setenv("OLLAMA_BASE_URL", "http://ollama:11434")
+	t.Setenv("MODERATION_POLICY_VERSION", "custom-v1")
+	t.Setenv("MODERATION_REVIEW_THRESHOLD", "0.25")
+	t.Setenv("MODERATION_BLOCK_THRESHOLD", "0.8")
 
 	cfg, err := Load(configPath)
 	if err != nil {
@@ -76,6 +79,15 @@ func TestLoadOverridesComposeEnvironment(t *testing.T) {
 	if cfg.AI.Ollama.BaseURL != "http://ollama:11434" {
 		t.Fatalf("AI.Ollama.BaseURL = %q, want http://ollama:11434", cfg.AI.Ollama.BaseURL)
 	}
+	if cfg.Moderation.Policy.Version != "custom-v1" {
+		t.Fatalf("Moderation.Policy.Version = %q, want custom-v1", cfg.Moderation.Policy.Version)
+	}
+	if cfg.Moderation.Policy.ReviewThreshold != 0.25 {
+		t.Fatalf("Moderation.Policy.ReviewThreshold = %v, want 0.25", cfg.Moderation.Policy.ReviewThreshold)
+	}
+	if cfg.Moderation.Policy.BlockThreshold != 0.8 {
+		t.Fatalf("Moderation.Policy.BlockThreshold = %v, want 0.8", cfg.Moderation.Policy.BlockThreshold)
+	}
 }
 
 func TestLoadRejectsInvalidIntegerEnvironment(t *testing.T) {
@@ -91,6 +103,19 @@ func TestLoadRejectsInvalidIntegerEnvironment(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "DB_PORT must be an integer") {
 		t.Fatalf("Load() error = %q, want DB_PORT detail", err.Error())
+	}
+}
+
+func TestLoadRejectsInvalidFloatEnvironment(t *testing.T) {
+	configPath := writeTestConfig(t)
+	t.Setenv("MODERATION_REVIEW_THRESHOLD", "not-a-number")
+
+	_, err := Load(configPath)
+	if err == nil {
+		t.Fatal("Load() error = nil, want invalid environment variable error")
+	}
+	if !strings.Contains(err.Error(), "MODERATION_REVIEW_THRESHOLD must be a number") {
+		t.Fatalf("Load() error = %q, want moderation threshold detail", err.Error())
 	}
 }
 
@@ -212,6 +237,11 @@ detection:
   async_threshold: 5
   max_concurrent_requests: 100
   result_cache_ttl: 3600s
+moderation:
+  policy:
+    version: "default-v1"
+    review_threshold: 0.4
+    block_threshold: 0.75
 logging:
   level: "info"
   format: "json"

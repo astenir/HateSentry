@@ -115,6 +115,45 @@ func TestServiceCheckDefaultsSource(t *testing.T) {
 	}
 }
 
+func TestServiceCheckUsesConfiguredPolicy(t *testing.T) {
+	repository := &fakeRepository{}
+	policy, err := NewPolicy("custom-v1", 0.2, 0.5)
+	if err != nil {
+		t.Fatalf("NewPolicy() error = %v", err)
+	}
+
+	service := NewService(
+		fakeAnalyzer{
+			suggestion: ProviderSuggestion{
+				RiskScore: 0.6,
+				Labels:    []string{"harassment"},
+				Reason:    "Contains abusive language.",
+				RawOutput: `{"risk_score":0.6,"labels":["harassment"],"reason":"Contains abusive language."}`,
+			},
+			provider: ProviderInfo{Provider: "test", Model: "model"},
+		},
+		repository,
+		policy,
+	)
+
+	output, err := service.Check(context.Background(), CheckInput{
+		UserID:  1,
+		Content: "hello",
+	})
+	if err != nil {
+		t.Fatalf("Check() error = %v", err)
+	}
+	if output.Decision != DecisionBlock {
+		t.Fatalf("Decision = %q, want block", output.Decision)
+	}
+	if output.PolicyVersion != "custom-v1" {
+		t.Fatalf("PolicyVersion = %q, want custom-v1", output.PolicyVersion)
+	}
+	if repository.result.PolicyVersion != "custom-v1" {
+		t.Fatalf("persisted PolicyVersion = %q, want custom-v1", repository.result.PolicyVersion)
+	}
+}
+
 func TestServiceCheckRejectsInvalidInput(t *testing.T) {
 	service := NewService(fakeAnalyzer{}, &fakeRepository{}, DefaultPolicy())
 

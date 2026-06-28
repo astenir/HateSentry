@@ -3,6 +3,7 @@ package moderation
 import (
 	"fmt"
 	"math"
+	"strings"
 )
 
 // Policy converts provider risk signals into service-owned decisions.
@@ -19,6 +20,20 @@ func DefaultPolicy() Policy {
 		ReviewThreshold: 0.4,
 		BlockThreshold:  0.75,
 	}
+}
+
+// NewPolicy validates and returns a configured policy.
+func NewPolicy(version string, reviewThreshold, blockThreshold float64) (Policy, error) {
+	policy := Policy{
+		Version:         strings.TrimSpace(version),
+		ReviewThreshold: reviewThreshold,
+		BlockThreshold:  blockThreshold,
+	}
+	if err := policy.Validate(); err != nil {
+		return Policy{}, err
+	}
+
+	return policy, nil
 }
 
 // Decide returns the allow/review/block action for a parsed provider suggestion.
@@ -49,7 +64,7 @@ func (p Policy) Decide(suggestion ProviderSuggestion) (DecisionResult, error) {
 
 // Validate checks policy threshold consistency before decisions are made.
 func (p Policy) Validate() error {
-	if p.Version == "" {
+	if strings.TrimSpace(p.Version) == "" {
 		return fmt.Errorf("policy version is required")
 	}
 	if !validScore(p.ReviewThreshold) {
@@ -58,8 +73,8 @@ func (p Policy) Validate() error {
 	if !validScore(p.BlockThreshold) {
 		return fmt.Errorf("block threshold must be between 0 and 1")
 	}
-	if p.ReviewThreshold > p.BlockThreshold {
-		return fmt.Errorf("review threshold must not exceed block threshold")
+	if p.ReviewThreshold >= p.BlockThreshold {
+		return fmt.Errorf("review threshold must be less than block threshold")
 	}
 
 	return nil

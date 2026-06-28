@@ -56,6 +56,29 @@ func TestDefaultPolicyDecide(t *testing.T) {
 	}
 }
 
+func TestNewPolicyValidatesConfiguredPolicy(t *testing.T) {
+	policy, err := NewPolicy(" custom-v1 ", 0.25, 0.8)
+	if err != nil {
+		t.Fatalf("NewPolicy() error = %v", err)
+	}
+	if policy.Version != "custom-v1" {
+		t.Fatalf("Version = %q, want custom-v1", policy.Version)
+	}
+	if policy.ReviewThreshold != 0.25 {
+		t.Fatalf("ReviewThreshold = %v, want 0.25", policy.ReviewThreshold)
+	}
+	if policy.BlockThreshold != 0.8 {
+		t.Fatalf("BlockThreshold = %v, want 0.8", policy.BlockThreshold)
+	}
+
+	if _, err := NewPolicy("invalid", 0.9, 0.8); err == nil {
+		t.Fatal("NewPolicy() error = nil, want threshold order error")
+	}
+	if _, err := NewPolicy(" ", 0.25, 0.8); err == nil {
+		t.Fatal("NewPolicy() error = nil, want policy version error")
+	}
+}
+
 func TestPolicyValidateRejectsInvalidThresholds(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -122,7 +145,16 @@ func TestPolicyValidateRejectsInvalidThresholds(t *testing.T) {
 				ReviewThreshold: 0.8,
 				BlockThreshold:  0.75,
 			},
-			wantErr: "review threshold must not exceed block threshold",
+			wantErr: "review threshold must be less than block threshold",
+		},
+		{
+			name: "review equals block",
+			policy: Policy{
+				Version:         "test",
+				ReviewThreshold: 0.75,
+				BlockThreshold:  0.75,
+			},
+			wantErr: "review threshold must be less than block threshold",
 		},
 	}
 

@@ -23,6 +23,7 @@ type Router struct {
 	rateLimiter      *cache.RateLimiter
 	jwtManager       *auth.JWTManager
 	db               *gorm.DB
+	moderationPolicy moderation.Policy
 }
 
 // NewRouter creates a new router
@@ -34,6 +35,7 @@ func NewRouter(
 	cache *cache.DetectionCache,
 	rateLimiter *cache.RateLimiter,
 	jwtManager *auth.JWTManager,
+	moderationPolicy moderation.Policy,
 ) *Router {
 	return &Router{
 		engine:           gin.New(),
@@ -44,6 +46,7 @@ func NewRouter(
 		cache:            cache,
 		rateLimiter:      rateLimiter,
 		jwtManager:       jwtManager,
+		moderationPolicy: moderationPolicy,
 	}
 }
 
@@ -68,7 +71,7 @@ func (r *Router) Setup() *gin.Engine {
 	moderationService := moderation.NewService(
 		r.detectionService,
 		moderation.NewGormRepository(r.db),
-		moderation.DefaultPolicy(),
+		r.moderationPolicy,
 	)
 	moderationHandler := handlers.NewModerationHandler(moderationService)
 	healthHandler := handlers.NewHealthHandler(r.rabbitMQManager)

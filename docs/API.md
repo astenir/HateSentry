@@ -174,10 +174,12 @@ Content-Type: application/json
 - `review`: 内容需要人工复核。
 - `block`: 内容应自动拒绝或隐藏。
 
-默认策略版本为 `default-v1`：
+默认配置下的策略版本为 `default-v1`：
 - `risk_score < 0.4`: `allow`
 - `0.4 <= risk_score < 0.75`: `review`
 - `risk_score >= 0.75`: `block`
+
+可通过 `config/config.yaml` 的 `moderation.policy` 配置项，或环境变量 `MODERATION_POLICY_VERSION`、`MODERATION_REVIEW_THRESHOLD`、`MODERATION_BLOCK_THRESHOLD` 调整策略版本和阈值。
 
 接口响应不会返回 provider 原始输出；原始输出仅作为审核记录存储，便于后续审计。
 
