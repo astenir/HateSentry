@@ -78,7 +78,7 @@ def smoke_timeout_seconds():
 
 
 def load_env_file():
-    env_path = os.getenv("HATESENTRY_ENV_FILE", ".env").strip()
+    env_path = os.getenv("HATESENTRY_ENV_FILE", default_env_file()).strip()
     if not env_path or not os.path.exists(env_path):
         return
 
@@ -88,6 +88,10 @@ def load_env_file():
                 load_env_line(raw_line)
     except OSError as err:
         fail("failed to read env file {}: {}".format(env_path, err))
+
+
+def default_env_file():
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
 
 
 def load_env_line(raw_line):
