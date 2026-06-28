@@ -171,6 +171,9 @@ func TestServiceCheckPersistsClientID(t *testing.T) {
 	if output.Decision != DecisionReview {
 		t.Fatalf("Decision = %q, want review", output.Decision)
 	}
+	if output.ReviewStatus != string(ReviewStatusPending) {
+		t.Fatalf("ReviewStatus = %q, want pending", output.ReviewStatus)
+	}
 	if repository.request.ClientID == nil || *repository.request.ClientID != 11 {
 		t.Fatalf("request ClientID = %#v, want 11", repository.request.ClientID)
 	}
@@ -234,6 +237,73 @@ func TestServiceCheckReturnsExistingClientExternalIDResult(t *testing.T) {
 	}
 	if output.Decision != DecisionReview {
 		t.Fatalf("Decision = %q, want review", output.Decision)
+	}
+	if analyzerCalls != 0 {
+		t.Fatalf("analyzer calls = %d, want 0", analyzerCalls)
+	}
+}
+
+func TestServiceCheckReturnsExistingClientExternalIDReviewState(t *testing.T) {
+	reviewedAt := time.Date(2026, 6, 28, 9, 30, 0, 0, time.UTC)
+	analyzerCalls := 0
+	service := NewService(
+		fakeAnalyzer{calls: &analyzerCalls},
+		&fakeRepository{
+			clientResultFound: true,
+			clientStored: StoredResult{
+				Request: models.ModerationRequest{
+					RequestID:  "request-123",
+					UserID:     7,
+					ClientID:   uintPtr(11),
+					Content:    "stored content",
+					ExternalID: "comment_123",
+					Source:     "comment",
+					Status:     "completed",
+				},
+				Result: models.ModerationResult{
+					RequestID:     "request-123",
+					UserID:        7,
+					ClientID:      uintPtr(11),
+					RiskScore:     0.6,
+					Labels:        `["harassment"]`,
+					Decision:      string(DecisionReview),
+					Reason:        "Needs operator review.",
+					PolicyVersion: "default-v1",
+				},
+				ReviewCase: &models.ReviewCase{
+					RequestID:     "request-123",
+					UserID:        7,
+					ClientID:      uintPtr(11),
+					Status:        string(ReviewStatusApproved),
+					FinalDecision: string(DecisionAllow),
+					ReviewedAt:    &reviewedAt,
+				},
+			},
+		},
+		DefaultPolicy(),
+	)
+
+	output, err := service.Check(context.Background(), CheckInput{
+		UserID:     7,
+		ClientID:   11,
+		Content:    "retry after human review",
+		ExternalID: "comment_123",
+	})
+	if err != nil {
+		t.Fatalf("Check() error = %v", err)
+	}
+
+	if output.Decision != DecisionReview {
+		t.Fatalf("Decision = %q, want original policy review", output.Decision)
+	}
+	if output.ReviewStatus != string(ReviewStatusApproved) {
+		t.Fatalf("ReviewStatus = %q, want approved", output.ReviewStatus)
+	}
+	if output.FinalDecision != string(DecisionAllow) {
+		t.Fatalf("FinalDecision = %q, want allow", output.FinalDecision)
+	}
+	if output.ReviewedAt == nil || !output.ReviewedAt.Equal(reviewedAt) {
+		t.Fatalf("ReviewedAt = %v, want %v", output.ReviewedAt, reviewedAt)
 	}
 	if analyzerCalls != 0 {
 		t.Fatalf("analyzer calls = %d, want 0", analyzerCalls)

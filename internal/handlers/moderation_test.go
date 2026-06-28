@@ -67,6 +67,9 @@ func TestModerationHandlerCheck(t *testing.T) {
 	if response.Decision != moderation.DecisionReview {
 		t.Fatalf("Decision = %q, want review", response.Decision)
 	}
+	if response.ReviewStatus != string(moderation.ReviewStatusPending) {
+		t.Fatalf("ReviewStatus = %q, want pending", response.ReviewStatus)
+	}
 	if response.RiskScore != 0.6 {
 		t.Fatalf("RiskScore = %v, want 0.6", response.RiskScore)
 	}
@@ -126,6 +129,112 @@ func TestModerationHandlerCheckAcceptsAPIKeyPrincipal(t *testing.T) {
 	}
 	if repository.request.ClientID == nil || *repository.request.ClientID != 11 {
 		t.Fatalf("ClientID = %#v, want 11", repository.request.ClientID)
+	}
+}
+
+func TestModerationHandlerCheckReturnsExistingAPIKeyReviewState(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	clientID := uint(11)
+	reviewedAt := time.Date(2026, 6, 28, 11, 30, 0, 0, time.UTC)
+	repository := &moderationHandlerRepository{
+		clientStored: moderation.StoredResult{
+			Request: models.ModerationRequest{
+				RequestID:  "request-123",
+				UserID:     42,
+				ClientID:   &clientID,
+				Content:    "stored content",
+				Source:     "comment",
+				ExternalID: "comment_123",
+				Status:     "completed",
+			},
+			Result: models.ModerationResult{
+				RequestID:     "request-123",
+				UserID:        42,
+				ClientID:      &clientID,
+				Provider:      "test-provider",
+				Model:         "test-model",
+				RiskScore:     0.6,
+				Labels:        `["harassment"]`,
+				Decision:      string(moderation.DecisionReview),
+				Reason:        "Needs review.",
+				PolicyVersion: "default-v1",
+				CreatedAt:     time.Date(2026, 6, 28, 10, 30, 0, 0, time.UTC),
+			},
+			ReviewCase: &models.ReviewCase{
+				RequestID:     "request-123",
+				UserID:        42,
+				ClientID:      &clientID,
+				Status:        string(moderation.ReviewStatusApproved),
+				FinalDecision: string(moderation.DecisionAllow),
+				ReviewedAt:    &reviewedAt,
+			},
+		},
+		clientResultFound: true,
+	}
+	handler := NewModerationHandler(moderation.NewService(
+		moderationHandlerAnalyzer{},
+		repository,
+		moderation.DefaultPolicy(),
+	))
+
+	engine := gin.New()
+	engine.POST("/api/v1/moderation/check", func(c *gin.Context) {
+		c.Set(auth.APIKeyContextKey, auth.APIKeyPrincipal{
+			ClientID: clientID,
+			UserID:   42,
+			Name:     "blog",
+		})
+		handler.Check(c)
+	})
+
+	body := `{"content":"retry this text","source":"comment","external_id":"comment_123"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/moderation/check", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "raw_output") {
+		t.Fatalf("response leaked raw output: %s", recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "reviewer_id") {
+		t.Fatalf("response leaked reviewer id: %s", recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "review_notes") {
+		t.Fatalf("response leaked review notes: %s", recorder.Body.String())
+	}
+
+	var response moderation.CheckOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.RequestID != "request-123" {
+		t.Fatalf("RequestID = %q, want existing request", response.RequestID)
+	}
+	if response.Decision != moderation.DecisionReview {
+		t.Fatalf("Decision = %q, want original policy review", response.Decision)
+	}
+	if response.ReviewStatus != string(moderation.ReviewStatusApproved) {
+		t.Fatalf("ReviewStatus = %q, want approved", response.ReviewStatus)
+	}
+	if response.FinalDecision != string(moderation.DecisionAllow) {
+		t.Fatalf("FinalDecision = %q, want allow", response.FinalDecision)
+	}
+	if response.ReviewedAt == nil || !response.ReviewedAt.Equal(reviewedAt) {
+		t.Fatalf("ReviewedAt = %v, want %v", response.ReviewedAt, reviewedAt)
+	}
+	if repository.clientID != clientID {
+		t.Fatalf("repository clientID = %d, want %d", repository.clientID, clientID)
+	}
+	if repository.externalID != "comment_123" {
+		t.Fatalf("repository externalID = %q, want comment_123", repository.externalID)
+	}
+	if repository.request != nil || repository.result != nil {
+		t.Fatal("moderation records were persisted, want idempotent existing result")
 	}
 }
 
@@ -1085,6 +1194,7 @@ type moderationHandlerRepository struct {
 	webhookDelivery       models.WebhookDelivery
 	webhookDeliveries     []models.WebhookDelivery
 	stored                moderation.StoredResult
+	clientStored          moderation.StoredResult
 	historyItems          []moderation.StoredHistoryItem
 	historyFilter         moderation.HistoryFilter
 	reviewCases           []moderation.StoredReviewCase
@@ -1093,6 +1203,7 @@ type moderationHandlerRepository struct {
 	stats                 moderation.StoredStats
 	userID                uint
 	clientID              uint
+	externalID            string
 	requestID             string
 	reviewStatus          moderation.ReviewStatus
 	caseID                uint
@@ -1106,6 +1217,7 @@ type moderationHandlerRepository struct {
 	notes                 string
 	reviewedAt            time.Time
 	err                   error
+	clientResultFound     bool
 }
 
 func (r *moderationHandlerRepository) SaveCheck(
@@ -1152,7 +1264,9 @@ func (r *moderationHandlerRepository) FindResultByClientExternalID(
 	clientID uint,
 	externalID string,
 ) (moderation.StoredResult, bool, error) {
-	return moderation.StoredResult{}, false, nil
+	r.clientID = clientID
+	r.externalID = externalID
+	return r.clientStored, r.clientResultFound, nil
 }
 
 func (r *moderationHandlerRepository) ListHistory(

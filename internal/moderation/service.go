@@ -211,12 +211,15 @@ type CheckInput struct {
 
 // CheckOutput is the stable public result returned by the moderation API.
 type CheckOutput struct {
-	RequestID     string   `json:"request_id"`
-	Decision      Decision `json:"decision"`
-	RiskScore     float64  `json:"risk_score"`
-	Labels        []string `json:"labels"`
-	Reason        string   `json:"reason"`
-	PolicyVersion string   `json:"policy_version"`
+	RequestID     string     `json:"request_id"`
+	Decision      Decision   `json:"decision"`
+	RiskScore     float64    `json:"risk_score"`
+	Labels        []string   `json:"labels"`
+	Reason        string     `json:"reason"`
+	PolicyVersion string     `json:"policy_version"`
+	ReviewStatus  string     `json:"review_status,omitempty"`
+	FinalDecision string     `json:"final_decision,omitempty"`
+	ReviewedAt    *time.Time `json:"reviewed_at,omitempty"`
 }
 
 // ResultOutput is the stable public representation of a stored moderation result.
@@ -475,14 +478,19 @@ func (s *Service) Check(ctx context.Context, input CheckInput) (CheckOutput, err
 	}
 	s.recordCheckMetric(decision.Decision, provider.Provider, normalized.ClientID, time.Since(startedAt))
 
-	return CheckOutput{
+	output := CheckOutput{
 		RequestID:     requestID,
 		Decision:      decision.Decision,
 		RiskScore:     decision.RiskScore,
 		Labels:        decision.Labels,
 		Reason:        decision.Reason,
 		PolicyVersion: decision.PolicyVersion,
-	}, nil
+	}
+	if reviewCase != nil {
+		output.ReviewStatus = reviewCase.Status
+	}
+
+	return output, nil
 }
 
 func (s *Service) policyForCheck(ctx context.Context, userID uint, clientID uint) (Policy, error) {
@@ -666,14 +674,21 @@ func checkOutputFromStored(stored StoredResult) (CheckOutput, error) {
 		return CheckOutput{}, err
 	}
 
-	return CheckOutput{
+	output := CheckOutput{
 		RequestID:     stored.Result.RequestID,
 		Decision:      Decision(stored.Result.Decision),
 		RiskScore:     stored.Result.RiskScore,
 		Labels:        labels,
 		Reason:        stored.Result.Reason,
 		PolicyVersion: stored.Result.PolicyVersion,
-	}, nil
+	}
+	if stored.ReviewCase != nil {
+		output.ReviewStatus = stored.ReviewCase.Status
+		output.FinalDecision = stored.ReviewCase.FinalDecision
+		output.ReviewedAt = stored.ReviewCase.ReviewedAt
+	}
+
+	return output, nil
 }
 
 // ListReviewCases returns moderation review cases for an authenticated operator.

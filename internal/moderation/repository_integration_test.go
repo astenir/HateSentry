@@ -263,6 +263,123 @@ func TestGormRepositoryGetResultForClientIntegration(t *testing.T) {
 	}
 }
 
+func TestGormRepositoryFindResultByClientExternalIDLoadsReviewCaseIntegration(t *testing.T) {
+	dsn := os.Getenv("HATESENTRY_TEST_DSN")
+	if strings.TrimSpace(dsn) == "" {
+		t.Skip("HATESENTRY_TEST_DSN is required for integration repository tests")
+	}
+
+	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+	if err := db.AutoMigrate(
+		&models.User{},
+		&models.ClientApplication{},
+		&models.ModerationRequest{},
+		&models.ModerationResult{},
+		&models.ReviewCase{},
+	); err != nil {
+		t.Fatalf("auto migrate test database: %v", err)
+	}
+
+	repository := NewGormRepository(db)
+	ctx := context.Background()
+	user := createIntegrationUser(t, ctx, db, "client-external-review")
+	client := models.ClientApplication{
+		UserID:       user.ID,
+		Name:         "Client External Review Test",
+		APIKeyHash:   uuid.New().String(),
+		APIKeyPrefix: "hs_ext",
+		Status:       "active",
+	}
+	if err := db.WithContext(ctx).Create(&client).Error; err != nil {
+		t.Fatalf("create client application: %v", err)
+	}
+
+	requestID := uuid.New().String()
+	reviewerID := uint(99)
+	reviewedAt := time.Date(2026, 6, 28, 11, 0, 0, 0, time.UTC)
+	idempotencyKey := clientExternalIDIdempotencyKey(client.ID, "comment_123")
+	t.Cleanup(func() {
+		db.Unscoped().Where("request_id = ?", requestID).Delete(&models.ReviewCase{})
+		db.Unscoped().Where("request_id = ?", requestID).Delete(&models.ModerationResult{})
+		db.Unscoped().Where("request_id = ?", requestID).Delete(&models.ModerationRequest{})
+		db.Unscoped().Delete(&models.ClientApplication{}, client.ID)
+		db.Unscoped().Delete(&models.User{}, user.ID)
+	})
+
+	request := &models.ModerationRequest{
+		RequestID:      requestID,
+		UserID:         user.ID,
+		ClientID:       &client.ID,
+		IdempotencyKey: &idempotencyKey,
+		Content:        "client retry content",
+		Source:         "comment",
+		ExternalID:     "comment_123",
+		Status:         "completed",
+	}
+	result := &models.ModerationResult{
+		RequestID:     requestID,
+		UserID:        user.ID,
+		ClientID:      &client.ID,
+		Provider:      "test-provider",
+		Model:         "test-model",
+		RiskScore:     0.6,
+		Labels:        `["harassment"]`,
+		Decision:      string(DecisionReview),
+		Reason:        "Needs review.",
+		PolicyVersion: "default-v1",
+	}
+	reviewCase := &models.ReviewCase{
+		RequestID:     requestID,
+		UserID:        user.ID,
+		ClientID:      &client.ID,
+		Status:        string(ReviewStatusApproved),
+		ReviewerID:    &reviewerID,
+		FinalDecision: string(DecisionAllow),
+		ReviewNotes:   "approved during idempotency lookup test",
+		ReviewedAt:    &reviewedAt,
+	}
+	if err := repository.SaveCheck(ctx, request, result, reviewCase); err != nil {
+		t.Fatalf("SaveCheck() error = %v", err)
+	}
+
+	stored, found, err := repository.FindResultByClientExternalID(ctx, client.ID, "comment_123")
+	if err != nil {
+		t.Fatalf("FindResultByClientExternalID() error = %v", err)
+	}
+	if !found {
+		t.Fatal("FindResultByClientExternalID() found = false, want true")
+	}
+	if stored.Request.RequestID != requestID {
+		t.Fatalf("RequestID = %q, want %q", stored.Request.RequestID, requestID)
+	}
+	if stored.Result.Decision != string(DecisionReview) {
+		t.Fatalf("Decision = %q, want review", stored.Result.Decision)
+	}
+	if stored.ReviewCase == nil {
+		t.Fatal("ReviewCase = nil, want approved review case")
+	}
+	if stored.ReviewCase.Status != string(ReviewStatusApproved) {
+		t.Fatalf("ReviewCase.Status = %q, want approved", stored.ReviewCase.Status)
+	}
+	if stored.ReviewCase.FinalDecision != string(DecisionAllow) {
+		t.Fatalf("ReviewCase.FinalDecision = %q, want allow", stored.ReviewCase.FinalDecision)
+	}
+	if stored.ReviewCase.ReviewedAt == nil || !stored.ReviewCase.ReviewedAt.Equal(reviewedAt) {
+		t.Fatalf("ReviewCase.ReviewedAt = %v, want %v", stored.ReviewCase.ReviewedAt, reviewedAt)
+	}
+
+	_, found, err = repository.FindResultByClientExternalID(ctx, client.ID, "comment_missing")
+	if err != nil {
+		t.Fatalf("FindResultByClientExternalID() missing error = %v", err)
+	}
+	if found {
+		t.Fatal("FindResultByClientExternalID() missing found = true, want false")
+	}
+}
+
 func TestGormRepositoryWebhookDeliveryClaimIntegration(t *testing.T) {
 	dsn := os.Getenv("HATESENTRY_TEST_DSN")
 	if strings.TrimSpace(dsn) == "" {

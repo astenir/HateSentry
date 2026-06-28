@@ -469,7 +469,7 @@ Content-Type: application/json
 - `external_id`: 可选，外部系统中的内容 ID。
 - `actor_id`: 可选，外部系统中的内容提交者 ID。
 
-使用 API Key 调用时，如果同一客户端重复提交相同 `external_id`，接口会返回既有审核结果，并通过数据库唯一键避免创建重复审核记录。未提供 `external_id` 时，每次调用都会创建新审核记录。
+使用 API Key 调用时，如果同一客户端重复提交相同 `external_id`，接口会返回既有审核结果和复核状态，并通过数据库唯一键避免创建重复审核记录。未提供 `external_id` 时，每次调用都会创建新审核记录。
 
 API Key 调用会按客户端 ID 做请求级限流，覆盖 `POST /moderation/check` 和 `GET /moderation/results/:request_id`。默认配置为每个客户端每分钟 60 次请求，可通过 `config/config.yaml` 的 `moderation.client_rate_limit` 或环境变量 `MODERATION_CLIENT_RATE_LIMIT`、`MODERATION_CLIENT_RATE_WINDOW` 调整。JWT 操作员调用当前不走这条客户端限流规则。
 
@@ -481,7 +481,8 @@ API Key 调用会按客户端 ID 做请求级限流，覆盖 `POST /moderation/c
   "risk_score": 0.6,
   "labels": ["harassment", "identity_attack"],
   "reason": "Brief explanation suitable for operators",
-  "policy_version": "default-v1"
+  "policy_version": "default-v1",
+  "review_status": "pending"
 }
 ```
 
@@ -496,6 +497,8 @@ API Key 调用会按客户端 ID 做请求级限流，覆盖 `POST /moderation/c
 - `risk_score >= 0.75`: `block`
 
 可通过 `config/config.yaml` 的 `moderation.policy` 配置默认策略，或通过 `moderation.policies` 配置额外可分配策略版本。环境变量 `MODERATION_POLICY_VERSION`、`MODERATION_REVIEW_THRESHOLD`、`MODERATION_BLOCK_THRESHOLD` 只覆盖默认策略。外部客户端的 `policy_version` 为空时使用默认策略；非空时必须匹配已配置的策略版本，否则审核请求会返回验证错误。
+
+`review` 决策会自动创建人工复核记录，此时响应会包含 `review_status: "pending"`。同一 API Key 客户端使用相同 `external_id` 重试且人工复核已完成时，响应还会包含 `final_decision` 和 `reviewed_at`。`decision` 始终表示服务端策略决策；人工复核后的最终业务决定通过 `final_decision` 表示。
 
 接口响应不会返回 provider 原始输出；原始输出仅作为审核记录存储，便于后续审计。
 
