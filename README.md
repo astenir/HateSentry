@@ -639,6 +639,13 @@ HATESENTRY_TEST_DSN='root:password@tcp(127.0.0.1:3306)/hatesentry?charset=utf8mb
 
 集成测试会通过 `go test -tags=integration ./...` 运行，需要可连接的 MySQL 测试库。部分测试会创建并删除临时数据库，测试账号需要 `CREATE DATABASE` 和 `DROP DATABASE` 权限；本地 Docker 示例中的 `root` 账号已满足该要求。
 
+### 验证 Docker Compose 运行状态
+```bash
+make verify-compose
+```
+
+该命令会构建并启动 Compose 服务，然后等待 `GET /api/v1/health` 返回健康状态。健康响应需要确认 API 服务、MySQL、Redis 和 RabbitMQ 都可达。
+
 ### 测试覆盖率
 ```bash
 make test-coverage
@@ -827,12 +834,12 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 - [x] 健康检查和 Prometheus 指标入口
 - [x] 结构化日志系统
 - [x] Docker 部署支持
+- [x] Docker Compose 端到端健康检查验证
 
 ### 进行中 🚧
 - [ ] 更完整的操作指标和延迟观测
 - [ ] Webhook 异步自动重试队列
 - [ ] README、API 文档和运维文档持续按实现校准
-- [ ] Docker Compose 端到端运行验证
 
 ### 计划中 📋
 - [ ] 完整异步审核队列

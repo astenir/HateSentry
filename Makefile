@@ -1,4 +1,4 @@
-.PHONY: all build run clean test test-integration deps docker-build docker-up docker-down docker-logs install-deps
+.PHONY: all build run clean test test-integration deps docker-build docker-up docker-down docker-logs verify-compose install-deps
 
 # Variables
 BINARY_NAME=hatesentry
@@ -74,6 +74,23 @@ docker-down:
 # Docker logs
 docker-logs:
 	@docker-compose logs -f
+
+# Verify Docker Compose runtime health
+verify-compose:
+	@echo "Building and starting Docker Compose stack..."
+	@docker compose up -d --build
+	@echo "Waiting for API health..."
+	@for i in $$(seq 1 30); do \
+		if response=$$(curl -fsS http://localhost:8080/api/v1/health 2>/dev/null); then \
+			echo "$$response"; \
+			exit 0; \
+		fi; \
+		sleep 2; \
+	done; \
+	echo "API health check did not become healthy in time"; \
+	docker compose ps; \
+	docker compose logs --no-color --tail=80 hatesentry; \
+	exit 1
 
 # Docker restart
 docker-restart: docker-down docker-up
