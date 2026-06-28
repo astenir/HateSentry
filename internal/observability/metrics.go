@@ -240,6 +240,39 @@ var (
 		[]string{"status", "final_decision"},
 	)
 
+	webhookDeliveriesTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "webhook_deliveries_total",
+			Help: "Total number of final-decision webhook delivery attempts",
+		},
+		[]string{"status", "trigger"},
+	)
+
+	webhookDeliveryDuration = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "webhook_delivery_duration_seconds",
+			Help:    "Final-decision webhook delivery latency in seconds",
+			Buckets: []float64{0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10},
+		},
+		[]string{"status", "trigger"},
+	)
+
+	webhookRetryBatchesTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "webhook_retry_batches_total",
+			Help: "Total number of automatic webhook retry batches",
+		},
+		[]string{"result"},
+	)
+
+	webhookRetryBatchDeliveriesTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "webhook_retry_batch_deliveries_total",
+			Help: "Total number of delivery records processed by automatic webhook retry batches",
+		},
+		[]string{"result"},
+	)
+
 	// 系统指标
 	activeConnections = promauto.NewGauge(
 		prometheus.GaugeOpts{
@@ -432,6 +465,30 @@ func (m *ModerationMetrics) RecordReviewFinalized(status, finalDecision string, 
 			metricLabelOrUnknown(finalDecision),
 		).Observe(latency.Seconds())
 	}
+}
+
+func (m *ModerationMetrics) RecordWebhookDelivery(status, trigger string, duration time.Duration) {
+	webhookDeliveriesTotal.WithLabelValues(
+		metricLabelOrUnknown(status),
+		metricLabelOrUnknown(trigger),
+	).Inc()
+	if duration >= 0 {
+		webhookDeliveryDuration.WithLabelValues(
+			metricLabelOrUnknown(status),
+			metricLabelOrUnknown(trigger),
+		).Observe(duration.Seconds())
+	}
+}
+
+func (m *ModerationMetrics) RecordWebhookRetryBatch(result string) {
+	webhookRetryBatchesTotal.WithLabelValues(metricLabelOrUnknown(result)).Inc()
+}
+
+func (m *ModerationMetrics) AddWebhookRetryBatchDeliveries(result string, count int) {
+	if count <= 0 {
+		return
+	}
+	webhookRetryBatchDeliveriesTotal.WithLabelValues(metricLabelOrUnknown(result)).Add(float64(count))
 }
 
 func metricLabelOrUnknown(value string) string {

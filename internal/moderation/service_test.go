@@ -467,6 +467,55 @@ func TestServiceCheckDoesNotFailWhenWebhookDispatchFails(t *testing.T) {
 	}
 }
 
+func TestServiceCheckRecordsInitialWebhookDeliveryMetrics(t *testing.T) {
+	labels := map[string]string{
+		"status":  string(WebhookDeliveryFailed),
+		"trigger": webhookTriggerInitial,
+	}
+	beforeTotal := prometheusCounterValue(t, "webhook_deliveries_total", labels)
+	beforeDuration := prometheusHistogramCount(t, "webhook_delivery_duration_seconds", labels)
+
+	dispatcher := &fakeWebhookDispatcher{err: errors.New("webhook unavailable")}
+	repository := &fakeRepository{
+		webhookClient: models.ClientApplication{
+			ID:            11,
+			UserID:        7,
+			WebhookURL:    "https://example.com/moderation/webhook",
+			WebhookSecret: "whsec_test",
+		},
+		webhookClientFound: true,
+	}
+	service := NewService(
+		fakeAnalyzer{
+			suggestion: ProviderSuggestion{
+				RiskScore: 0.8,
+				Labels:    []string{"hate"},
+				Reason:    "Policy threshold exceeded.",
+			},
+		},
+		repository,
+		DefaultPolicy(),
+		dispatcher,
+	)
+
+	if _, err := service.Check(context.Background(), CheckInput{
+		UserID:   7,
+		ClientID: 11,
+		Content:  "block this text",
+	}); err != nil {
+		t.Fatalf("Check() error = %v", err)
+	}
+
+	afterTotal := prometheusCounterValue(t, "webhook_deliveries_total", labels)
+	if afterTotal != beforeTotal+1 {
+		t.Fatalf("webhook_deliveries_total increment = %v, want %v", afterTotal-beforeTotal, 1.0)
+	}
+	afterDuration := prometheusHistogramCount(t, "webhook_delivery_duration_seconds", labels)
+	if afterDuration != beforeDuration+1 {
+		t.Fatalf("webhook_delivery_duration_seconds count increment = %v, want %v", afterDuration-beforeDuration, 1.0)
+	}
+}
+
 func TestServiceCheckRecordsWebhookDeliveryAfterRequestCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1489,6 +1538,12 @@ func TestServiceReviewActionsDispatchWebhookWithHumanFinalDecision(t *testing.T)
 }
 
 func TestServiceRetryWebhookDelivery(t *testing.T) {
+	metricLabels := map[string]string{
+		"status":  string(WebhookDeliverySucceeded),
+		"trigger": webhookTriggerManualRetry,
+	}
+	beforeDeliveries := prometheusCounterValue(t, "webhook_deliveries_total", metricLabels)
+
 	payload := webhooks.FinalDecisionPayload{
 		Event:         "moderation.final_decision",
 		RequestID:     "request-123",
@@ -1551,9 +1606,31 @@ func TestServiceRetryWebhookDelivery(t *testing.T) {
 	if dispatcher.payloads[0].DeliveryID != "delivery-123" {
 		t.Fatalf("retry delivery id = %q, want stored delivery id", dispatcher.payloads[0].DeliveryID)
 	}
+	afterDeliveries := prometheusCounterValue(t, "webhook_deliveries_total", metricLabels)
+	if afterDeliveries != beforeDeliveries+1 {
+		t.Fatalf("webhook_deliveries_total increment = %v, want %v", afterDeliveries-beforeDeliveries, 1.0)
+	}
 }
 
 func TestServiceRetryFailedWebhookDeliveries(t *testing.T) {
+	deliveryMetricLabels := map[string]string{
+		"status":  string(WebhookDeliverySucceeded),
+		"trigger": webhookTriggerAutomaticRetry,
+	}
+	batchMetricLabels := map[string]string{
+		"result": webhookRetryBatchCompleted,
+	}
+	batchDeliveryMetricLabels := map[string]string{
+		"result": webhookRetryBatchSucceeded,
+	}
+	beforeDeliveries := prometheusCounterValue(t, "webhook_deliveries_total", deliveryMetricLabels)
+	beforeBatches := prometheusCounterValue(t, "webhook_retry_batches_total", batchMetricLabels)
+	beforeBatchDeliveries := prometheusCounterValue(
+		t,
+		"webhook_retry_batch_deliveries_total",
+		batchDeliveryMetricLabels,
+	)
+
 	payload := webhooks.FinalDecisionPayload{
 		Event:         "moderation.final_decision",
 		RequestID:     "request-123",
@@ -1633,9 +1710,42 @@ func TestServiceRetryFailedWebhookDeliveries(t *testing.T) {
 	if dispatcher.DispatchCount() != 1 {
 		t.Fatalf("webhook dispatches = %d, want 1", dispatcher.DispatchCount())
 	}
+	afterDeliveries := prometheusCounterValue(t, "webhook_deliveries_total", deliveryMetricLabels)
+	if afterDeliveries != beforeDeliveries+1 {
+		t.Fatalf("webhook_deliveries_total increment = %v, want %v", afterDeliveries-beforeDeliveries, 1.0)
+	}
+	afterBatches := prometheusCounterValue(t, "webhook_retry_batches_total", batchMetricLabels)
+	if afterBatches != beforeBatches+1 {
+		t.Fatalf("webhook_retry_batches_total increment = %v, want %v", afterBatches-beforeBatches, 1.0)
+	}
+	afterBatchDeliveries := prometheusCounterValue(
+		t,
+		"webhook_retry_batch_deliveries_total",
+		batchDeliveryMetricLabels,
+	)
+	if afterBatchDeliveries != beforeBatchDeliveries+1 {
+		t.Fatalf(
+			"webhook_retry_batch_deliveries_total increment = %v, want %v",
+			afterBatchDeliveries-beforeBatchDeliveries,
+			1.0,
+		)
+	}
 }
 
 func TestServiceRetryFailedWebhookDeliveriesSkipsClaimConflicts(t *testing.T) {
+	batchMetricLabels := map[string]string{
+		"result": webhookRetryBatchCompleted,
+	}
+	skippedMetricLabels := map[string]string{
+		"result": webhookRetryBatchSkipped,
+	}
+	beforeBatches := prometheusCounterValue(t, "webhook_retry_batches_total", batchMetricLabels)
+	beforeSkipped := prometheusCounterValue(
+		t,
+		"webhook_retry_batch_deliveries_total",
+		skippedMetricLabels,
+	)
+
 	repository := &fakeRepository{
 		retryableWebhookDeliveries: []models.WebhookDelivery{
 			{
@@ -1663,6 +1773,22 @@ func TestServiceRetryFailedWebhookDeliveriesSkipsClaimConflicts(t *testing.T) {
 	}
 	if output.Attempted != 0 {
 		t.Fatalf("Attempted = %d, want 0", output.Attempted)
+	}
+	afterBatches := prometheusCounterValue(t, "webhook_retry_batches_total", batchMetricLabels)
+	if afterBatches != beforeBatches+1 {
+		t.Fatalf("webhook_retry_batches_total increment = %v, want %v", afterBatches-beforeBatches, 1.0)
+	}
+	afterSkipped := prometheusCounterValue(
+		t,
+		"webhook_retry_batch_deliveries_total",
+		skippedMetricLabels,
+	)
+	if afterSkipped != beforeSkipped+1 {
+		t.Fatalf(
+			"webhook_retry_batch_deliveries_total skipped increment = %v, want %v",
+			afterSkipped-beforeSkipped,
+			1.0,
+		)
 	}
 }
 
@@ -2352,6 +2478,32 @@ func prometheusCounterValue(t *testing.T, name string, labels map[string]string)
 				t.Fatalf("metric %s with labels %#v is not a counter", name, labels)
 			}
 			return metric.GetCounter().GetValue()
+		}
+	}
+
+	return 0
+}
+
+func prometheusHistogramCount(t *testing.T, name string, labels map[string]string) float64 {
+	t.Helper()
+
+	families, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("gather prometheus metrics: %v", err)
+	}
+
+	for _, family := range families {
+		if family.GetName() != name {
+			continue
+		}
+		for _, metric := range family.GetMetric() {
+			if !prometheusMetricLabelsMatch(metric.GetLabel(), labels) {
+				continue
+			}
+			if metric.GetHistogram() == nil {
+				t.Fatalf("metric %s with labels %#v is not a histogram", name, labels)
+			}
+			return float64(metric.GetHistogram().GetSampleCount())
 		}
 	}
 

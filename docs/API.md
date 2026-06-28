@@ -1061,8 +1061,9 @@ print(result)
 
 - `allow` / `block`: 文本审核完成后立即发送。
 - `review`: 不立即发送最终决策；管理员复核通过、拒绝或标记误判后发送。
-- 当前版本为同步单次尝试；最新投递状态、尝试次数和最后一次错误会记录到 `webhook_deliveries`，失败不会阻断审核记录保存或人工复核结果保存。
-- 失败投递可由管理员手动重试；暂未实现异步自动重试队列。
+- 首次投递会同步尝试；最新投递状态、尝试次数和最后一次错误会记录到 `webhook_deliveries`，失败不会阻断审核记录保存或人工复核结果保存。
+- 失败投递可由后台自动重试，也可由管理员手动重试。后台重试默认每分钟扫描失败或过期 `retrying` 记录，每批最多 10 条，最多尝试 3 次，可通过 `MODERATION_WEBHOOK_RETRY_*` 环境变量调整或关闭。
+- Prometheus 会记录 Webhook 投递结果、投递耗时和后台重试批次结果；指标标签只使用 `succeeded` / `failed`、`initial` / `manual_retry` / `automatic_retry` 等固定枚举，不包含请求 ID、客户端 ID、URL 或错误文本。
 
 **请求头**:
 ```http
@@ -1196,4 +1197,4 @@ Authorization: Bearer <admin-token>
 }
 ```
 
-只有 `status = "failed"` 的投递记录可以重试；刚进入 `retrying` 的记录会返回冲突错误，超过内部重试租约的陈旧 `retrying` 记录可以被重新认领。重试仍使用原始最终决策载荷和同一个 `X-HateSentry-Delivery` 标识。当前表保存最新状态和尝试次数，不保存每一次历史尝试的完整明细。
+只有 `status = "failed"` 的投递记录可以手动重试；后台自动重试还会重新认领超过内部重试租约的陈旧 `retrying` 记录。刚进入 `retrying` 的记录会返回冲突错误。重试仍使用原始最终决策载荷和同一个 `X-HateSentry-Delivery` 标识。当前表保存最新状态和尝试次数，不保存每一次历史尝试的完整明细。

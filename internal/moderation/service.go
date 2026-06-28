@@ -33,6 +33,13 @@ const (
 	webhookDeliveryRecordTimeout    = 5 * time.Second
 	webhookRetryStatusUpdateTimeout = 5 * time.Second
 	webhookRetryLease               = 2 * time.Minute
+	webhookTriggerInitial           = "initial"
+	webhookTriggerManualRetry       = "manual_retry"
+	webhookTriggerAutomaticRetry    = "automatic_retry"
+	webhookRetryBatchCompleted      = "completed"
+	webhookRetryBatchFailed         = "failed"
+	webhookRetryBatchSucceeded      = "succeeded"
+	webhookRetryBatchSkipped        = "skipped"
 )
 
 // Analyzer classifies text and returns a normalized provider suggestion.
@@ -818,6 +825,31 @@ func (s *Service) recordReviewFinalizedMetric(reviewCase models.ReviewCase) {
 	)
 }
 
+func (s *Service) recordWebhookDeliveryMetric(
+	status WebhookDeliveryStatus,
+	trigger string,
+	duration time.Duration,
+) {
+	if s.metrics == nil {
+		return
+	}
+	s.metrics.RecordWebhookDelivery(string(status), trigger, duration)
+}
+
+func (s *Service) recordWebhookRetryBatchMetric(result string) {
+	if s.metrics == nil {
+		return
+	}
+	s.metrics.RecordWebhookRetryBatch(result)
+}
+
+func (s *Service) recordWebhookRetryBatchDeliveriesMetric(result string, count int) {
+	if s.metrics == nil {
+		return
+	}
+	s.metrics.AddWebhookRetryBatchDeliveries(result, count)
+}
+
 func moderationClientType(clientID uint) string {
 	if clientID == 0 {
 		return "operator"
@@ -935,7 +967,7 @@ func (s *Service) RetryWebhookDelivery(
 		return WebhookDeliveryOutput{}, err
 	}
 
-	updated, err := s.retryWebhookDelivery(ctx, parsedDeliveryID, 0)
+	updated, err := s.retryWebhookDelivery(ctx, parsedDeliveryID, 0, webhookTriggerManualRetry)
 	if err != nil {
 		return WebhookDeliveryOutput{}, err
 	}
@@ -949,18 +981,22 @@ func (s *Service) RetryFailedWebhookDeliveries(
 	input WebhookRetryInput,
 ) (WebhookRetryOutput, error) {
 	if s.repository == nil {
+		s.recordWebhookRetryBatchMetric(webhookRetryBatchFailed)
 		return WebhookRetryOutput{}, apperrors.ConfigurationError("moderation repository is not configured")
 	}
 	if s.webhookDispatcher == nil {
+		s.recordWebhookRetryBatchMetric(webhookRetryBatchFailed)
 		return WebhookRetryOutput{}, apperrors.ConfigurationError("webhook dispatcher is not configured")
 	}
 
 	limit, err := normalizeWebhookRetryLimit(input.Limit)
 	if err != nil {
+		s.recordWebhookRetryBatchMetric(webhookRetryBatchFailed)
 		return WebhookRetryOutput{}, err
 	}
 	maxAttempts, err := normalizeWebhookRetryMaxAttempts(input.MaxAttempts)
 	if err != nil {
+		s.recordWebhookRetryBatchMetric(webhookRetryBatchFailed)
 		return WebhookRetryOutput{}, err
 	}
 
@@ -972,12 +1008,18 @@ func (s *Service) RetryFailedWebhookDeliveries(
 		now.Add(-webhookRetryLease),
 	)
 	if err != nil {
+		s.recordWebhookRetryBatchMetric(webhookRetryBatchFailed)
 		return WebhookRetryOutput{}, err
 	}
 
 	output := WebhookRetryOutput{}
 	for _, delivery := range deliveries {
-		updated, retryErr := s.retryWebhookDelivery(ctx, delivery.ID, maxAttempts)
+		updated, retryErr := s.retryWebhookDelivery(
+			ctx,
+			delivery.ID,
+			maxAttempts,
+			webhookTriggerAutomaticRetry,
+		)
 		if retryErr != nil {
 			if isWebhookRetryConflict(retryErr) {
 				output.Skipped++
@@ -1001,6 +1043,10 @@ func (s *Service) RetryFailedWebhookDeliveries(
 			output.Failed++
 		}
 	}
+	s.recordWebhookRetryBatchMetric(webhookRetryBatchCompleted)
+	s.recordWebhookRetryBatchDeliveriesMetric(webhookRetryBatchSucceeded, output.Succeeded)
+	s.recordWebhookRetryBatchDeliveriesMetric(webhookRetryBatchFailed, output.Failed)
+	s.recordWebhookRetryBatchDeliveriesMetric(webhookRetryBatchSkipped, output.Skipped)
 
 	return output, nil
 }
@@ -1009,7 +1055,9 @@ func (s *Service) retryWebhookDelivery(
 	ctx context.Context,
 	deliveryID uint,
 	maxAttempts int,
+	trigger string,
 ) (models.WebhookDelivery, error) {
+	startedAt := time.Now()
 	delivery, err := s.repository.ClaimFailedWebhookDelivery(ctx, deliveryID, maxAttempts, time.Now().UTC())
 	if err != nil {
 		return models.WebhookDelivery{}, err
@@ -1023,21 +1071,25 @@ func (s *Service) retryWebhookDelivery(
 	client, found, err := s.repository.GetClient(ctx, delivery.ClientID)
 	if err != nil {
 		s.recordClaimedWebhookDeliveryFailure(statusCtx, delivery.ID, err.Error())
+		s.recordWebhookDeliveryMetric(WebhookDeliveryFailed, trigger, time.Since(startedAt))
 		return models.WebhookDelivery{}, err
 	}
 	if !found || strings.TrimSpace(client.WebhookURL) == "" {
 		s.recordClaimedWebhookDeliveryFailure(statusCtx, delivery.ID, "Webhook client not found")
+		s.recordWebhookDeliveryMetric(WebhookDeliveryFailed, trigger, time.Since(startedAt))
 		return models.WebhookDelivery{}, apperrors.RecordNotFound("Webhook client not found")
 	}
 
 	var payload webhooks.FinalDecisionPayload
 	if err := json.Unmarshal([]byte(delivery.Payload), &payload); err != nil {
 		s.recordClaimedWebhookDeliveryFailure(statusCtx, delivery.ID, err.Error())
+		s.recordWebhookDeliveryMetric(WebhookDeliveryFailed, trigger, time.Since(startedAt))
 		return models.WebhookDelivery{}, apperrors.Internal("failed to decode webhook payload").WithDetails(err.Error())
 	}
 	payload.DeliveryID = delivery.DeliveryID
 
 	status, httpStatus, errorMessage := deliverFinalDecision(ctx, s.webhookDispatcher, client, payload)
+	s.recordWebhookDeliveryMetric(status, trigger, time.Since(startedAt))
 	updated, err := s.repository.UpdateWebhookDeliveryAttempt(
 		statusCtx,
 		delivery.ID,
@@ -1141,7 +1193,9 @@ func (s *Service) dispatchFinalDecision(
 		return
 	}
 
+	deliveryStartedAt := time.Now()
 	status, httpStatus, errorMessage := deliverFinalDecision(attemptCtx, s.webhookDispatcher, client, payload)
+	s.recordWebhookDeliveryMetric(status, webhookTriggerInitial, time.Since(deliveryStartedAt))
 	delivery := &models.WebhookDelivery{
 		DeliveryID:    payload.DeliveryID,
 		RequestID:     stored.Request.RequestID,

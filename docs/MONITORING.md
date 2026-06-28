@@ -59,6 +59,19 @@ docker-compose -f docker-compose.monitoring.yml ps
 - `detection_results_total`: 检测结果统计
 - `detection_confidence`: 检测置信度分布
 
+### 文本审核指标
+
+- `moderation_checks_total`: 成功完成的文本审核请求数，标签为 `decision`、`provider`、`client_type`。
+- `moderation_check_duration_seconds`: 成功文本审核耗时，标签为 `decision`、`provider`、`client_type`。
+- `review_cases_finalized_total`: 人工复核完成数，标签为 `status`、`final_decision`。
+- `review_case_latency_seconds`: 从复核记录创建到人工完成的耗时，标签为 `status`、`final_decision`。
+- `webhook_deliveries_total`: 最终决策 Webhook 投递尝试数，标签为 `status`、`trigger`。
+- `webhook_delivery_duration_seconds`: 最终决策 Webhook 投递耗时，标签为 `status`、`trigger`。
+- `webhook_retry_batches_total`: 后台 Webhook 自动重试批次数，标签为 `result`。
+- `webhook_retry_batch_deliveries_total`: 后台 Webhook 自动重试批次处理的 delivery 记录数，标签为 `result`。
+
+Webhook 指标只使用固定枚举标签，例如 `succeeded`、`failed`、`initial`、`manual_retry`、`automatic_retry`、`completed` 和 `skipped`；不要把请求 ID、客户端 ID、URL、域名或原始错误文本放入 Prometheus 标签。
+
 ### 数据库指标
 
 - `db_queries_total`: 数据库查询数
