@@ -51,7 +51,10 @@ func (h *HealthHandler) Health(c *gin.Context) {
 	}
 
 	// Check RabbitMQ
-	if err := h.rabbitMQManager.HealthCheck(); err != nil {
+	if h.rabbitMQManager == nil {
+		services["rabbitmq"] = "unhealthy: RabbitMQ manager is not configured"
+		overallStatus = "unhealthy"
+	} else if err := h.rabbitMQManager.HealthCheck(); err != nil {
 		services["rabbitmq"] = "unhealthy: " + err.Error()
 		overallStatus = "unhealthy"
 	} else {
