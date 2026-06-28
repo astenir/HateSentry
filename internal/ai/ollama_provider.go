@@ -3,9 +3,11 @@ package ai
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"hatesentry/internal/config"
 	"hatesentry/internal/errors"
+	"hatesentry/internal/moderation"
 	"net/url"
 	"strings"
 	"time"
@@ -28,6 +30,52 @@ func NewOllamaProvider(cfg *config.OllamaConfig) *OllamaProvider {
 		cfg:    cfg,
 		model:  cfg.Model,
 	}
+}
+
+// AnalyzeTextModeration classifies text for the moderation gateway.
+func (p *OllamaProvider) AnalyzeTextModeration(
+	ctx context.Context,
+	content string,
+) (moderation.ProviderSuggestion, moderation.ProviderInfo, error) {
+	messages := []api.Message{
+		{
+			Role:    "system",
+			Content: textModerationSystemPrompt,
+		},
+		{
+			Role:    "user",
+			Content: buildTextModerationPrompt(content),
+		},
+	}
+
+	stream := false
+	var rawOutput strings.Builder
+	err := p.client.Chat(ctx, &api.ChatRequest{
+		Model:    p.model,
+		Messages: messages,
+		Stream:   &stream,
+		Format:   json.RawMessage(`"json"`),
+		Options:  p.buildChatOptions(),
+	}, func(resp api.ChatResponse) error {
+		appendOllamaChatContent(&rawOutput, resp)
+		return nil
+	})
+	if err != nil {
+		return moderation.ProviderSuggestion{}, moderation.ProviderInfo{}, errors.ExternalServiceError(err, "failed to create moderation completion")
+	}
+	if strings.TrimSpace(rawOutput.String()) == "" {
+		return moderation.ProviderSuggestion{}, moderation.ProviderInfo{}, errors.ExternalServiceError(nil, "no response from Ollama")
+	}
+
+	suggestion, err := parseModerationProviderOutput(rawOutput.String())
+	if err != nil {
+		return moderation.ProviderSuggestion{}, moderation.ProviderInfo{}, err
+	}
+
+	return suggestion, moderation.ProviderInfo{
+		Provider: "ollama",
+		Model:    p.model,
+	}, nil
 }
 
 // buildChatOptions builds common chat request options

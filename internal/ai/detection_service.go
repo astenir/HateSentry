@@ -7,6 +7,8 @@ import (
 	"hatesentry/internal/config"
 	"hatesentry/internal/errors"
 	"hatesentry/internal/models"
+	"hatesentry/internal/moderation"
+	"strings"
 )
 
 // Provider defines the interface for AI providers
@@ -15,6 +17,10 @@ type Provider interface {
 	DetectHateSpeechWithImage(ctx context.Context, req *DetectionRequest, imageData []byte) (*DetectionResponse, error)
 	DetectHateSpeechWithStreaming(ctx context.Context, req *DetectionRequest, callback func(event *StreamDetectionEvent)) (*DetectionResponse, error)
 	GetModel() string
+}
+
+type textModerationProvider interface {
+	AnalyzeTextModeration(ctx context.Context, content string) (moderation.ProviderSuggestion, moderation.ProviderInfo, error)
 }
 
 // DetectionService manages hate speech detection
@@ -43,6 +49,26 @@ func NewDetectionService(cfg *config.AIConfig, detectionCfg *config.DetectionCon
 		provider: provider,
 		cfg:      detectionCfg,
 	}, nil
+}
+
+// AnalyzeText classifies text using the configured provider and returns a normalized moderation suggestion.
+func (s *DetectionService) AnalyzeText(
+	ctx context.Context,
+	content string,
+) (moderation.ProviderSuggestion, moderation.ProviderInfo, error) {
+	if s == nil || s.provider == nil {
+		return moderation.ProviderSuggestion{}, moderation.ProviderInfo{}, errors.ConfigurationError("AI provider is not configured")
+	}
+	if strings.TrimSpace(content) == "" {
+		return moderation.ProviderSuggestion{}, moderation.ProviderInfo{}, errors.ValidationError("content is required")
+	}
+
+	provider, ok := s.provider.(textModerationProvider)
+	if !ok {
+		return moderation.ProviderSuggestion{}, moderation.ProviderInfo{}, errors.ConfigurationError("AI provider does not support text moderation")
+	}
+
+	return provider.AnalyzeTextModeration(ctx, content)
 }
 
 // Detect performs hate speech detection

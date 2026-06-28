@@ -35,6 +35,12 @@ type ProviderSuggestion struct {
 	RawOutput string
 }
 
+// ProviderInfo records the AI backend used to produce a suggestion.
+type ProviderInfo struct {
+	Provider string
+	Model    string
+}
+
 // DecisionResult is the service-owned policy decision derived from a provider suggestion.
 type DecisionResult struct {
 	Decision      Decision

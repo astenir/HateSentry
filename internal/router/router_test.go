@@ -40,6 +40,7 @@ func TestSetupRegistersCoreRoutes(t *testing.T) {
 		"POST /api/v1/detection/detect",
 		"GET /api/v1/detection/result/:id",
 		"GET /api/v1/detection/history",
+		"POST /api/v1/moderation/check",
 		"GET /metrics",
 	}
 

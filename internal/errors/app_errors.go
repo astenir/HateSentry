@@ -10,49 +10,49 @@ type ErrorCode string
 
 const (
 	// General errors (1000-1999)
-	ErrCodeInternalError    ErrorCode = "INTERNAL_ERROR"
-	ErrCodeBadRequest      ErrorCode = "BAD_REQUEST"
-	ErrCodeUnauthorized     ErrorCode = "UNAUTHORIZED"
-	ErrCodeForbidden       ErrorCode = "FORBIDDEN"
-	ErrCodeNotFound        ErrorCode = "NOT_FOUND"
-	ErrCodeConflict       ErrorCode = "CONFLICT"
-	ErrCodeValidation      ErrorCode = "VALIDATION_ERROR"
-	ErrCodeRateLimit      ErrorCode = "RATE_LIMIT_EXCEEDED"
+	ErrCodeInternalError ErrorCode = "INTERNAL_ERROR"
+	ErrCodeBadRequest    ErrorCode = "BAD_REQUEST"
+	ErrCodeUnauthorized  ErrorCode = "UNAUTHORIZED"
+	ErrCodeForbidden     ErrorCode = "FORBIDDEN"
+	ErrCodeNotFound      ErrorCode = "NOT_FOUND"
+	ErrCodeConflict      ErrorCode = "CONFLICT"
+	ErrCodeValidation    ErrorCode = "VALIDATION_ERROR"
+	ErrCodeRateLimit     ErrorCode = "RATE_LIMIT_EXCEEDED"
 
 	// Authentication errors (2000-2999)
-	ErrCodeInvalidToken   ErrorCode = "INVALID_TOKEN"
-	ErrCodeExpiredToken   ErrorCode = "EXPIRED_TOKEN"
-	ErrCodeInvalidCreds   ErrorCode = "INVALID_CREDENTIALS"
-	ErrCodeAccountLocked  ErrorCode = "ACCOUNT_LOCKED"
+	ErrCodeInvalidToken    ErrorCode = "INVALID_TOKEN"
+	ErrCodeExpiredToken    ErrorCode = "EXPIRED_TOKEN"
+	ErrCodeInvalidCreds    ErrorCode = "INVALID_CREDENTIALS"
+	ErrCodeAccountLocked   ErrorCode = "ACCOUNT_LOCKED"
 	ErrCodeAccountInactive ErrorCode = "ACCOUNT_INACTIVE"
 
 	// Database errors (3000-3999)
-	ErrCodeDatabaseError      ErrorCode = "DATABASE_ERROR"
-	ErrCodeRecordNotFound     ErrorCode = "RECORD_NOT_FOUND"
-	ErrCodeDuplicateRecord    ErrorCode = "DUPLICATE_RECORD"
-	ErrCodeConnectionError   ErrorCode = "DATABASE_CONNECTION_ERROR"
+	ErrCodeDatabaseError   ErrorCode = "DATABASE_ERROR"
+	ErrCodeRecordNotFound  ErrorCode = "RECORD_NOT_FOUND"
+	ErrCodeDuplicateRecord ErrorCode = "DUPLICATE_RECORD"
+	ErrCodeConnectionError ErrorCode = "DATABASE_CONNECTION_ERROR"
 
 	// Detection errors (4000-4999)
-	ErrCodeDetectionFailed    ErrorCode = "DETECTION_FAILED"
-	ErrCodeContentRequired    ErrorCode = "CONTENT_REQUIRED"
-	ErrCodeImageRequired     ErrorCode = "IMAGE_REQUIRED"
-	ErrCodeInvalidContent    ErrorCode = "INVALID_CONTENT"
-	ErrCodeAIProviderError   ErrorCode = "AI_PROVIDER_ERROR"
-	ErrCodeModelUnavailable  ErrorCode = "MODEL_UNAVAILABLE"
+	ErrCodeDetectionFailed  ErrorCode = "DETECTION_FAILED"
+	ErrCodeContentRequired  ErrorCode = "CONTENT_REQUIRED"
+	ErrCodeImageRequired    ErrorCode = "IMAGE_REQUIRED"
+	ErrCodeInvalidContent   ErrorCode = "INVALID_CONTENT"
+	ErrCodeAIProviderError  ErrorCode = "AI_PROVIDER_ERROR"
+	ErrCodeModelUnavailable ErrorCode = "MODEL_UNAVAILABLE"
 
 	// Cache errors (5000-5999)
 	ErrCodeCacheError       ErrorCode = "CACHE_ERROR"
 	ErrCodeCacheMiss        ErrorCode = "CACHE_MISS"
-	ErrCodeRedisUnavailable  ErrorCode = "REDIS_UNAVAILABLE"
+	ErrCodeRedisUnavailable ErrorCode = "REDIS_UNAVAILABLE"
 
 	// Queue errors (6000-6999)
-	ErrCodeQueueError       ErrorCode = "QUEUE_ERROR"
-	ErrCodeQueueFull        ErrorCode = "QUEUE_FULL"
-	ErrCodePublishFailed    ErrorCode = "PUBLISH_FAILED"
+	ErrCodeQueueError    ErrorCode = "QUEUE_ERROR"
+	ErrCodeQueueFull     ErrorCode = "QUEUE_FULL"
+	ErrCodePublishFailed ErrorCode = "PUBLISH_FAILED"
 
 	// External service errors (7000-7999)
-	ErrCodeExternalService  ErrorCode = "EXTERNAL_SERVICE_ERROR"
-	ErrCodeTimeout         ErrorCode = "TIMEOUT"
+	ErrCodeExternalService    ErrorCode = "EXTERNAL_SERVICE_ERROR"
+	ErrCodeTimeout            ErrorCode = "TIMEOUT"
 	ErrCodeServiceUnavailable ErrorCode = "SERVICE_UNAVAILABLE"
 )
 
@@ -62,7 +62,7 @@ type ErrorSeverity string
 const (
 	SeverityLow      ErrorSeverity = "low"
 	SeverityMedium   ErrorSeverity = "medium"
-	SeverityHigh    ErrorSeverity = "high"
+	SeverityHigh     ErrorSeverity = "high"
 	SeverityCritical ErrorSeverity = "critical"
 )
 
@@ -72,7 +72,7 @@ type AppError struct {
 	Message    string        `json:"message"`
 	Details    string        `json:"details,omitempty"`
 	HTTPStatus int           `json:"-"`
-	Severity   ErrorSeverity  `json:"severity"`
+	Severity   ErrorSeverity `json:"severity"`
 	TraceID    string        `json:"trace_id,omitempty"`
 	Cause      error         `json:"-"`
 }
@@ -93,8 +93,8 @@ func (e *AppError) Unwrap() error {
 // New creates a new application error
 func New(code ErrorCode, message string) *AppError {
 	return &AppError{
-		Code:    code,
-		Message: message,
+		Code:     code,
+		Message:  message,
 		Severity: getSeverity(code),
 	}
 }
@@ -117,11 +117,11 @@ func Wrap(err error, code ErrorCode, message string) *AppError {
 	}
 
 	return &AppError{
-		Code:    code,
-		Message: message,
-		Details: err.Error(),
+		Code:     code,
+		Message:  message,
+		Details:  err.Error(),
 		Severity: getSeverity(code),
-		Cause:   err,
+		Cause:    err,
 	}
 }
 
@@ -262,6 +262,10 @@ func QueueError(err error, message string) *AppError {
 
 // ExternalServiceError creates an external service error
 func ExternalServiceError(err error, message string) *AppError {
+	if err == nil {
+		return New(ErrCodeServiceUnavailable, message).WithHTTPStatus(http.StatusBadGateway)
+	}
+
 	return Wrap(err, ErrCodeServiceUnavailable, message).WithHTTPStatus(http.StatusBadGateway)
 }
 

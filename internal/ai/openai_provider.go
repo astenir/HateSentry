@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"hatesentry/internal/config"
 	"hatesentry/internal/errors"
+	"hatesentry/internal/moderation"
 	"io"
 	"strings"
 	"time"
@@ -14,9 +15,9 @@ import (
 
 // OpenAIProvider implements AI provider using OpenAI API
 type OpenAIProvider struct {
-	client    *openai.Client
-	cfg       *config.OpenAIConfig
-	model     string
+	client *openai.Client
+	cfg    *config.OpenAIConfig
+	model  string
 }
 
 // NewOpenAIProvider creates a new OpenAI provider
@@ -36,6 +37,47 @@ func NewOpenAIProvider(cfg *config.OpenAIConfig) *OpenAIProvider {
 		cfg:    cfg,
 		model:  cfg.Model,
 	}
+}
+
+// AnalyzeTextModeration classifies text for the moderation gateway.
+func (p *OpenAIProvider) AnalyzeTextModeration(
+	ctx context.Context,
+	content string,
+) (moderation.ProviderSuggestion, moderation.ProviderInfo, error) {
+	messages := []openai.ChatCompletionMessage{
+		{
+			Role:    openai.ChatMessageRoleSystem,
+			Content: textModerationSystemPrompt,
+		},
+		{
+			Role:    openai.ChatMessageRoleUser,
+			Content: buildTextModerationPrompt(content),
+		},
+	}
+
+	resp, err := p.client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
+		Model:       p.model,
+		Messages:    messages,
+		MaxTokens:   p.cfg.MaxTokens,
+		Temperature: float32(p.cfg.Temperature),
+	})
+	if err != nil {
+		return moderation.ProviderSuggestion{}, moderation.ProviderInfo{}, errors.ExternalServiceError(err, "failed to create moderation completion")
+	}
+	if len(resp.Choices) == 0 {
+		return moderation.ProviderSuggestion{}, moderation.ProviderInfo{}, errors.ExternalServiceError(nil, "no response from OpenAI")
+	}
+
+	rawOutput := resp.Choices[0].Message.Content
+	suggestion, err := parseModerationProviderOutput(rawOutput)
+	if err != nil {
+		return moderation.ProviderSuggestion{}, moderation.ProviderInfo{}, err
+	}
+
+	return suggestion, moderation.ProviderInfo{
+		Provider: "openai",
+		Model:    p.model,
+	}, nil
 }
 
 // DetectHateSpeech detects hate speech in text
@@ -163,7 +205,7 @@ func (p *OpenAIProvider) DetectHateSpeechWithStreaming(ctx context.Context, req 
 	})
 
 	stream, err := p.client.CreateChatCompletionStream(ctx, openai.ChatCompletionRequest{
-		Model:       p.model,
+		Model: p.model,
 		Messages: []openai.ChatCompletionMessage{
 			{
 				Role:    openai.ChatMessageRoleSystem,

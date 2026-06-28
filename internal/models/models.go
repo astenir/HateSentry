@@ -31,41 +31,75 @@ type DetectionRequest struct {
 	User        User           `gorm:"foreignKey:UserID" json:"user,omitempty"`
 	Content     string         `gorm:"type:text" json:"content"`
 	ImageURL    string         `gorm:"size:500" json:"image_url,omitempty"`
-	ContentType string        `gorm:"size:20" json:"content_type"` // text, image, mixed
+	ContentType string         `gorm:"size:20" json:"content_type"` // text, image, mixed
 	Processed   bool           `gorm:"default:false" json:"processed"`
 	Status      string         `gorm:"size:20;default:'pending'" json:"status"` // pending, processing, completed, failed
 }
 
 // DetectionResult represents a detection result
 type DetectionResult struct {
-	ID               uint           `gorm:"primarykey" json:"id"`
-	CreatedAt        time.Time      `json:"created_at"`
-	UpdatedAt        time.Time      `json:"updated_at"`
-	DeletedAt        gorm.DeletedAt `gorm:"index" json:"-"`
-	RequestID        string         `gorm:"index;size:64" json:"request_id"`
-	IsHateSpeech     bool           `gorm:"not null" json:"is_hate_speech"`
-	Confidence       float64        `gorm:"not null" json:"confidence"`
-	Categories       string         `gorm:"type:text" json:"categories"` // JSON array
-	Explanation      string         `gorm:"type:text" json:"explanation"`
-	Model            string         `gorm:"size:50" json:"model"`
-	ProcessingTime   int64          `gorm:"default:0" json:"processing_time"` // milliseconds
-	PromptUsed       string         `gorm:"type:text" json:"prompt_used,omitempty"`
-	RawResponse      string         `gorm:"type:longtext" json:"raw_response,omitempty"`
+	ID             uint           `gorm:"primarykey" json:"id"`
+	CreatedAt      time.Time      `json:"created_at"`
+	UpdatedAt      time.Time      `json:"updated_at"`
+	DeletedAt      gorm.DeletedAt `gorm:"index" json:"-"`
+	RequestID      string         `gorm:"index;size:64" json:"request_id"`
+	IsHateSpeech   bool           `gorm:"not null" json:"is_hate_speech"`
+	Confidence     float64        `gorm:"not null" json:"confidence"`
+	Categories     string         `gorm:"type:text" json:"categories"` // JSON array
+	Explanation    string         `gorm:"type:text" json:"explanation"`
+	Model          string         `gorm:"size:50" json:"model"`
+	ProcessingTime int64          `gorm:"default:0" json:"processing_time"` // milliseconds
+	PromptUsed     string         `gorm:"type:text" json:"prompt_used,omitempty"`
+	RawResponse    string         `gorm:"type:longtext" json:"raw_response,omitempty"`
+}
+
+// ModerationRequest stores the original text moderation request for auditability.
+type ModerationRequest struct {
+	ID         uint           `gorm:"primarykey" json:"id"`
+	CreatedAt  time.Time      `json:"created_at"`
+	UpdatedAt  time.Time      `json:"updated_at"`
+	DeletedAt  gorm.DeletedAt `gorm:"index" json:"-"`
+	RequestID  string         `gorm:"uniqueIndex;size:64;not null" json:"request_id"`
+	UserID     uint           `gorm:"not null;index" json:"user_id"`
+	User       User           `gorm:"foreignKey:UserID" json:"user,omitempty"`
+	Content    string         `gorm:"type:text;not null" json:"content"`
+	Source     string         `gorm:"size:50;index" json:"source"`
+	ExternalID string         `gorm:"size:128;index" json:"external_id,omitempty"`
+	ActorID    string         `gorm:"size:128;index" json:"actor_id,omitempty"`
+	Status     string         `gorm:"size:20;index;default:'completed'" json:"status"`
+}
+
+// ModerationResult stores the provider suggestion and service-owned decision.
+type ModerationResult struct {
+	ID            uint           `gorm:"primarykey" json:"id"`
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
+	DeletedAt     gorm.DeletedAt `gorm:"index" json:"-"`
+	RequestID     string         `gorm:"uniqueIndex;size:64;not null" json:"request_id"`
+	UserID        uint           `gorm:"not null;index" json:"user_id"`
+	Provider      string         `gorm:"size:50" json:"provider"`
+	Model         string         `gorm:"size:100" json:"model"`
+	RawOutput     string         `gorm:"type:longtext" json:"-"`
+	RiskScore     float64        `gorm:"not null" json:"risk_score"`
+	Labels        string         `gorm:"type:text" json:"labels"`
+	Decision      string         `gorm:"size:20;not null;index" json:"decision"`
+	Reason        string         `gorm:"type:text" json:"reason"`
+	PolicyVersion string         `gorm:"size:50;not null;index" json:"policy_version"`
 }
 
 // DetectionStats represents detection statistics
 type DetectionStats struct {
-	ID          uint           `gorm:"primarykey" json:"id"`
-	CreatedAt   time.Time      `json:"created_at"`
-	UpdatedAt   time.Time      `json:"updated_at"`
-	DeletedAt   gorm.DeletedAt `gorm:"index" json:"-"`
-	UserID      uint           `gorm:"index" json:"user_id"`
-	Date        time.Time      `gorm:"index" json:"date"`
-	TotalReq    int            `gorm:"default:0" json:"total_requests"`
-	HateSpeech  int            `gorm:"default:0" json:"hate_speech_count"`
-	Benign      int            `gorm:"default:0" json:"benign_count"`
-	AvgConfidence float64     `gorm:"default:0" json:"avg_confidence"`
-	AvgTime     int64          `gorm:"default:0" json:"avg_processing_time"`
+	ID            uint           `gorm:"primarykey" json:"id"`
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
+	DeletedAt     gorm.DeletedAt `gorm:"index" json:"-"`
+	UserID        uint           `gorm:"index" json:"user_id"`
+	Date          time.Time      `gorm:"index" json:"date"`
+	TotalReq      int            `gorm:"default:0" json:"total_requests"`
+	HateSpeech    int            `gorm:"default:0" json:"hate_speech_count"`
+	Benign        int            `gorm:"default:0" json:"benign_count"`
+	AvgConfidence float64        `gorm:"default:0" json:"avg_confidence"`
+	AvgTime       int64          `gorm:"default:0" json:"avg_processing_time"`
 }
 
 // AuditLog represents an audit log entry

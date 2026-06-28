@@ -5,6 +5,7 @@ import (
 	"hatesentry/internal/auth"
 	"hatesentry/internal/cache"
 	"hatesentry/internal/handlers"
+	"hatesentry/internal/moderation"
 	"hatesentry/internal/observability"
 	"hatesentry/internal/queue"
 
@@ -14,14 +15,14 @@ import (
 
 // Router represents the HTTP router
 type Router struct {
-	engine          *gin.Engine
+	engine           *gin.Engine
 	detectionService *ai.DetectionService
-	publisher       queue.Publisher
+	publisher        queue.Publisher
 	rabbitMQManager  *queue.RabbitMQManager
-	cache           *cache.DetectionCache
-	rateLimiter     *cache.RateLimiter
-	jwtManager      *auth.JWTManager
-	db              *gorm.DB
+	cache            *cache.DetectionCache
+	rateLimiter      *cache.RateLimiter
+	jwtManager       *auth.JWTManager
+	db               *gorm.DB
 }
 
 // NewRouter creates a new router
@@ -35,14 +36,14 @@ func NewRouter(
 	jwtManager *auth.JWTManager,
 ) *Router {
 	return &Router{
-		engine:          gin.New(),
-		db:              db,
+		engine:           gin.New(),
+		db:               db,
 		detectionService: detectionService,
-		publisher:       publisher,
+		publisher:        publisher,
 		rabbitMQManager:  rabbitMQManager,
-		cache:           cache,
-		rateLimiter:     rateLimiter,
-		jwtManager:      jwtManager,
+		cache:            cache,
+		rateLimiter:      rateLimiter,
+		jwtManager:       jwtManager,
 	}
 }
 
@@ -64,6 +65,12 @@ func (r *Router) Setup() *gin.Engine {
 		r.rateLimiter,
 		r.jwtManager,
 	)
+	moderationService := moderation.NewService(
+		r.detectionService,
+		moderation.NewGormRepository(r.db),
+		moderation.DefaultPolicy(),
+	)
+	moderationHandler := handlers.NewModerationHandler(moderationService)
 	healthHandler := handlers.NewHealthHandler(r.rabbitMQManager)
 
 	// Public routes
@@ -92,6 +99,12 @@ func (r *Router) Setup() *gin.Engine {
 			detection.POST("/detect", detectionHandler.Detect)
 			detection.GET("/result/:id", detectionHandler.GetResult)
 			detection.GET("/history", detectionHandler.GetHistory)
+		}
+
+		// Moderation
+		moderation := protected.Group("/moderation")
+		{
+			moderation.POST("/check", moderationHandler.Check)
 		}
 	}
 

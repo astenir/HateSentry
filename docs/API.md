@@ -125,6 +125,62 @@ Authorization: Bearer <token>
 }
 ```
 
+## 内容审核
+
+### 1. 文本审核
+
+提交一段文本，服务会调用当前配置的 AI provider 生成风险建议，再由服务端默认策略生成最终业务决策。
+
+当前接口为同步处理，使用 JWT 认证；API Key 客户端接入和 webhook 回调仍属于后续集成能力。
+
+**端点**: `POST /moderation/check`
+
+**请求头**:
+```
+Authorization: Bearer <token>
+Content-Type: application/json
+```
+
+**请求体**:
+```json
+{
+  "content": "user submitted text",
+  "source": "comment",
+  "external_id": "comment_123",
+  "actor_id": "user_456"
+}
+```
+
+**字段说明**:
+- `content`: 必填，要审核的文本内容。当前版本只支持文本审核。
+- `source`: 可选，内容来源，例如 `comment`、`forum_post`、`support_ticket`。为空时按 `api` 记录。
+- `external_id`: 可选，外部系统中的内容 ID。
+- `actor_id`: 可选，外部系统中的内容提交者 ID。
+
+**响应** (200 OK):
+```json
+{
+  "request_id": "550e8400-e29b-41d4-a716-446655440000",
+  "decision": "review",
+  "risk_score": 0.6,
+  "labels": ["harassment", "identity_attack"],
+  "reason": "Brief explanation suitable for operators",
+  "policy_version": "default-v1"
+}
+```
+
+**决策说明**:
+- `allow`: 内容可以自动通过。
+- `review`: 内容需要人工复核。
+- `block`: 内容应自动拒绝或隐藏。
+
+默认策略版本为 `default-v1`：
+- `risk_score < 0.4`: `allow`
+- `0.4 <= risk_score < 0.75`: `review`
+- `risk_score >= 0.75`: `block`
+
+接口响应不会返回 provider 原始输出；原始输出仅作为审核记录存储，便于后续审计。
+
 ## 检测
 
 ### 1. 检测仇恨言论

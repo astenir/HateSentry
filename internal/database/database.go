@@ -82,6 +82,8 @@ func AutoMigrate() error {
 		&models.User{},
 		&models.DetectionRequest{},
 		&models.DetectionResult{},
+		&models.ModerationRequest{},
+		&models.ModerationResult{},
 		&models.DetectionStats{},
 		&models.AuditLog{},
 	)
