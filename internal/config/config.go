@@ -219,6 +219,7 @@ func validateConfig(config *Config) error {
 }
 
 func applyEnvironmentOverrides(config *Config) error {
+	overrideString("SERVER_HOST", &config.Server.Host)
 	overrideString("DB_HOST", &config.Database.Host)
 	overrideString("DB_USERNAME", &config.Database.Username)
 	overrideString("DB_PASSWORD", &config.Database.Password)
@@ -247,6 +248,9 @@ func applyEnvironmentOverrides(config *Config) error {
 	overrideString("LOG_FORMAT", &config.Logging.Format)
 	overrideString("LOG_OUTPUT", &config.Logging.Output)
 
+	if err := overridePort("SERVER_PORT", &config.Server.Port); err != nil {
+		return err
+	}
 	if err := overridePort("DB_PORT", &config.Database.Port); err != nil {
 		return err
 	}

@@ -13,6 +13,8 @@ import (
 func TestLoadOverridesComposeEnvironment(t *testing.T) {
 	configPath := writeTestConfig(t)
 
+	t.Setenv("SERVER_HOST", "127.0.0.1")
+	t.Setenv("SERVER_PORT", "18080")
 	t.Setenv("DB_HOST", "mysql")
 	t.Setenv("DB_PORT", "3307")
 	t.Setenv("DB_USERNAME", "compose_user")
@@ -45,6 +47,12 @@ func TestLoadOverridesComposeEnvironment(t *testing.T) {
 		t.Fatalf("Load() error = %v", err)
 	}
 
+	if cfg.Server.Host != "127.0.0.1" {
+		t.Fatalf("Server.Host = %q, want 127.0.0.1", cfg.Server.Host)
+	}
+	if cfg.Server.Port != 18080 {
+		t.Fatalf("Server.Port = %d, want 18080", cfg.Server.Port)
+	}
 	if cfg.Database.Host != "mysql" {
 		t.Fatalf("Database.Host = %q, want mysql", cfg.Database.Host)
 	}
