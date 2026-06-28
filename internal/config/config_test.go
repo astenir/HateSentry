@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/spf13/viper"
 )
 
 func TestLoadOverridesComposeEnvironment(t *testing.T) {
@@ -155,6 +157,32 @@ moderation:
 	}
 	if cfg.Moderation.Policies[1].Version != "lenient-v1" {
 		t.Fatalf("second policy version = %q, want lenient-v1", cfg.Moderation.Policies[1].Version)
+	}
+}
+
+func TestRepositoryDefaultConfigTargetsTextModerationMVP(t *testing.T) {
+	configPath := filepath.Join("..", "..", "config", "config.yaml")
+	loader := viper.New()
+	loader.SetConfigFile(configPath)
+	loader.SetConfigType("yaml")
+
+	if err := loader.ReadInConfig(); err != nil {
+		t.Fatalf("ReadInConfig() error = %v", err)
+	}
+
+	var cfg Config
+	if err := loader.Unmarshal(&cfg); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+
+	if cfg.AI.OpenAI.Model != "gpt-4o-mini" {
+		t.Fatalf("OpenAI default model = %q, want gpt-4o-mini", cfg.AI.OpenAI.Model)
+	}
+	if cfg.AI.Ollama.Model != "llama3" {
+		t.Fatalf("Ollama default model = %q, want llama3", cfg.AI.Ollama.Model)
+	}
+	if cfg.Detection.EnableImageAnalysis {
+		t.Fatal("Detection.EnableImageAnalysis = true, want false for text moderation MVP defaults")
 	}
 }
 

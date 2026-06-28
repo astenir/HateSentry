@@ -457,9 +457,10 @@ ai:
     max_tokens: 1000
     temperature: 0.3
 
-# 检测配置
+# 旧 detection 配置
+# 当前 MVP 主线是 /api/v1/moderation/* 文本审核；图片、批量和异步 detection 路径保留待后续验证。
 detection:
-  enable_image_analysis: true
+  enable_image_analysis: false
   enable_text_analysis: true
   confidence_threshold: 0.7
   async_threshold: 5

@@ -70,18 +70,8 @@ func (s *DetectionService) AnalyzeText(
 
 // Detect performs hate speech detection
 func (s *DetectionService) Detect(ctx context.Context, req *DetectionRequest) (*DetectionResponse, error) {
-	// Validate request content
-	if req.Content == "" && req.ImageURL == "" {
-		return nil, errors.ValidationError("content or image_url must be provided")
-	}
-
-	if !s.cfg.EnableTextAnalysis && !s.cfg.EnableImageAnalysis {
-		return nil, errors.ConfigurationError("both text and image analysis are disabled")
-	}
-
-	// Validate based on content type
-	if req.ContentType == "image" && req.ImageURL == "" {
-		return nil, errors.ValidationError("image_url required for image analysis")
+	if err := s.validateDetectionRequest(req); err != nil {
+		return nil, err
 	}
 
 	return s.provider.DetectHateSpeech(ctx, req)
@@ -98,7 +88,35 @@ func (s *DetectionService) DetectWithImage(ctx context.Context, req *DetectionRe
 
 // DetectWithStreaming performs hate speech detection with streaming
 func (s *DetectionService) DetectWithStreaming(ctx context.Context, req *DetectionRequest, callback func(event *StreamDetectionEvent)) (*DetectionResponse, error) {
+	if err := s.validateDetectionRequest(req); err != nil {
+		return nil, err
+	}
+
 	return s.provider.DetectHateSpeechWithStreaming(ctx, req, callback)
+}
+
+func (s *DetectionService) validateDetectionRequest(req *DetectionRequest) error {
+	if req.Content == "" && req.ImageURL == "" {
+		return errors.ValidationError("content or image_url must be provided")
+	}
+
+	if !s.cfg.EnableTextAnalysis && !s.cfg.EnableImageAnalysis {
+		return errors.ConfigurationError("both text and image analysis are disabled")
+	}
+
+	if req.Content != "" && !s.cfg.EnableTextAnalysis {
+		return errors.ConfigurationError("text analysis is disabled")
+	}
+
+	if req.ImageURL != "" && !s.cfg.EnableImageAnalysis {
+		return errors.ConfigurationError("image analysis is disabled")
+	}
+
+	if req.ContentType == "image" && req.ImageURL == "" {
+		return errors.ValidationError("image_url required for image analysis")
+	}
+
+	return nil
 }
 
 // ConvertToModel converts DetectionResponse to models.DetectionResult
