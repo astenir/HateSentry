@@ -24,6 +24,8 @@ const (
 	maxSourceLength                 = 50
 	maxMetadataLength               = 128
 	maxReviewNotesLen               = 2000
+	maxModerationHistoryListLimit   = 100
+	defaultModerationHistoryLimit   = 50
 	maxWebhookDeliveryListLimit     = 100
 	defaultWebhookDeliveryListLimit = 50
 	webhookDeliveryAttemptTimeout   = 6 * time.Second
@@ -47,6 +49,7 @@ type Repository interface {
 	) error
 	GetResult(ctx context.Context, userID uint, requestID string) (StoredResult, error)
 	FindResultByClientExternalID(ctx context.Context, clientID uint, externalID string) (StoredResult, bool, error)
+	ListHistory(ctx context.Context, filter HistoryFilter) ([]StoredHistoryItem, error)
 	GetClient(ctx context.Context, clientID uint) (models.ClientApplication, bool, error)
 	SaveWebhookDelivery(ctx context.Context, delivery *models.WebhookDelivery) error
 	GetWebhookDelivery(ctx context.Context, deliveryID uint) (models.WebhookDelivery, error)
@@ -94,6 +97,13 @@ type StoredReviewCase struct {
 	Result  models.ModerationResult
 }
 
+// StoredHistoryItem is the repository representation of an operator history row.
+type StoredHistoryItem struct {
+	Request    models.ModerationRequest
+	Result     models.ModerationResult
+	ReviewCase *models.ReviewCase
+}
+
 // StoredStats is the repository representation for moderation operations metrics.
 type StoredStats struct {
 	TotalModerated     int64
@@ -104,6 +114,14 @@ type StoredStats struct {
 	PendingReview      int64
 	Reviewed           int64
 	Mistakes           int64
+}
+
+// HistoryFilter contains validated filters for operator moderation history.
+type HistoryFilter struct {
+	Decision   Decision
+	ClientID   *uint
+	ExternalID string
+	Limit      int
 }
 
 // Service coordinates provider analysis, policy decisions, and persistence.
@@ -171,6 +189,32 @@ type ResultOutput struct {
 	Reason        string    `json:"reason"`
 	PolicyVersion string    `json:"policy_version"`
 	CreatedAt     time.Time `json:"created_at"`
+}
+
+// HistoryItemOutput is the operator view of one moderation history row.
+type HistoryItemOutput struct {
+	RequestID      string       `json:"request_id"`
+	ClientID       *uint        `json:"client_id,omitempty"`
+	Content        string       `json:"content"`
+	Source         string       `json:"source"`
+	ExternalID     string       `json:"external_id,omitempty"`
+	ActorID        string       `json:"actor_id,omitempty"`
+	Status         string       `json:"status"`
+	Provider       string       `json:"provider"`
+	Model          string       `json:"model"`
+	PolicyDecision Decision     `json:"policy_decision"`
+	ReviewStatus   ReviewStatus `json:"review_status,omitempty"`
+	FinalDecision  Decision     `json:"final_decision,omitempty"`
+	RiskScore      float64      `json:"risk_score"`
+	Labels         []string     `json:"labels"`
+	Reason         string       `json:"reason"`
+	PolicyVersion  string       `json:"policy_version"`
+	CreatedAt      time.Time    `json:"created_at"`
+}
+
+// ListHistoryOutput is the operator list response for moderation records.
+type ListHistoryOutput struct {
+	Items []HistoryItemOutput `json:"items"`
 }
 
 // ReviewCaseOutput is the public representation of a review queue item.
@@ -388,6 +432,75 @@ func resultOutputFromStored(stored StoredResult) (ResultOutput, error) {
 		PolicyVersion: stored.Result.PolicyVersion,
 		CreatedAt:     stored.Result.CreatedAt,
 	}, nil
+}
+
+// ListHistory returns recent moderation audit records for an authenticated operator.
+func (s *Service) ListHistory(
+	ctx context.Context,
+	operatorID uint,
+	decision string,
+	clientID string,
+	externalID string,
+	limit string,
+) (ListHistoryOutput, error) {
+	if operatorID == 0 {
+		return ListHistoryOutput{}, apperrors.Unauthorized("User not authenticated")
+	}
+	if s.repository == nil {
+		return ListHistoryOutput{}, apperrors.ConfigurationError("moderation repository is not configured")
+	}
+
+	filter, err := normalizeHistoryFilter(decision, clientID, externalID, limit)
+	if err != nil {
+		return ListHistoryOutput{}, err
+	}
+
+	storedItems, err := s.repository.ListHistory(ctx, filter)
+	if err != nil {
+		return ListHistoryOutput{}, err
+	}
+
+	items := make([]HistoryItemOutput, 0, len(storedItems))
+	for _, stored := range storedItems {
+		item, err := historyItemOutputFromStored(stored)
+		if err != nil {
+			return ListHistoryOutput{}, err
+		}
+		items = append(items, item)
+	}
+
+	return ListHistoryOutput{Items: items}, nil
+}
+
+func historyItemOutputFromStored(stored StoredHistoryItem) (HistoryItemOutput, error) {
+	labels, err := decodeLabels(stored.Result.Labels)
+	if err != nil {
+		return HistoryItemOutput{}, err
+	}
+
+	output := HistoryItemOutput{
+		RequestID:      stored.Request.RequestID,
+		ClientID:       stored.Request.ClientID,
+		Content:        stored.Request.Content,
+		Source:         stored.Request.Source,
+		ExternalID:     stored.Request.ExternalID,
+		ActorID:        stored.Request.ActorID,
+		Status:         stored.Request.Status,
+		Provider:       stored.Result.Provider,
+		Model:          stored.Result.Model,
+		PolicyDecision: Decision(stored.Result.Decision),
+		RiskScore:      stored.Result.RiskScore,
+		Labels:         labels,
+		Reason:         stored.Result.Reason,
+		PolicyVersion:  stored.Result.PolicyVersion,
+		CreatedAt:      stored.Result.CreatedAt,
+	}
+	if stored.ReviewCase != nil {
+		output.ReviewStatus = ReviewStatus(stored.ReviewCase.Status)
+		output.FinalDecision = Decision(stored.ReviewCase.FinalDecision)
+	}
+
+	return output, nil
 }
 
 func checkOutputFromStored(stored StoredResult) (CheckOutput, error) {
@@ -877,6 +990,74 @@ func parseReviewCaseID(caseID string) (uint, error) {
 	return uint(parsed), nil
 }
 
+func normalizeHistoryFilter(
+	decision string,
+	clientID string,
+	externalID string,
+	limit string,
+) (HistoryFilter, error) {
+	normalizedDecision, err := normalizeDecisionFilter(decision)
+	if err != nil {
+		return HistoryFilter{}, err
+	}
+
+	normalizedClientID, err := normalizeOptionalUintFilter(clientID, "client_id")
+	if err != nil {
+		return HistoryFilter{}, err
+	}
+
+	externalID = strings.TrimSpace(externalID)
+	if len(externalID) > maxMetadataLength {
+		return HistoryFilter{}, apperrors.ValidationError(
+			fmt.Sprintf("external_id must not exceed %d characters", maxMetadataLength),
+		)
+	}
+
+	normalizedLimit, err := normalizeListLimit(
+		limit,
+		defaultModerationHistoryLimit,
+		maxModerationHistoryListLimit,
+	)
+	if err != nil {
+		return HistoryFilter{}, err
+	}
+
+	return HistoryFilter{
+		Decision:   normalizedDecision,
+		ClientID:   normalizedClientID,
+		ExternalID: externalID,
+		Limit:      normalizedLimit,
+	}, nil
+}
+
+func normalizeDecisionFilter(decision string) (Decision, error) {
+	decision = strings.TrimSpace(decision)
+	if decision == "" {
+		return "", nil
+	}
+
+	switch Decision(decision) {
+	case DecisionAllow, DecisionReview, DecisionBlock:
+		return Decision(decision), nil
+	default:
+		return "", apperrors.ValidationError("decision must be allow, review, or block")
+	}
+}
+
+func normalizeOptionalUintFilter(value string, field string) (*uint, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+
+	parsed, err := strconv.ParseUint(value, 10, 0)
+	if err != nil || parsed == 0 {
+		return nil, apperrors.ValidationError(field + " must be a positive integer")
+	}
+	normalized := uint(parsed)
+	return &normalized, nil
+}
+
 func parseWebhookDeliveryID(deliveryID string) (uint, error) {
 	deliveryID = strings.TrimSpace(deliveryID)
 	if deliveryID == "" {
@@ -906,18 +1087,22 @@ func normalizeWebhookDeliveryStatusFilter(status string) (WebhookDeliveryStatus,
 }
 
 func normalizeWebhookDeliveryListLimit(limit string) (int, error) {
+	return normalizeListLimit(limit, defaultWebhookDeliveryListLimit, maxWebhookDeliveryListLimit)
+}
+
+func normalizeListLimit(limit string, defaultLimit int, maxLimit int) (int, error) {
 	limit = strings.TrimSpace(limit)
 	if limit == "" {
-		return defaultWebhookDeliveryListLimit, nil
+		return defaultLimit, nil
 	}
 
 	parsed, err := strconv.Atoi(limit)
 	if err != nil || parsed <= 0 {
 		return 0, apperrors.ValidationError("limit must be a positive integer")
 	}
-	if parsed > maxWebhookDeliveryListLimit {
+	if parsed > maxLimit {
 		return 0, apperrors.ValidationError(
-			fmt.Sprintf("limit must not exceed %d", maxWebhookDeliveryListLimit),
+			fmt.Sprintf("limit must not exceed %d", maxLimit),
 		)
 	}
 

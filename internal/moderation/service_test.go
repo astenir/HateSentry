@@ -820,6 +820,152 @@ func TestServiceGetStatsRejectsMissingUser(t *testing.T) {
 	}
 }
 
+func TestServiceListHistory(t *testing.T) {
+	clientID := uint(11)
+	createdAt := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
+	repository := &fakeRepository{
+		historyItems: []StoredHistoryItem{
+			{
+				Request: models.ModerationRequest{
+					RequestID:  "request-123",
+					UserID:     7,
+					ClientID:   &clientID,
+					Content:    "stored content",
+					Source:     "comment",
+					ExternalID: "comment_123",
+					ActorID:    "user_456",
+					Status:     "completed",
+				},
+				Result: models.ModerationResult{
+					RequestID:     "request-123",
+					UserID:        7,
+					ClientID:      &clientID,
+					Provider:      "test-provider",
+					Model:         "test-model",
+					RiskScore:     0.6,
+					Labels:        `["harassment"]`,
+					Decision:      string(DecisionReview),
+					Reason:        "Needs operator review.",
+					PolicyVersion: "default-v1",
+					CreatedAt:     createdAt,
+				},
+				ReviewCase: &models.ReviewCase{
+					RequestID:     "request-123",
+					Status:        string(ReviewStatusApproved),
+					FinalDecision: string(DecisionAllow),
+				},
+			},
+		},
+	}
+	service := NewService(fakeAnalyzer{}, repository, DefaultPolicy())
+
+	output, err := service.ListHistory(context.Background(), 9, "review", "11", " comment_123 ", "25")
+	if err != nil {
+		t.Fatalf("ListHistory() error = %v", err)
+	}
+
+	if repository.historyFilter.Decision != DecisionReview {
+		t.Fatalf("decision filter = %q, want review", repository.historyFilter.Decision)
+	}
+	if repository.historyFilter.ClientID == nil || *repository.historyFilter.ClientID != 11 {
+		t.Fatalf("client id filter = %#v, want 11", repository.historyFilter.ClientID)
+	}
+	if repository.historyFilter.ExternalID != "comment_123" {
+		t.Fatalf("external id filter = %q, want comment_123", repository.historyFilter.ExternalID)
+	}
+	if repository.historyFilter.Limit != 25 {
+		t.Fatalf("limit = %d, want 25", repository.historyFilter.Limit)
+	}
+	if len(output.Items) != 1 {
+		t.Fatalf("items = %d, want 1", len(output.Items))
+	}
+	item := output.Items[0]
+	if item.RequestID != "request-123" {
+		t.Fatalf("RequestID = %q, want request-123", item.RequestID)
+	}
+	if item.PolicyDecision != DecisionReview {
+		t.Fatalf("PolicyDecision = %q, want review", item.PolicyDecision)
+	}
+	if item.ReviewStatus != ReviewStatusApproved {
+		t.Fatalf("ReviewStatus = %q, want approved", item.ReviewStatus)
+	}
+	if item.FinalDecision != DecisionAllow {
+		t.Fatalf("FinalDecision = %q, want allow", item.FinalDecision)
+	}
+	if len(item.Labels) != 1 || item.Labels[0] != "harassment" {
+		t.Fatalf("Labels = %#v, want harassment", item.Labels)
+	}
+}
+
+func TestServiceListHistoryValidatesFilters(t *testing.T) {
+	service := NewService(fakeAnalyzer{}, &fakeRepository{}, DefaultPolicy())
+
+	tests := []struct {
+		name       string
+		operatorID uint
+		decision   string
+		clientID   string
+		externalID string
+		limit      string
+		want       string
+	}{
+		{
+			name:       "missing operator",
+			operatorID: 0,
+			want:       "User not authenticated",
+		},
+		{
+			name:       "invalid decision",
+			operatorID: 9,
+			decision:   "maybe",
+			want:       "decision must be allow, review, or block",
+		},
+		{
+			name:       "invalid client id",
+			operatorID: 9,
+			clientID:   "abc",
+			want:       "client_id must be a positive integer",
+		},
+		{
+			name:       "external id too long",
+			operatorID: 9,
+			externalID: strings.Repeat("a", maxMetadataLength+1),
+			want:       "external_id must not exceed",
+		},
+		{
+			name:       "invalid limit",
+			operatorID: 9,
+			limit:      "0",
+			want:       "limit must be a positive integer",
+		},
+		{
+			name:       "excessive limit",
+			operatorID: 9,
+			limit:      "101",
+			want:       "limit must not exceed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := service.ListHistory(
+				context.Background(),
+				tt.operatorID,
+				tt.decision,
+				tt.clientID,
+				tt.externalID,
+				tt.limit,
+			)
+			if err == nil {
+				t.Fatal("ListHistory() error = nil, want validation error")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("ListHistory() error = %q, want %q", err.Error(), tt.want)
+			}
+		})
+	}
+}
+
 func TestServiceReviewActionsFinalizePendingCase(t *testing.T) {
 	createdAt := time.Date(2026, 6, 28, 11, 0, 0, 0, time.UTC)
 	repository := &fakeRepository{
@@ -1262,6 +1408,8 @@ type fakeRepository struct {
 	claimWebhookDeliveryOnce        bool
 	webhookDeliveryClaimed          bool
 	stored                          StoredResult
+	historyItems                    []StoredHistoryItem
+	historyFilter                   HistoryFilter
 	clientStored                    StoredResult
 	clientResultFound               bool
 	clientResultFoundAfterSave      bool
@@ -1347,6 +1495,17 @@ func (r *fakeRepository) FindResultByClientExternalID(
 		return r.clientStored, true, nil
 	}
 	return r.clientStored, r.clientResultFound, nil
+}
+
+func (r *fakeRepository) ListHistory(
+	ctx context.Context,
+	filter HistoryFilter,
+) ([]StoredHistoryItem, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	r.historyFilter = filter
+	return r.historyItems, nil
 }
 
 func (r *fakeRepository) GetClient(

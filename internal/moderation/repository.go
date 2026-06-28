@@ -130,6 +130,62 @@ func (r *GormRepository) FindResultByClientExternalID(
 	}, true, nil
 }
 
+// ListHistory returns recent moderation records for operator audit views.
+func (r *GormRepository) ListHistory(
+	ctx context.Context,
+	filter HistoryFilter,
+) ([]StoredHistoryItem, error) {
+	if r == nil || r.db == nil {
+		return nil, apperrors.ConfigurationError("moderation database is not configured")
+	}
+
+	db := r.db.WithContext(ctx)
+	query := moderationHistoryQuery(db, filter)
+
+	var results []models.ModerationResult
+	if err := query.Find(&results).Error; err != nil {
+		return nil, apperrors.DatabaseError(err, "failed to list moderation history")
+	}
+	if len(results) == 0 {
+		return []StoredHistoryItem{}, nil
+	}
+
+	requestIDs := make([]string, 0, len(results))
+	for _, result := range results {
+		requestIDs = append(requestIDs, result.RequestID)
+	}
+
+	requestsByID, err := loadModerationRequestsByID(ctx, db, requestIDs)
+	if err != nil {
+		return nil, err
+	}
+	reviewCasesByID, err := loadReviewCasesByRequestID(ctx, db, requestIDs)
+	if err != nil {
+		return nil, err
+	}
+
+	items := make([]StoredHistoryItem, 0, len(results))
+	for _, result := range results {
+		request, found := requestsByID[result.RequestID]
+		if !found {
+			return nil, apperrors.RecordNotFound("Moderation request not found")
+		}
+
+		var reviewCase *models.ReviewCase
+		if foundReviewCase, ok := reviewCasesByID[result.RequestID]; ok {
+			copiedReviewCase := foundReviewCase
+			reviewCase = &copiedReviewCase
+		}
+		items = append(items, StoredHistoryItem{
+			Request:    request,
+			Result:     result,
+			ReviewCase: reviewCase,
+		})
+	}
+
+	return items, nil
+}
+
 // GetClient retrieves an active client application for webhook delivery.
 func (r *GormRepository) GetClient(ctx context.Context, clientID uint) (models.ClientApplication, bool, error) {
 	if r == nil || r.db == nil {
@@ -459,6 +515,66 @@ func userScopedResultQuery(db *gorm.DB, userID uint, requestID string) *gorm.DB 
 
 func clientExternalIDQuery(db *gorm.DB, clientID uint, externalID string) *gorm.DB {
 	return db.Where("client_id = ? AND external_id = ?", clientID, externalID)
+}
+
+func moderationHistoryQuery(db *gorm.DB, filter HistoryFilter) *gorm.DB {
+	query := db.Model(&models.ModerationResult{})
+	if filter.Decision != "" {
+		query = query.Where("moderation_results.decision = ?", string(filter.Decision))
+	}
+	if filter.ClientID != nil {
+		query = query.Where("moderation_results.client_id = ?", *filter.ClientID)
+	}
+	if filter.ExternalID != "" {
+		query = query.Joins(
+			"JOIN moderation_requests ON moderation_requests.request_id = moderation_results.request_id AND moderation_requests.deleted_at IS NULL",
+		).Where("moderation_requests.external_id = ?", filter.ExternalID)
+	}
+	if filter.Limit > 0 {
+		query = query.Limit(filter.Limit)
+	}
+
+	return query.Order("moderation_results.created_at DESC")
+}
+
+func loadModerationRequestsByID(
+	ctx context.Context,
+	db *gorm.DB,
+	requestIDs []string,
+) (map[string]models.ModerationRequest, error) {
+	var requests []models.ModerationRequest
+	if err := db.WithContext(ctx).
+		Where("request_id IN ?", requestIDs).
+		Find(&requests).Error; err != nil {
+		return nil, apperrors.DatabaseError(err, "failed to load moderation requests")
+	}
+
+	requestsByID := make(map[string]models.ModerationRequest, len(requests))
+	for _, request := range requests {
+		requestsByID[request.RequestID] = request
+	}
+
+	return requestsByID, nil
+}
+
+func loadReviewCasesByRequestID(
+	ctx context.Context,
+	db *gorm.DB,
+	requestIDs []string,
+) (map[string]models.ReviewCase, error) {
+	var reviewCases []models.ReviewCase
+	if err := db.WithContext(ctx).
+		Where("request_id IN ?", requestIDs).
+		Find(&reviewCases).Error; err != nil {
+		return nil, apperrors.DatabaseError(err, "failed to load review cases")
+	}
+
+	reviewCasesByID := make(map[string]models.ReviewCase, len(reviewCases))
+	for _, reviewCase := range reviewCases {
+		reviewCasesByID[reviewCase.RequestID] = reviewCase
+	}
+
+	return reviewCasesByID, nil
 }
 
 func isDuplicateKeyError(err error) bool {

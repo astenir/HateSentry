@@ -295,6 +295,50 @@ Authorization: Bearer <token>
 }
 ```
 
+### 3. 管理端查询最近审核历史
+
+管理员可以查询最近的审核记录，用于运营审计和排查。该接口只返回有界列表，不是完整导出接口；响应不会返回 provider 原始输出。
+
+**端点**: `GET /admin/moderation/results?decision=review&client_id=11&external_id=comment_123&limit=50`
+
+**请求头**:
+```
+Authorization: Bearer <admin-token>
+```
+
+**查询参数**:
+- `decision`: 可选，支持 `allow`、`review`、`block`。
+- `client_id`: 可选，外部客户端 ID。
+- `external_id`: 可选，外部系统内容 ID，最长 128 字符。
+- `limit`: 可选，默认 50，最大 100。
+
+**响应** (200 OK):
+```json
+{
+  "items": [
+    {
+      "request_id": "550e8400-e29b-41d4-a716-446655440000",
+      "client_id": 11,
+      "content": "user submitted text",
+      "source": "comment",
+      "external_id": "comment_123",
+      "actor_id": "user_456",
+      "status": "completed",
+      "provider": "openai",
+      "model": "gpt-4",
+      "policy_decision": "review",
+      "review_status": "approved",
+      "final_decision": "allow",
+      "risk_score": 0.6,
+      "labels": ["harassment"],
+      "reason": "Brief explanation suitable for operators",
+      "policy_version": "default-v1",
+      "created_at": "2026-06-28T10:30:00Z"
+    }
+  ]
+}
+```
+
 ## 人工复核
 
 当文本审核的服务端策略决策为 `review` 时，系统会自动创建一条复核记录。复核记录保存人工最终决策，不会覆盖原始 AI 建议或服务端策略决策。

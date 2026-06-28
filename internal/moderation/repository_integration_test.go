@@ -398,6 +398,158 @@ func TestGormRepositoryGetStatsIntegration(t *testing.T) {
 	assertStatsDelta(t, "Mistakes", stats.Mistakes, baseline.Mistakes, 1)
 }
 
+func TestGormRepositoryListHistoryIntegration(t *testing.T) {
+	dsn := os.Getenv("HATESENTRY_TEST_DSN")
+	if strings.TrimSpace(dsn) == "" {
+		t.Skip("HATESENTRY_TEST_DSN is required for integration repository tests")
+	}
+
+	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+	if err := db.AutoMigrate(
+		&models.User{},
+		&models.ClientApplication{},
+		&models.ModerationRequest{},
+		&models.ModerationResult{},
+		&models.ReviewCase{},
+	); err != nil {
+		t.Fatalf("auto migrate test database: %v", err)
+	}
+
+	repository := NewGormRepository(db)
+	ctx := context.Background()
+	prefix := uuid.New().String()
+	user := createIntegrationUser(t, ctx, db, "history")
+	client := models.ClientApplication{
+		UserID:       user.ID,
+		Name:         "History Test",
+		APIKeyHash:   uuid.New().String(),
+		APIKeyPrefix: "hs_hist",
+		Status:       "active",
+	}
+	if err := db.WithContext(ctx).Create(&client).Error; err != nil {
+		t.Fatalf("create client application: %v", err)
+	}
+
+	t.Cleanup(func() {
+		db.Unscoped().Where("request_id LIKE ?", prefix+"%").Delete(&models.ReviewCase{})
+		db.Unscoped().Where("request_id LIKE ?", prefix+"%").Delete(&models.ModerationResult{})
+		db.Unscoped().Where("request_id LIKE ?", prefix+"%").Delete(&models.ModerationRequest{})
+		db.Unscoped().Delete(&models.ClientApplication{}, client.ID)
+		db.Unscoped().Delete(&models.User{}, user.ID)
+	})
+
+	matchingRequestID := prefix + "-matching"
+	filteredRequestID := prefix + "-filtered"
+	matchingRequest := &models.ModerationRequest{
+		RequestID:  matchingRequestID,
+		UserID:     user.ID,
+		ClientID:   &client.ID,
+		Content:    "history review content",
+		Source:     "comment",
+		ExternalID: "comment_123",
+		ActorID:    "user_456",
+		Status:     "completed",
+	}
+	matchingResult := &models.ModerationResult{
+		RequestID:     matchingRequestID,
+		UserID:        user.ID,
+		ClientID:      &client.ID,
+		Provider:      "test-provider",
+		Model:         "test-model",
+		RawOutput:     `{"risk_score":0.6}`,
+		RiskScore:     0.6,
+		Labels:        `["harassment"]`,
+		Decision:      string(DecisionReview),
+		Reason:        "Needs operator review.",
+		PolicyVersion: "default-v1",
+	}
+	reviewerID := uint(99)
+	reviewCase := &models.ReviewCase{
+		RequestID:     matchingRequestID,
+		UserID:        user.ID,
+		ClientID:      &client.ID,
+		Status:        string(ReviewStatusApproved),
+		ReviewerID:    &reviewerID,
+		FinalDecision: string(DecisionAllow),
+	}
+	if err := db.WithContext(ctx).Create(matchingRequest).Error; err != nil {
+		t.Fatalf("create matching request: %v", err)
+	}
+	if err := db.WithContext(ctx).Create(matchingResult).Error; err != nil {
+		t.Fatalf("create matching result: %v", err)
+	}
+	if err := db.WithContext(ctx).Create(reviewCase).Error; err != nil {
+		t.Fatalf("create matching review case: %v", err)
+	}
+
+	filteredRequest := &models.ModerationRequest{
+		RequestID:  filteredRequestID,
+		UserID:     user.ID,
+		ClientID:   &client.ID,
+		Content:    "history block content",
+		Source:     "comment",
+		ExternalID: "comment_999",
+		Status:     "completed",
+	}
+	filteredResult := &models.ModerationResult{
+		RequestID:     filteredRequestID,
+		UserID:        user.ID,
+		ClientID:      &client.ID,
+		Provider:      "test-provider",
+		Model:         "test-model",
+		RiskScore:     0.9,
+		Labels:        `["hate"]`,
+		Decision:      string(DecisionBlock),
+		Reason:        "Policy threshold exceeded.",
+		PolicyVersion: "default-v1",
+	}
+	if err := db.WithContext(ctx).Create(filteredRequest).Error; err != nil {
+		t.Fatalf("create filtered request: %v", err)
+	}
+	if err := db.WithContext(ctx).Create(filteredResult).Error; err != nil {
+		t.Fatalf("create filtered result: %v", err)
+	}
+
+	items, err := repository.ListHistory(ctx, HistoryFilter{
+		Decision:   DecisionReview,
+		ClientID:   &client.ID,
+		ExternalID: "comment_123",
+		Limit:      10,
+	})
+	if err != nil {
+		t.Fatalf("ListHistory() error = %v", err)
+	}
+
+	if len(items) != 1 {
+		t.Fatalf("history item count = %d, want 1", len(items))
+	}
+	item := items[0]
+	if item.Request.RequestID != matchingRequestID {
+		t.Fatalf("RequestID = %q, want %q", item.Request.RequestID, matchingRequestID)
+	}
+	if item.Request.Content != "history review content" {
+		t.Fatalf("Content = %q, want history review content", item.Request.Content)
+	}
+	if item.Result.Decision != string(DecisionReview) {
+		t.Fatalf("Decision = %q, want review", item.Result.Decision)
+	}
+	if item.Result.Labels != `["harassment"]` {
+		t.Fatalf("Labels = %q, want harassment", item.Result.Labels)
+	}
+	if item.ReviewCase == nil {
+		t.Fatal("ReviewCase = nil, want approved review case")
+	}
+	if item.ReviewCase.Status != string(ReviewStatusApproved) {
+		t.Fatalf("ReviewCase.Status = %q, want approved", item.ReviewCase.Status)
+	}
+	if item.ReviewCase.FinalDecision != string(DecisionAllow) {
+		t.Fatalf("ReviewCase.FinalDecision = %q, want allow", item.ReviewCase.FinalDecision)
+	}
+}
+
 func containsReviewCase(cases []StoredReviewCase, requestID string) bool {
 	for _, reviewCase := range cases {
 		if reviewCase.Case.RequestID == requestID {

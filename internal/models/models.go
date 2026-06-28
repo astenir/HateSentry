@@ -92,19 +92,19 @@ type ModerationRequest struct {
 // ModerationResult stores the provider suggestion and service-owned decision.
 type ModerationResult struct {
 	ID            uint              `gorm:"primarykey" json:"id"`
-	CreatedAt     time.Time         `json:"created_at"`
+	CreatedAt     time.Time         `gorm:"index;index:idx_moderation_result_decision_created,priority:2;index:idx_moderation_result_client_created,priority:2" json:"created_at"`
 	UpdatedAt     time.Time         `json:"updated_at"`
 	DeletedAt     gorm.DeletedAt    `gorm:"index" json:"-"`
 	RequestID     string            `gorm:"uniqueIndex;size:64;not null" json:"request_id"`
 	UserID        uint              `gorm:"not null;index" json:"user_id"`
-	ClientID      *uint             `gorm:"index" json:"client_id,omitempty"`
+	ClientID      *uint             `gorm:"index;index:idx_moderation_result_client_created,priority:1" json:"client_id,omitempty"`
 	Client        ClientApplication `gorm:"foreignKey:ClientID" json:"client,omitempty"`
 	Provider      string            `gorm:"size:50" json:"provider"`
 	Model         string            `gorm:"size:100" json:"model"`
 	RawOutput     string            `gorm:"type:longtext" json:"-"`
 	RiskScore     float64           `gorm:"not null" json:"risk_score"`
 	Labels        string            `gorm:"type:text" json:"labels"`
-	Decision      string            `gorm:"size:20;not null;index" json:"decision"`
+	Decision      string            `gorm:"size:20;not null;index;index:idx_moderation_result_decision_created,priority:1" json:"decision"`
 	Reason        string            `gorm:"type:text" json:"reason"`
 	PolicyVersion string            `gorm:"size:50;not null;index" json:"policy_version"`
 }

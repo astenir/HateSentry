@@ -241,6 +241,95 @@ func TestModerationHandlerGetResultRequiresUser(t *testing.T) {
 	}
 }
 
+func TestModerationHandlerListHistory(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	clientID := uint(11)
+	repository := &moderationHandlerRepository{
+		historyItems: []moderation.StoredHistoryItem{
+			{
+				Request: models.ModerationRequest{
+					RequestID:  "request-123",
+					UserID:     42,
+					ClientID:   &clientID,
+					Content:    "stored content",
+					Source:     "comment",
+					ExternalID: "comment_123",
+					ActorID:    "user_456",
+					Status:     "completed",
+				},
+				Result: models.ModerationResult{
+					RequestID:     "request-123",
+					UserID:        42,
+					ClientID:      &clientID,
+					Provider:      "test-provider",
+					Model:         "test-model",
+					RawOutput:     `{"risk_score":0.6,"labels":["harassment"],"reason":"Contains abusive language."}`,
+					RiskScore:     0.6,
+					Labels:        `["harassment"]`,
+					Decision:      string(moderation.DecisionReview),
+					Reason:        "Needs operator review.",
+					PolicyVersion: "default-v1",
+					CreatedAt:     time.Date(2026, 6, 28, 10, 30, 0, 0, time.UTC),
+				},
+				ReviewCase: &models.ReviewCase{
+					RequestID:     "request-123",
+					Status:        string(moderation.ReviewStatusApproved),
+					FinalDecision: string(moderation.DecisionAllow),
+				},
+			},
+		},
+	}
+	handler := NewModerationHandler(moderation.NewService(
+		moderationHandlerAnalyzer{},
+		repository,
+		moderation.DefaultPolicy(),
+	))
+
+	engine := gin.New()
+	engine.GET("/api/v1/admin/moderation/results", func(c *gin.Context) {
+		c.Set(auth.UserContextKey, &auth.Claims{
+			UserID:   42,
+			Username: "reviewer",
+			Role:     "admin",
+		})
+		handler.ListHistory(c)
+	})
+
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/admin/moderation/results?decision=review&client_id=11&external_id=comment_123&limit=10",
+		nil,
+	)
+	recorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "raw_output") {
+		t.Fatalf("response leaked raw output: %s", recorder.Body.String())
+	}
+
+	var response moderation.ListHistoryOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(response.Items) != 1 {
+		t.Fatalf("items = %d, want 1", len(response.Items))
+	}
+	if response.Items[0].PolicyDecision != moderation.DecisionReview {
+		t.Fatalf("PolicyDecision = %q, want review", response.Items[0].PolicyDecision)
+	}
+	if response.Items[0].FinalDecision != moderation.DecisionAllow {
+		t.Fatalf("FinalDecision = %q, want allow", response.Items[0].FinalDecision)
+	}
+	if repository.historyFilter.Decision != moderation.DecisionReview {
+		t.Fatalf("decision filter = %q, want review", repository.historyFilter.Decision)
+	}
+}
+
 func TestModerationHandlerListReviewCases(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -609,6 +698,8 @@ type moderationHandlerRepository struct {
 	webhookDelivery       models.WebhookDelivery
 	webhookDeliveries     []models.WebhookDelivery
 	stored                moderation.StoredResult
+	historyItems          []moderation.StoredHistoryItem
+	historyFilter         moderation.HistoryFilter
 	reviewCases           []moderation.StoredReviewCase
 	finalized             moderation.StoredReviewCase
 	stats                 moderation.StoredStats
@@ -659,6 +750,14 @@ func (r *moderationHandlerRepository) FindResultByClientExternalID(
 	externalID string,
 ) (moderation.StoredResult, bool, error) {
 	return moderation.StoredResult{}, false, nil
+}
+
+func (r *moderationHandlerRepository) ListHistory(
+	ctx context.Context,
+	filter moderation.HistoryFilter,
+) ([]moderation.StoredHistoryItem, error) {
+	r.historyFilter = filter
+	return r.historyItems, nil
 }
 
 func (r *moderationHandlerRepository) GetClient(

@@ -95,6 +95,40 @@ func TestClientExternalIDQueryFiltersByClientAndExternalID(t *testing.T) {
 	}
 }
 
+func TestModerationHistoryQueryFiltersAndOrders(t *testing.T) {
+	db := openDryRunDB(t)
+	clientID := uint(11)
+
+	stmt := moderationHistoryQuery(db, HistoryFilter{
+		Decision:   DecisionReview,
+		ClientID:   &clientID,
+		ExternalID: "comment_123",
+		Limit:      25,
+	}).Find(&models.ModerationResult{}).Statement
+
+	sql := stmt.SQL.String()
+	wantSQL := []string{
+		"moderation_results",
+		"JOIN moderation_requests",
+		"moderation_requests.deleted_at IS NULL",
+		"moderation_results.decision",
+		"moderation_results.client_id",
+		"moderation_requests.external_id",
+		"ORDER BY moderation_results.created_at DESC",
+		"LIMIT 25",
+	}
+	for _, want := range wantSQL {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("SQL = %q, want %q", sql, want)
+		}
+	}
+
+	wantVars := []interface{}{string(DecisionReview), clientID, "comment_123"}
+	if !reflect.DeepEqual(stmt.Vars, wantVars) {
+		t.Fatalf("Vars = %#v, want %#v", stmt.Vars, wantVars)
+	}
+}
+
 func TestStatsQueriesUseExpectedFilters(t *testing.T) {
 	db := openDryRunDB(t)
 
