@@ -1,88 +1,62 @@
-# AI Package Status Report
+# AI Package Status
 
-## Current State (April 9, 2026)
+## Current State
 
-### Files in `internal/ai/` directory:
+`internal/ai` currently provides the provider-facing implementation used by both
+the legacy detection routes and the text moderation MVP.
 
-✅ **Existing and Active Files:**
-1. `detection_service.go` - Main detection service implementation
-2. `openai_provider.go` - OpenAI AI provider implementation
-3. `prompt.go` - Prompt builder with multiple strategies
-4. `types.go` - Type definitions for detection
-
-📄 **Disabled Files:**
-1. `ollama_provider.go.disabled` - Ollama provider (temporarily disabled due to dependency issues with `github.com/ollama/ollama-go`)
-
-❌ **Non-existent Files (IDE Cache Issue):**
-1. `ollama_provider.go` - Does not exist
-2. `prompt_improved.go` - Does not exist
-3. `prompt_improved_helper.go` - Does not exist
-
-## Compilation Status
+Active Go files seen by the compiler:
 
 ```bash
-$ go build ./internal/ai/...
-# Success - No errors
-
-$ go list -f '{{.GoFiles}}' ./internal/ai
-[detection_service.go openai_provider.go prompt.go types.go]
-```
-
-**Result:** All compilation successful. No actual errors in the ai package.
-
-## IDE Error Markings
-
-If your IDE shows red errors for:
-- `ollama_provider.go`
-- `prompt_improved.go`  
-- `prompt_improved_helper.go`
-
-This is a **language server cache issue**. These files do not exist in the filesystem.
-
-### Solution:
-
-1. **Restart your IDE** - This will clear language server caches
-2. **Or manually clear caches:**
-   - VSCode: Command Palette > "Developer: Reload Window"
-   - JetBrains: File > Invalidate Caches / Restart
-
-## Why This Happens
-
-The IDE's language server may cache information about files that were previously in the workspace but have since been:
-- Deleted
-- Renamed (e.g., `ollama_provider.go` → `ollama_provider.go.disabled`)
-- Moved
-
-Restarting the IDE forces it to rescan the actual filesystem state.
-
-## Verification Commands
-
-To verify the current state yourself:
-
-```bash
-# List all Go files in ai directory
-ls -la internal/ai/*.go
-
-# Check what files Go compiler sees
 go list -f '{{.GoFiles}}' ./internal/ai
-
-# Compile the package
-go build ./internal/ai/...
 ```
 
-## Ollama Provider Status
+Current output:
 
-The Ollama provider has been temporarily disabled because:
-- The `github.com/ollama/ollama-go` package has dependency issues
-- Current implementation uses `ollama_provider.go.disabled` (excluded from compilation)
-- `detection_service.go` contains an error message directing users to use the OpenAI provider
+```text
+[detection_service.go moderation_prompt.go moderation_response.go ollama_provider.go openai_provider.go prompt.go types.go]
+```
 
-To re-enable in the future:
-1. Resolve `github.com/ollama/ollama-go` dependency
-2. Rename `ollama_provider.go.disabled` → `ollama_provider.go`
-3. Update `detection_service.go` to initialize the provider
+## Active Provider Paths
 
----
+- `openai_provider.go`: OpenAI-backed detection and text moderation.
+- `ollama_provider.go`: Ollama-backed detection and text moderation.
+- `detection_service.go`: selects `AI_PROVIDER=openai` or `AI_PROVIDER=ollama`
+  and exposes `AnalyzeText` for the moderation service.
 
-**Last Updated:** April 9, 2026  
-**Status:** All code is functional and compiles successfully. IDE errors are stale cache artifacts.
+Both OpenAI and Ollama providers are expected to return normalized text
+moderation suggestions containing:
+
+- `risk_score`
+- `labels`
+- `reason`
+- raw provider output for internal audit storage
+
+The service-owned final decision remains in `internal/moderation` policy code,
+not in the provider implementation.
+
+## MVP Boundary
+
+The current MVP path is synchronous text moderation through:
+
+```text
+POST /api/v1/moderation/check
+```
+
+The legacy detection APIs still exist for compatibility, but image, batch, and
+full async queue behavior are not the current verified MVP path.
+
+## Verification
+
+Useful checks:
+
+```bash
+go test ./internal/ai ./internal/moderation ./internal/router
+go build ./...
+```
+
+For runtime smoke testing, ensure the configured provider is reachable:
+
+- OpenAI requires a real `OPENAI_API_KEY`.
+- Ollama requires a reachable `OLLAMA_BASE_URL` and the configured model pulled
+  locally or by the Compose `ollama` profile.
