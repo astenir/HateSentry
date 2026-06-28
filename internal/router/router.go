@@ -154,6 +154,8 @@ func (r *Router) Setup() *gin.Engine {
 	{
 		admin.POST("/clients", clientHandler.Create)
 		admin.GET("/clients", clientHandler.List)
+		admin.POST("/clients/:id/activate", clientHandler.Activate)
+		admin.POST("/clients/:id/deactivate", clientHandler.Deactivate)
 		admin.GET("/moderation/results", moderationHandler.ListHistory)
 		admin.GET("/webhook-deliveries", moderationHandler.ListWebhookDeliveries)
 		admin.POST("/webhook-deliveries/:id/retry", moderationHandler.RetryWebhookDelivery)

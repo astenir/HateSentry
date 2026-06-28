@@ -50,6 +50,35 @@ func (r *GormRepository) ListClients(ctx context.Context) ([]models.ClientApplic
 	return clients, nil
 }
 
+// UpdateClientStatus changes a client application's authentication status.
+func (r *GormRepository) UpdateClientStatus(
+	ctx context.Context,
+	clientID uint,
+	status string,
+) (models.ClientApplication, error) {
+	if r == nil || r.db == nil {
+		return models.ClientApplication{}, apperrors.ConfigurationError("client database is not configured")
+	}
+
+	result := r.db.WithContext(ctx).
+		Model(&models.ClientApplication{}).
+		Where("id = ?", clientID).
+		Update("status", status)
+	if result.Error != nil {
+		return models.ClientApplication{}, apperrors.DatabaseError(result.Error, "failed to update client status")
+	}
+
+	var client models.ClientApplication
+	if err := r.db.WithContext(ctx).First(&client, clientID).Error; err != nil {
+		if stderrors.Is(err, gorm.ErrRecordNotFound) {
+			return models.ClientApplication{}, apperrors.RecordNotFound("Client not found")
+		}
+		return models.ClientApplication{}, apperrors.DatabaseError(err, "failed to retrieve client")
+	}
+
+	return client, nil
+}
+
 // AuthenticateAPIKey validates an external client API key.
 func (r *GormRepository) AuthenticateAPIKey(ctx context.Context, key string) (auth.APIKeyPrincipal, error) {
 	if r == nil || r.db == nil {

@@ -78,3 +78,40 @@ func (h *ClientHandler) List(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"items": output})
 }
+
+// Activate enables API-key access for an external client.
+func (h *ClientHandler) Activate(c *gin.Context) {
+	h.updateStatus(c, func(claims *auth.Claims) (clients.ListOutput, error) {
+		return h.service.ActivateClient(c.Request.Context(), claims.UserID, c.Param("id"))
+	})
+}
+
+// Deactivate revokes API-key access for an external client.
+func (h *ClientHandler) Deactivate(c *gin.Context) {
+	h.updateStatus(c, func(claims *auth.Claims) (clients.ListOutput, error) {
+		return h.service.DeactivateClient(c.Request.Context(), claims.UserID, c.Param("id"))
+	})
+}
+
+func (h *ClientHandler) updateStatus(
+	c *gin.Context,
+	action func(*auth.Claims) (clients.ListOutput, error),
+) {
+	claims, exists := auth.GetClaims(c)
+	if !exists {
+		apperrors.RespondWithError(c, apperrors.Unauthorized("User not authenticated"))
+		return
+	}
+	if h.service == nil {
+		apperrors.RespondWithError(c, apperrors.ConfigurationError("client service is not configured"))
+		return
+	}
+
+	output, err := action(claims)
+	if err != nil {
+		apperrors.Handle(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, output)
+}

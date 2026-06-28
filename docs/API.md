@@ -195,6 +195,44 @@ Authorization: Bearer <admin-token>
 }
 ```
 
+### 3. 停用客户端
+
+停用客户端会将状态改为 `inactive`，该客户端现有 API Key 将不能继续调用文本审核接口。已有审核记录、复核记录和 Webhook 投递记录不会被删除。
+
+**端点**: `POST /admin/clients/:id/deactivate`
+
+**请求头**:
+```
+Authorization: Bearer <admin-token>
+```
+
+**响应** (200 OK):
+```json
+{
+  "id": 11,
+  "name": "blog-comments",
+  "status": "inactive",
+  "api_key_prefix": "hs_live_xxxx",
+  "webhook_url": "https://example.com/moderation/webhook",
+  "policy_version": "default-v1",
+  "created_at": "2026-06-28T12:00:00Z",
+  "updated_at": "2026-06-28T12:30:00Z"
+}
+```
+
+### 4. 启用客户端
+
+重新启用客户端会将状态改为 `active`，客户端可以继续使用原 API Key 调用文本审核接口。
+
+**端点**: `POST /admin/clients/:id/activate`
+
+**请求头**:
+```
+Authorization: Bearer <admin-token>
+```
+
+响应字段与停用客户端一致，其中 `status` 为 `active`。客户端列表和状态更新响应都不会返回 API Key 哈希或 Webhook secret。
+
 ## 内容审核
 
 ### 1. 文本审核

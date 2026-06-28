@@ -3,6 +3,7 @@ package clients
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,6 +26,7 @@ const (
 type Repository interface {
 	CreateClient(ctx context.Context, client *models.ClientApplication) error
 	ListClients(ctx context.Context) ([]models.ClientApplication, error)
+	UpdateClientStatus(ctx context.Context, clientID uint, status string) (models.ClientApplication, error)
 }
 
 // Service manages external application clients.
@@ -134,19 +136,49 @@ func (s *Service) ListClients(ctx context.Context) ([]ListOutput, error) {
 
 	output := make([]ListOutput, 0, len(records))
 	for _, client := range records {
-		output = append(output, ListOutput{
-			ID:            client.ID,
-			Name:          client.Name,
-			Status:        client.Status,
-			APIKeyPrefix:  client.APIKeyPrefix,
-			WebhookURL:    client.WebhookURL,
-			PolicyVersion: client.PolicyVersion,
-			CreatedAt:     client.CreatedAt,
-			UpdatedAt:     client.UpdatedAt,
-		})
+		output = append(output, clientListOutput(client))
 	}
 
 	return output, nil
+}
+
+// ActivateClient allows an external client to authenticate with its existing API key.
+func (s *Service) ActivateClient(ctx context.Context, operatorID uint, clientID string) (ListOutput, error) {
+	return s.updateClientStatus(ctx, operatorID, clientID, StatusActive)
+}
+
+// DeactivateClient revokes an external client's API key access without deleting audit data.
+func (s *Service) DeactivateClient(ctx context.Context, operatorID uint, clientID string) (ListOutput, error) {
+	return s.updateClientStatus(ctx, operatorID, clientID, StatusInactive)
+}
+
+func (s *Service) updateClientStatus(
+	ctx context.Context,
+	operatorID uint,
+	clientID string,
+	status string,
+) (ListOutput, error) {
+	if operatorID == 0 {
+		return ListOutput{}, apperrors.Unauthorized("User not authenticated")
+	}
+	if s.repository == nil {
+		return ListOutput{}, apperrors.ConfigurationError("client repository is not configured")
+	}
+
+	parsedClientID, err := parseClientID(clientID)
+	if err != nil {
+		return ListOutput{}, err
+	}
+	if err := validateClientStatus(status); err != nil {
+		return ListOutput{}, err
+	}
+
+	client, err := s.repository.UpdateClientStatus(ctx, parsedClientID, status)
+	if err != nil {
+		return ListOutput{}, err
+	}
+
+	return clientListOutput(client), nil
 }
 
 func validateCreateInput(input CreateInput) (CreateInput, error) {
@@ -182,4 +214,40 @@ func validateCreateInput(input CreateInput) (CreateInput, error) {
 	}
 
 	return input, nil
+}
+
+func clientListOutput(client models.ClientApplication) ListOutput {
+	return ListOutput{
+		ID:            client.ID,
+		Name:          client.Name,
+		Status:        client.Status,
+		APIKeyPrefix:  client.APIKeyPrefix,
+		WebhookURL:    client.WebhookURL,
+		PolicyVersion: client.PolicyVersion,
+		CreatedAt:     client.CreatedAt,
+		UpdatedAt:     client.UpdatedAt,
+	}
+}
+
+func parseClientID(clientID string) (uint, error) {
+	clientID = strings.TrimSpace(clientID)
+	if clientID == "" {
+		return 0, apperrors.ValidationError("client id is required")
+	}
+
+	parsed, err := strconv.ParseUint(clientID, 10, 0)
+	if err != nil || parsed == 0 {
+		return 0, apperrors.ValidationError("client id must be a positive integer")
+	}
+
+	return uint(parsed), nil
+}
+
+func validateClientStatus(status string) error {
+	switch status {
+	case StatusActive, StatusInactive:
+		return nil
+	default:
+		return apperrors.ValidationError("client status must be active or inactive")
+	}
 }

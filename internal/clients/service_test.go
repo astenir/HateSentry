@@ -222,10 +222,110 @@ func TestServiceListClientsDoesNotExposeSecrets(t *testing.T) {
 	}
 }
 
+func TestServiceUpdateClientStatus(t *testing.T) {
+	createdAt := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
+	repository := &fakeRepository{
+		statusClient: models.ClientApplication{
+			ID:            11,
+			Name:          "blog",
+			Status:        StatusInactive,
+			APIKeyHash:    "secret-hash",
+			APIKeyPrefix:  "hs_live_abc",
+			WebhookSecret: "whsec_secret",
+			WebhookURL:    "https://example.com/moderation",
+			PolicyVersion: "default-v1",
+			CreatedAt:     createdAt,
+			UpdatedAt:     createdAt,
+		},
+	}
+	service := NewService(repository)
+
+	output, err := service.DeactivateClient(context.Background(), 42, "11")
+	if err != nil {
+		t.Fatalf("DeactivateClient() error = %v", err)
+	}
+
+	if repository.statusClientID != 11 {
+		t.Fatalf("status client id = %d, want 11", repository.statusClientID)
+	}
+	if repository.status != StatusInactive {
+		t.Fatalf("status = %q, want inactive", repository.status)
+	}
+	if output.ID != 11 {
+		t.Fatalf("output ID = %d, want 11", output.ID)
+	}
+	if output.Status != StatusInactive {
+		t.Fatalf("output Status = %q, want inactive", output.Status)
+	}
+	if output.APIKeyPrefix != "hs_live_abc" {
+		t.Fatalf("APIKeyPrefix = %q, want hs_live_abc", output.APIKeyPrefix)
+	}
+	if strings.Contains(output.APIKeyPrefix, "secret-hash") {
+		t.Fatal("output exposed API key hash")
+	}
+
+	_, err = service.ActivateClient(context.Background(), 42, "11")
+	if err != nil {
+		t.Fatalf("ActivateClient() error = %v", err)
+	}
+	if repository.status != StatusActive {
+		t.Fatalf("status after activate = %q, want active", repository.status)
+	}
+}
+
+func TestServiceUpdateClientStatusRejectsInvalidInput(t *testing.T) {
+	service := NewService(&fakeRepository{})
+
+	tests := []struct {
+		name       string
+		operatorID uint
+		clientID   string
+		wantErr    string
+	}{
+		{
+			name:     "missing operator",
+			clientID: "11",
+			wantErr:  "User not authenticated",
+		},
+		{
+			name:       "missing client id",
+			operatorID: 42,
+			wantErr:    "client id is required",
+		},
+		{
+			name:       "bad client id",
+			operatorID: 42,
+			clientID:   "abc",
+			wantErr:    "client id must be a positive integer",
+		},
+		{
+			name:       "zero client id",
+			operatorID: 42,
+			clientID:   "0",
+			wantErr:    "client id must be a positive integer",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := service.DeactivateClient(context.Background(), tt.operatorID, tt.clientID)
+			if err == nil {
+				t.Fatal("DeactivateClient() error = nil, want validation error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("DeactivateClient() error = %q, want %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
 type fakeRepository struct {
-	client  *models.ClientApplication
-	clients []models.ClientApplication
-	err     error
+	client         *models.ClientApplication
+	clients        []models.ClientApplication
+	statusClient   models.ClientApplication
+	statusClientID uint
+	status         string
+	err            error
 }
 
 func (r *fakeRepository) CreateClient(ctx context.Context, client *models.ClientApplication) error {
@@ -246,4 +346,20 @@ func (r *fakeRepository) ListClients(ctx context.Context) ([]models.ClientApplic
 	}
 
 	return r.clients, nil
+}
+
+func (r *fakeRepository) UpdateClientStatus(
+	ctx context.Context,
+	clientID uint,
+	status string,
+) (models.ClientApplication, error) {
+	if r.err != nil {
+		return models.ClientApplication{}, r.err
+	}
+
+	r.statusClientID = clientID
+	r.status = status
+	r.statusClient.ID = clientID
+	r.statusClient.Status = status
+	return r.statusClient, nil
 }

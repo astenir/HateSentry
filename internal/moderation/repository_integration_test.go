@@ -593,6 +593,7 @@ func createIntegrationUser(t *testing.T, ctx context.Context, db *gorm.DB, suffi
 		Password: "not-used",
 		Role:     "user",
 		Status:   "active",
+		APIKey:   "it_" + id,
 	}
 	if err := db.WithContext(ctx).Create(&user).Error; err != nil {
 		t.Fatalf("create integration user: %v", err)
