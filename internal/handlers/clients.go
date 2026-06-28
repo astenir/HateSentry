@@ -93,6 +93,27 @@ func (h *ClientHandler) Deactivate(c *gin.Context) {
 	})
 }
 
+// RotateAPIKey replaces a client's API key and returns the new key once.
+func (h *ClientHandler) RotateAPIKey(c *gin.Context) {
+	claims, exists := auth.GetClaims(c)
+	if !exists {
+		apperrors.RespondWithError(c, apperrors.Unauthorized("User not authenticated"))
+		return
+	}
+	if h.service == nil {
+		apperrors.RespondWithError(c, apperrors.ConfigurationError("client service is not configured"))
+		return
+	}
+
+	output, err := h.service.RotateClientAPIKey(c.Request.Context(), claims.UserID, c.Param("id"))
+	if err != nil {
+		apperrors.Handle(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, output)
+}
+
 func (h *ClientHandler) updateStatus(
 	c *gin.Context,
 	action func(*auth.Claims) (clients.ListOutput, error),

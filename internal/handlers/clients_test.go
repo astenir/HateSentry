@@ -93,13 +93,96 @@ func TestClientHandlerDeactivateRequiresUser(t *testing.T) {
 	}
 }
 
+func TestClientHandlerRotateAPIKey(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	repository := &clientHandlerRepository{
+		rotatedClient: models.ClientApplication{
+			ID:            11,
+			Name:          "blog",
+			Status:        clients.StatusActive,
+			APIKeyHash:    "secret-hash",
+			APIKeyPrefix:  "hs_live_new",
+			WebhookSecret: "whsec_secret",
+			WebhookURL:    "https://example.com/moderation",
+			PolicyVersion: "default-v1",
+			UpdatedAt:     time.Date(2026, 6, 28, 12, 5, 0, 0, time.UTC),
+		},
+	}
+	handler := NewClientHandler(clients.NewService(repository))
+
+	engine := gin.New()
+	engine.POST("/api/v1/admin/clients/:id/api-key/rotate", func(c *gin.Context) {
+		c.Set(auth.UserContextKey, &auth.Claims{
+			UserID:   42,
+			Username: "admin",
+			Role:     "admin",
+		})
+		handler.RotateAPIKey(c)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/clients/11/api-key/rotate", nil)
+	recorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	if strings.Contains(body, "secret-hash") || strings.Contains(body, "whsec_secret") {
+		t.Fatalf("response leaked secret material: %s", body)
+	}
+
+	var response clients.RotateAPIKeyOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.ID != 11 {
+		t.Fatalf("ID = %d, want 11", response.ID)
+	}
+	if response.APIKey == "" {
+		t.Fatal("APIKey is empty")
+	}
+	if !strings.HasPrefix(response.APIKey, "hs_live_") {
+		t.Fatalf("APIKey = %q, want hs_live_ prefix", response.APIKey)
+	}
+	if repository.rotateClientID != 11 {
+		t.Fatalf("rotate client id = %d, want 11", repository.rotateClientID)
+	}
+	if repository.rotatedAPIKeyHash != auth.HashAPIKey(response.APIKey) {
+		t.Fatal("rotated API key hash does not match returned key")
+	}
+}
+
+func TestClientHandlerRotateAPIKeyRequiresUser(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	handler := NewClientHandler(clients.NewService(&clientHandlerRepository{}))
+	engine := gin.New()
+	engine.POST("/api/v1/admin/clients/:id/api-key/rotate", handler.RotateAPIKey)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/clients/11/api-key/rotate", nil)
+	recorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", recorder.Code)
+	}
+}
+
 type clientHandlerRepository struct {
-	client         *models.ClientApplication
-	clients        []models.ClientApplication
-	statusClient   models.ClientApplication
-	statusClientID uint
-	status         string
-	err            error
+	client              *models.ClientApplication
+	clients             []models.ClientApplication
+	statusClient        models.ClientApplication
+	statusClientID      uint
+	status              string
+	rotatedClient       models.ClientApplication
+	rotateClientID      uint
+	rotatedAPIKeyHash   string
+	rotatedAPIKeyPrefix string
+	err                 error
 }
 
 func (r *clientHandlerRepository) CreateClient(
@@ -139,4 +222,23 @@ func (r *clientHandlerRepository) UpdateClientStatus(
 	r.statusClient.ID = clientID
 	r.statusClient.Status = status
 	return r.statusClient, nil
+}
+
+func (r *clientHandlerRepository) RotateClientAPIKey(
+	ctx context.Context,
+	clientID uint,
+	apiKeyHash string,
+	apiKeyPrefix string,
+) (models.ClientApplication, error) {
+	if r.err != nil {
+		return models.ClientApplication{}, r.err
+	}
+
+	r.rotateClientID = clientID
+	r.rotatedAPIKeyHash = apiKeyHash
+	r.rotatedAPIKeyPrefix = apiKeyPrefix
+	r.rotatedClient.ID = clientID
+	r.rotatedClient.APIKeyHash = apiKeyHash
+	r.rotatedClient.APIKeyPrefix = apiKeyPrefix
+	return r.rotatedClient, nil
 }

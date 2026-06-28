@@ -27,6 +27,7 @@ type Repository interface {
 	CreateClient(ctx context.Context, client *models.ClientApplication) error
 	ListClients(ctx context.Context) ([]models.ClientApplication, error)
 	UpdateClientStatus(ctx context.Context, clientID uint, status string) (models.ClientApplication, error)
+	RotateClientAPIKey(ctx context.Context, clientID uint, apiKeyHash string, apiKeyPrefix string) (models.ClientApplication, error)
 }
 
 // Service manages external application clients.
@@ -69,6 +70,18 @@ type ListOutput struct {
 	WebhookURL    string    `json:"webhook_url,omitempty"`
 	PolicyVersion string    `json:"policy_version,omitempty"`
 	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+// RotateAPIKeyOutput returns the updated client and the one-time raw API key.
+type RotateAPIKeyOutput struct {
+	ID            uint      `json:"id"`
+	Name          string    `json:"name"`
+	Status        string    `json:"status"`
+	APIKey        string    `json:"api_key"`
+	APIKeyPrefix  string    `json:"api_key_prefix"`
+	WebhookURL    string    `json:"webhook_url,omitempty"`
+	PolicyVersion string    `json:"policy_version,omitempty"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }
 
@@ -150,6 +163,52 @@ func (s *Service) ActivateClient(ctx context.Context, operatorID uint, clientID 
 // DeactivateClient revokes an external client's API key access without deleting audit data.
 func (s *Service) DeactivateClient(ctx context.Context, operatorID uint, clientID string) (ListOutput, error) {
 	return s.updateClientStatus(ctx, operatorID, clientID, StatusInactive)
+}
+
+// RotateClientAPIKey replaces a client's API key while preserving its status and settings.
+func (s *Service) RotateClientAPIKey(
+	ctx context.Context,
+	operatorID uint,
+	clientID string,
+) (RotateAPIKeyOutput, error) {
+	if operatorID == 0 {
+		return RotateAPIKeyOutput{}, apperrors.Unauthorized("User not authenticated")
+	}
+	if s.repository == nil {
+		return RotateAPIKeyOutput{}, apperrors.ConfigurationError("client repository is not configured")
+	}
+
+	parsedClientID, err := parseClientID(clientID)
+	if err != nil {
+		return RotateAPIKeyOutput{}, err
+	}
+
+	apiKey, err := auth.GenerateAPIKey()
+	if err != nil {
+		return RotateAPIKeyOutput{}, err
+	}
+	apiKeyPrefix := auth.APIKeyPrefix(apiKey)
+
+	client, err := s.repository.RotateClientAPIKey(
+		ctx,
+		parsedClientID,
+		auth.HashAPIKey(apiKey),
+		apiKeyPrefix,
+	)
+	if err != nil {
+		return RotateAPIKeyOutput{}, err
+	}
+
+	return RotateAPIKeyOutput{
+		ID:            client.ID,
+		Name:          client.Name,
+		Status:        client.Status,
+		APIKey:        apiKey,
+		APIKeyPrefix:  apiKeyPrefix,
+		WebhookURL:    client.WebhookURL,
+		PolicyVersion: client.PolicyVersion,
+		UpdatedAt:     client.UpdatedAt,
+	}, nil
 }
 
 func (s *Service) updateClientStatus(

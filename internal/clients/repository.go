@@ -9,6 +9,7 @@ import (
 	"hatesentry/internal/models"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // GormRepository stores client application records through GORM.
@@ -74,6 +75,50 @@ func (r *GormRepository) UpdateClientStatus(
 			return models.ClientApplication{}, apperrors.RecordNotFound("Client not found")
 		}
 		return models.ClientApplication{}, apperrors.DatabaseError(err, "failed to retrieve client")
+	}
+
+	return client, nil
+}
+
+// RotateClientAPIKey replaces the stored API key hash and visible prefix.
+func (r *GormRepository) RotateClientAPIKey(
+	ctx context.Context,
+	clientID uint,
+	apiKeyHash string,
+	apiKeyPrefix string,
+) (models.ClientApplication, error) {
+	if r == nil || r.db == nil {
+		return models.ClientApplication{}, apperrors.ConfigurationError("client database is not configured")
+	}
+
+	var client models.ClientApplication
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			First(&client, clientID).Error; err != nil {
+			if stderrors.Is(err, gorm.ErrRecordNotFound) {
+				return apperrors.RecordNotFound("Client not found")
+			}
+			return apperrors.DatabaseError(err, "failed to retrieve client")
+		}
+
+		result := tx.Model(&models.ClientApplication{}).
+			Where("id = ?", clientID).
+			Updates(map[string]any{
+				"api_key_hash":   apiKeyHash,
+				"api_key_prefix": apiKeyPrefix,
+			})
+		if result.Error != nil {
+			return apperrors.DatabaseError(result.Error, "failed to rotate client api key")
+		}
+
+		if err := tx.First(&client, clientID).Error; err != nil {
+			return apperrors.DatabaseError(err, "failed to retrieve client")
+		}
+
+		return nil
+	})
+	if err != nil {
+		return models.ClientApplication{}, err
 	}
 
 	return client, nil

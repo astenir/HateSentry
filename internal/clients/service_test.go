@@ -319,13 +319,113 @@ func TestServiceUpdateClientStatusRejectsInvalidInput(t *testing.T) {
 	}
 }
 
+func TestServiceRotateClientAPIKey(t *testing.T) {
+	updatedAt := time.Date(2026, 6, 28, 12, 5, 0, 0, time.UTC)
+	repository := &fakeRepository{
+		rotatedClient: models.ClientApplication{
+			ID:            11,
+			Name:          "blog",
+			Status:        StatusInactive,
+			APIKeyPrefix:  "old-prefix",
+			WebhookURL:    "https://example.com/moderation",
+			WebhookSecret: "whsec_secret",
+			PolicyVersion: "default-v1",
+			UpdatedAt:     updatedAt,
+		},
+	}
+	service := NewService(repository)
+
+	output, err := service.RotateClientAPIKey(context.Background(), 42, "11")
+	if err != nil {
+		t.Fatalf("RotateClientAPIKey() error = %v", err)
+	}
+
+	if output.APIKey == "" {
+		t.Fatal("APIKey is empty")
+	}
+	if !strings.HasPrefix(output.APIKey, "hs_live_") {
+		t.Fatalf("APIKey = %q, want hs_live_ prefix", output.APIKey)
+	}
+	if repository.rotateClientID != 11 {
+		t.Fatalf("rotate client id = %d, want 11", repository.rotateClientID)
+	}
+	if repository.rotatedAPIKeyHash != auth.HashAPIKey(output.APIKey) {
+		t.Fatal("persisted API key hash does not match returned key")
+	}
+	if repository.rotatedAPIKeyPrefix != auth.APIKeyPrefix(output.APIKey) {
+		t.Fatalf("persisted API key prefix = %q, want returned key prefix", repository.rotatedAPIKeyPrefix)
+	}
+	if output.APIKeyPrefix != auth.APIKeyPrefix(output.APIKey) {
+		t.Fatalf("APIKeyPrefix = %q, want new key prefix", output.APIKeyPrefix)
+	}
+	if output.Status != StatusInactive {
+		t.Fatalf("Status = %q, want existing inactive status", output.Status)
+	}
+	if output.WebhookURL != "https://example.com/moderation" {
+		t.Fatalf("WebhookURL = %q, want existing webhook URL", output.WebhookURL)
+	}
+	if output.PolicyVersion != "default-v1" {
+		t.Fatalf("PolicyVersion = %q, want default-v1", output.PolicyVersion)
+	}
+}
+
+func TestServiceRotateClientAPIKeyRejectsInvalidInput(t *testing.T) {
+	service := NewService(&fakeRepository{})
+
+	tests := []struct {
+		name       string
+		operatorID uint
+		clientID   string
+		wantErr    string
+	}{
+		{
+			name:     "missing operator",
+			clientID: "11",
+			wantErr:  "User not authenticated",
+		},
+		{
+			name:       "missing client id",
+			operatorID: 42,
+			wantErr:    "client id is required",
+		},
+		{
+			name:       "bad client id",
+			operatorID: 42,
+			clientID:   "abc",
+			wantErr:    "client id must be a positive integer",
+		},
+		{
+			name:       "zero client id",
+			operatorID: 42,
+			clientID:   "0",
+			wantErr:    "client id must be a positive integer",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := service.RotateClientAPIKey(context.Background(), tt.operatorID, tt.clientID)
+			if err == nil {
+				t.Fatal("RotateClientAPIKey() error = nil, want validation error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("RotateClientAPIKey() error = %q, want %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
 type fakeRepository struct {
-	client         *models.ClientApplication
-	clients        []models.ClientApplication
-	statusClient   models.ClientApplication
-	statusClientID uint
-	status         string
-	err            error
+	client              *models.ClientApplication
+	clients             []models.ClientApplication
+	statusClient        models.ClientApplication
+	statusClientID      uint
+	status              string
+	rotatedClient       models.ClientApplication
+	rotateClientID      uint
+	rotatedAPIKeyHash   string
+	rotatedAPIKeyPrefix string
+	err                 error
 }
 
 func (r *fakeRepository) CreateClient(ctx context.Context, client *models.ClientApplication) error {
@@ -362,4 +462,23 @@ func (r *fakeRepository) UpdateClientStatus(
 	r.statusClient.ID = clientID
 	r.statusClient.Status = status
 	return r.statusClient, nil
+}
+
+func (r *fakeRepository) RotateClientAPIKey(
+	ctx context.Context,
+	clientID uint,
+	apiKeyHash string,
+	apiKeyPrefix string,
+) (models.ClientApplication, error) {
+	if r.err != nil {
+		return models.ClientApplication{}, r.err
+	}
+
+	r.rotateClientID = clientID
+	r.rotatedAPIKeyHash = apiKeyHash
+	r.rotatedAPIKeyPrefix = apiKeyPrefix
+	r.rotatedClient.ID = clientID
+	r.rotatedClient.APIKeyHash = apiKeyHash
+	r.rotatedClient.APIKeyPrefix = apiKeyPrefix
+	return r.rotatedClient, nil
 }

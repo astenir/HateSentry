@@ -127,7 +127,7 @@ Authorization: Bearer <token>
 
 ## 外部客户端
 
-外部客户端用于小型应用、评论系统或论坛等系统接入文本审核 API。客户端由管理员创建，创建响应会返回一次明文 `api_key`。如果配置了 `webhook_url`，创建响应还会返回一次 `webhook_secret`，用于验证后续回调签名。服务端只保存 API Key 哈希；Webhook secret 不会出现在查询客户端列表的响应中。
+外部客户端用于小型应用、评论系统或论坛等系统接入文本审核 API。客户端由管理员创建，创建响应会返回一次明文 `api_key`。如果配置了 `webhook_url`，创建响应还会返回一次 `webhook_secret`，用于验证后续回调签名。服务端只保存 API Key 哈希；Webhook secret 不会出现在查询客户端列表的响应中。管理员可在密钥泄露或例行轮换时重新生成客户端 API Key。
 
 ### 1. 创建客户端
 
@@ -222,7 +222,7 @@ Authorization: Bearer <admin-token>
 
 ### 4. 启用客户端
 
-重新启用客户端会将状态改为 `active`，客户端可以继续使用原 API Key 调用文本审核接口。
+重新启用客户端会将状态改为 `active`，客户端可以继续使用当前有效的 API Key 调用文本审核接口。
 
 **端点**: `POST /admin/clients/:id/activate`
 
@@ -232,6 +232,33 @@ Authorization: Bearer <admin-token>
 ```
 
 响应字段与停用客户端一致，其中 `status` 为 `active`。客户端列表和状态更新响应都不会返回 API Key 哈希或 Webhook secret。
+
+### 5. 轮换客户端 API Key
+
+轮换客户端 API Key 会替换数据库中的 API Key 哈希和展示前缀，旧 API Key 会立即失效。响应中的新 `api_key` 只返回一次；客户端状态、Webhook URL、Webhook secret 和策略版本不会改变。如果客户端当前为 `inactive`，轮换密钥不会自动启用客户端。若管理员并发触发多次轮换，最后完成的轮换返回的 API Key 才是当前有效密钥。
+
+**端点**: `POST /admin/clients/:id/api-key/rotate`
+
+**请求头**:
+```
+Authorization: Bearer <admin-token>
+```
+
+**响应** (200 OK):
+```json
+{
+  "id": 11,
+  "name": "blog-comments",
+  "status": "active",
+  "api_key": "hs_live_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+  "api_key_prefix": "hs_live_yyyy",
+  "webhook_url": "https://example.com/moderation/webhook",
+  "policy_version": "default-v1",
+  "updated_at": "2026-06-28T12:45:00Z"
+}
+```
+
+轮换响应不会返回旧 API Key、API Key 哈希或 Webhook secret。
 
 ## 内容审核
 
