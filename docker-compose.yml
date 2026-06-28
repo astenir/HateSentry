@@ -30,9 +30,12 @@ services:
       - MODERATION_WEBHOOK_RETRY_BATCH_SIZE=${MODERATION_WEBHOOK_RETRY_BATCH_SIZE:-10}
       - MODERATION_WEBHOOK_RETRY_MAX_ATTEMPTS=${MODERATION_WEBHOOK_RETRY_MAX_ATTEMPTS:-3}
     depends_on:
-      - mysql
-      - redis
-      - rabbitmq
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     networks:
       - hatesentry-network
     restart: unless-stopped
