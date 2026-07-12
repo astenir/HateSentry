@@ -2,6 +2,7 @@
 import { shallowRef } from 'vue'
 
 import ReviewHistoryWorkspace from '@/components/history/ReviewHistoryWorkspace.vue'
+import ClientManagementWorkspace from '@/components/clients/ClientManagementWorkspace.vue'
 import PendingReviewWorkspace from './PendingReviewWorkspace.vue'
 import type { Session } from '@/types'
 
@@ -13,7 +14,7 @@ const emit = defineEmits<{
   logout: []
 }>()
 
-const activeView = shallowRef<'pending' | 'history'>('pending')
+const activeView = shallowRef<'pending' | 'history' | 'clients'>('pending')
 </script>
 
 <template>
@@ -53,6 +54,14 @@ const activeView = shallowRef<'pending' | 'history'>('pending')
       >
         审核历史
       </button>
+      <button
+        type="button"
+        :aria-pressed="activeView === 'clients'"
+        :class="{ 'nav-active': activeView === 'clients' }"
+        @click="activeView = 'clients'"
+      >
+        客户端管理
+      </button>
     </nav>
 
     <PendingReviewWorkspace
@@ -61,6 +70,11 @@ const activeView = shallowRef<'pending' | 'history'>('pending')
       @unauthorized="emit('logout')"
     />
     <ReviewHistoryWorkspace
+      v-else-if="activeView === 'history'"
+      :token="session.token"
+      @unauthorized="emit('logout')"
+    />
+    <ClientManagementWorkspace
       v-else
       :token="session.token"
       @unauthorized="emit('logout')"

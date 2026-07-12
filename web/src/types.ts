@@ -54,6 +54,34 @@ export interface ReviewActionInput {
   finalDecision?: 'allow' | 'block'
 }
 
+export type ClientStatus = 'active' | 'inactive'
+
+export interface ClientApplication {
+  id: number
+  name: string
+  status: ClientStatus
+  api_key_prefix: string
+  webhook_url?: string
+  policy_version?: string
+  created_at: string
+  updated_at?: string
+}
+
+export interface CreatedClientCredential extends ClientApplication {
+  api_key: string
+}
+
+export interface RotatedClientCredential {
+  id: number
+  name: string
+  status: ClientStatus
+  api_key: string
+  api_key_prefix: string
+  webhook_url?: string
+  policy_version?: string
+  updated_at: string
+}
+
 export interface ErrorResponse {
   code?: string
   error?: string

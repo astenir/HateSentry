@@ -97,16 +97,61 @@ try {
     )
   }
 
+  await page.getByRole('button', { name: '客户端管理' }).click()
+  await page.getByRole('heading', { name: '客户端管理', exact: true }).waitFor()
+  const clientName = `browser-client-${Date.now()}`
+  await page.getByLabel('客户端名称').fill(clientName)
+  await page.getByRole('button', { name: '创建客户端' }).click()
+  const oneTimeKey = page.getByTestId('one-time-api-key')
+  await oneTimeKey.waitFor()
+  const createdKey = (await oneTimeKey.textContent())?.trim() ?? ''
+  if (!createdKey) throw new Error('created client did not show its one-time API key')
+  await page.getByRole('button', { name: '关闭一次性 API Key' }).click()
+  await oneTimeKey.waitFor({ state: 'detached' })
+
+  const clientRow = page.locator('tr').filter({ hasText: clientName })
+  await clientRow.getByRole('button', { name: '停用' }).click()
+  await clientRow.getByRole('button', { name: '启用' }).waitFor()
+  const inactiveResponse = await submitWithAPIKey(page, baseURL, createdKey, 'inactive')
+  if (inactiveResponse.status() !== 401) {
+    throw new Error(`inactive client key status = ${inactiveResponse.status()}, want 401`)
+  }
+
+  await clientRow.getByRole('button', { name: '启用' }).click()
+  await clientRow.getByRole('button', { name: '停用' }).waitFor()
+  await clientRow.getByRole('button', { name: '轮换 API Key' }).click()
+  await clientRow.getByRole('button', { name: '确认轮换并使旧 Key 失效' }).click()
+  await oneTimeKey.waitFor()
+  const rotatedKey = (await oneTimeKey.textContent())?.trim() ?? ''
+  if (!rotatedKey || rotatedKey === createdKey) {
+    throw new Error('rotated client key was missing or unchanged')
+  }
+
+  const oldKeyResponse = await submitWithAPIKey(page, baseURL, createdKey, 'rotated-old')
+  if (oldKeyResponse.status() !== 401) {
+    throw new Error(`rotated old key status = ${oldKeyResponse.status()}, want 401`)
+  }
+  const newKeyResponse = await submitWithAPIKey(page, baseURL, rotatedKey, 'rotated-new')
+  if (!newKeyResponse.ok()) {
+    throw new Error(`rotated new key failed with ${newKeyResponse.status()}`)
+  }
+
+  await page.getByRole('button', { name: '关闭一次性 API Key' }).click()
+  await clientRow.getByRole('button', { name: '停用' }).click()
+  await clientRow.getByRole('button', { name: '启用' }).waitFor()
+
   process.stdout.write(`${JSON.stringify({
-    console_url: `${baseURL}/console/`,
-    decision: moderation.decision,
-    final_decision: result.final_decision,
-    history_filter: 'approved',
-    history_query: 'completed',
-    request_id: moderation.request_id,
-    review_status: result.review_status,
+    client_created: true,
+    client_deactivated: true,
+    client_reactivated: true,
+    api_key_rotated: true,
+    old_key_rejected: true,
+    new_key_accepted: true,
   }, null, 2)}\n`)
 } catch (error) {
+  await page.getByTestId('one-time-api-key').evaluateAll((nodes) => {
+    for (const node of nodes) node.textContent = '[REDACTED]'
+  }).catch(() => undefined)
   await page.screenshot({ path: screenshotPath, fullPage: true }).catch(() => undefined)
   process.stderr.write(`review console smoke failed; screenshot: ${screenshotPath}\n`)
   throw error
@@ -118,4 +163,16 @@ function requiredEnv(name) {
   const value = process.env[name]?.trim()
   if (!value) throw new Error(`${name} is required`)
   return value
+}
+
+function submitWithAPIKey(page, baseURL, apiKey, suffix) {
+  return page.request.post(`${baseURL}/api/v1/moderation/check`, {
+    headers: { 'X-API-Key': apiKey },
+    data: {
+      content: `Browser client key smoke ${suffix}`,
+      source: 'console-client-smoke',
+      external_id: `console-client-${suffix}-${Date.now()}`,
+      actor_id: 'browser-smoke',
+    },
+  })
 }

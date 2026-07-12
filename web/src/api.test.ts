@@ -1,6 +1,16 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { finalizeReview, listPendingReviews, listReviewHistory, login } from './api'
+import {
+  activateClient,
+  createClient,
+  deactivateClient,
+  finalizeReview,
+  listClients,
+  listPendingReviews,
+  listReviewHistory,
+  login,
+  rotateClientAPIKey,
+} from './api'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -98,5 +108,59 @@ describe('review console API client', () => {
       status: 409,
       code: 'CONFLICT',
     })
+  })
+
+  it('lists clients with the administrator bearer token', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ items: [] }), { status: 200 }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await listClients('jwt-token')
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/admin/clients', expect.objectContaining({
+      headers: expect.objectContaining({ Authorization: 'Bearer jwt-token' }),
+    }))
+  })
+
+  it('creates a named client and preserves its one-time API key response', async () => {
+    const created = {
+      id: 11, name: 'blog', status: 'active', api_key: 'hs_live_secret',
+      api_key_prefix: 'hs_live_', created_at: '2026-07-12T08:00:00Z',
+    }
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(created), { status: 201 }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await createClient('jwt-token', 'blog')
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/admin/clients', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ name: 'blog' }),
+    }))
+    expect(result.api_key).toBe('hs_live_secret')
+  })
+
+  it('uses the explicit status and API key rotation paths', async () => {
+    const payload = {
+      id: 11, name: 'blog', status: 'active', api_key: 'hs_new_secret',
+      api_key_prefix: 'hs_new_', created_at: '2026-07-12T08:00:00Z',
+    }
+    const fetchMock = vi.fn().mockImplementation(async () =>
+      new Response(JSON.stringify(payload), { status: 200 }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await activateClient('jwt-token', 11)
+    await deactivateClient('jwt-token', 11)
+    const rotated = await rotateClientAPIKey('jwt-token', 11)
+
+    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual([
+      '/api/v1/admin/clients/11/activate',
+      '/api/v1/admin/clients/11/deactivate',
+      '/api/v1/admin/clients/11/api-key/rotate',
+    ])
+    expect(rotated.api_key).toBe('hs_new_secret')
   })
 })

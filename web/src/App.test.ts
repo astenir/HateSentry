@@ -1,7 +1,7 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { ApiError, getReview, listPendingReviews, listReviewHistory } from '@/api'
+import { ApiError, getReview, listClients, listPendingReviews, listReviewHistory } from '@/api'
 import type { ReviewCase, Session } from '@/types'
 import App from './App.vue'
 
@@ -13,6 +13,7 @@ vi.mock('@/api', async (importOriginal) => {
     getReview: vi.fn(),
     listPendingReviews: vi.fn(),
     listReviewHistory: vi.fn(),
+    listClients: vi.fn(),
     login: vi.fn(),
   }
 })
@@ -20,6 +21,7 @@ vi.mock('@/api', async (importOriginal) => {
 const mockedGet = vi.mocked(getReview)
 const mockedList = vi.mocked(listPendingReviews)
 const mockedHistory = vi.mocked(listReviewHistory)
+const mockedClients = vi.mocked(listClients)
 
 const session: Session = {
   token: 'jwt-token',
@@ -57,6 +59,7 @@ describe('App authentication boundary', () => {
     sessionStorage.setItem('hatesentry-operator-session', JSON.stringify(session))
     mockedList.mockResolvedValue([pendingCase])
     mockedHistory.mockResolvedValue({ items: [approvedCase] })
+    mockedClients.mockResolvedValue([])
   })
 
   it('clears the session and returns to login after a detail 401', async () => {
@@ -88,7 +91,7 @@ describe('App authentication boundary', () => {
     const wrapper = mount(App)
     await flushPromises()
 
-    await wrapper.get('button[aria-pressed="false"]').trigger('click')
+    await wrapper.get('button:nth-child(2)[aria-pressed="false"]').trigger('click')
     await flushPromises()
 
     expect(mockedHistory).toHaveBeenCalledWith('jwt-token', 'all')
@@ -102,9 +105,37 @@ describe('App authentication boundary', () => {
     const wrapper = mount(App)
     await flushPromises()
 
-    await wrapper.get('button[aria-pressed="false"]').trigger('click')
+    await wrapper.get('button:nth-child(2)[aria-pressed="false"]').trigger('click')
     await flushPromises()
     await wrapper.get('.history-item').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('进入复核队列')
+    expect(sessionStorage.getItem('hatesentry-operator-session')).toBeNull()
+  })
+
+  it('switches to client management and loads the administrator client list', async () => {
+    mockedClients.mockResolvedValue([{
+      id: 4, name: 'blog', status: 'active', api_key_prefix: 'hs_blog_',
+      created_at: '2026-07-12T08:00:00Z',
+    }])
+    const wrapper = mount(App)
+    await flushPromises()
+
+    await wrapper.get('button:nth-child(3)[aria-pressed="false"]').trigger('click')
+    await flushPromises()
+
+    expect(mockedClients).toHaveBeenCalledWith('jwt-token')
+    expect(wrapper.text()).toContain('客户端管理')
+    expect(wrapper.text()).toContain('blog')
+  })
+
+  it('clears the session after a client list 401', async () => {
+    mockedClients.mockRejectedValue(new ApiError('Token expired', 401, 'UNAUTHORIZED'))
+    const wrapper = mount(App)
+    await flushPromises()
+
+    await wrapper.get('button:nth-child(3)[aria-pressed="false"]').trigger('click')
     await flushPromises()
 
     expect(wrapper.text()).toContain('进入复核队列')

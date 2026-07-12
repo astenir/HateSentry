@@ -702,7 +702,9 @@ npm run dev
 VITE_API_PROXY_TARGET=http://127.0.0.1:9000 npm run dev
 ```
 
-当前 UI 覆盖管理员登录、待复核队列、单条案件详情、通过、拒绝、标记误判，以及按人工状态筛选的审核历史。历史详情会展示 AI 风险建议、策略决定、人工最终决定、复核人 ID、复核时间和备注。JWT 会话只保存在当前浏览器标签页的 `sessionStorage` 中。客户端管理、策略编辑、Webhook 管理和仪表盘仍属于后续阶段。
+当前 UI 覆盖管理员登录、待复核队列、单条案件详情、通过、拒绝、标记误判、按人工状态筛选的审核历史，以及外部客户端列表、创建、启停和 API Key 轮换。历史详情会展示 AI 风险建议、策略决定、人工最终决定、复核人 ID、复核时间和备注。客户端页只读展示策略版本和 Webhook 是否已配置；策略编辑、Webhook 配置编辑和投递管理仍属于后续阶段。
+
+JWT 会话只保存在当前浏览器标签页的 `sessionStorage` 中。完整客户端 API Key 只存在于创建或轮换响应以及当前页面的一次性内存面板中，不写入 `localStorage` 或 `sessionStorage`；关闭面板后即从前端状态清除，如未保存只能再次轮换。停用会立即拒绝该客户端的 API Key；轮换会立即使旧 Key 失效。
 
 审核历史使用单次 `completed` 服务端查询和不透明游标分页，每页默认读取 50 条；按单一人工状态筛选时使用相同分页契约。列表查询会批量加载关联的审核请求和模型结果，避免随页面记录数增加的 N+1 查询。页面底部仅在存在 `next_cursor` 时显示“加载更多”。
 
@@ -728,7 +730,7 @@ npm --prefix web exec playwright install chromium
 make smoke-console-local
 ```
 
-`smoke-console-local` 会保留原有 API MVP 烟测，并额外使用真实 Chromium 从 `/console/` 登录管理员、通过真实 moderation API 创建一条 `review` 案件、在控制台批准、确认历史首页使用单次 `completed&limit=50` 查询、再按 `approved` 筛选并查看该记录，最后反查持久化后的 `approved` / `allow` 最终状态。
+`smoke-console-local` 会保留原有 API MVP 烟测，并额外使用真实 Chromium 从 `/console/` 登录管理员、完成待复核案件与审核历史闭环，再从客户端管理页创建客户端、关闭一次性凭证、停用和重新启用客户端、轮换 API Key，并通过真实 moderation 请求确认停用 Key 和旧 Key 被拒绝、新 Key 可用。烟测结束时会再次停用该客户端，且不会输出完整 Key。
 
 ### 运行集成测试
 ```bash
@@ -970,6 +972,7 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 - [x] 人工复核控制台登录、待复核队列和单条处理
 - [x] `/console/` 同源部署和真实 Chromium 复核烟测
 - [x] 审核历史、人工状态筛选和复核详情追溯
+- [x] 客户端列表、创建、启停和 API Key 轮换控制台
 
 ### 进行中 🚧
 - [ ] 更完整的操作指标、失败分类和延迟观测
@@ -979,7 +982,7 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 - [ ] 完整异步审核队列
 - [ ] 批量审核状态和结果接口
 - [ ] 真实图片审核（下载、校验、provider 图片 API）
-- [ ] 客户端、策略、审核历史和 Webhook 管理界面
+- [ ] 客户端策略编辑、Webhook 配置和投递管理界面
 - [ ] 数据导出功能
 - [ ] 指标仪表盘和告警建议
 

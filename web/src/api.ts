@@ -1,5 +1,8 @@
 import type {
   ErrorResponse,
+  ClientApplication,
+  CreatedClientCredential,
+  RotatedClientCredential,
   LoginCredentials,
   ReviewActionInput,
   ReviewCase,
@@ -117,5 +120,46 @@ export function finalizeReview(
     method: 'POST',
     headers: authorized(token),
     body: JSON.stringify(body),
+  })
+}
+
+export async function listClients(token: string): Promise<ClientApplication[]> {
+  const response = await request<{ items: ClientApplication[] }>('/admin/clients', {
+    headers: authorized(token),
+  })
+  return response.items
+}
+
+export function createClient(token: string, name: string): Promise<CreatedClientCredential> {
+  return request<CreatedClientCredential>('/admin/clients', {
+    method: 'POST',
+    headers: authorized(token),
+    body: JSON.stringify({ name }),
+  })
+}
+
+export function activateClient(token: string, id: number): Promise<ClientApplication> {
+  return updateClient(token, id, 'activate')
+}
+
+export function deactivateClient(token: string, id: number): Promise<ClientApplication> {
+  return updateClient(token, id, 'deactivate')
+}
+
+export function rotateClientAPIKey(token: string, id: number): Promise<RotatedClientCredential> {
+  return request<RotatedClientCredential>(`/admin/clients/${id}/api-key/rotate`, {
+    method: 'POST',
+    headers: authorized(token),
+  })
+}
+
+function updateClient(
+  token: string,
+  id: number,
+  action: 'activate' | 'deactivate',
+): Promise<ClientApplication> {
+  return request<ClientApplication>(`/admin/clients/${id}/${action}`, {
+    method: 'POST',
+    headers: authorized(token),
   })
 }
