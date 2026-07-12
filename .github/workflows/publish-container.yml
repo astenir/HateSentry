@@ -107,7 +107,8 @@ jobs:
               printf '%s\n' "$output" | awk '$1 == "Digest:" { print $2; exit }'
               return 0
             fi
-            if grep -Eqi 'manifest unknown|name unknown' "$error_file"; then
+            if grep -Eqi 'manifest unknown|name unknown' "$error_file" || \
+              grep -Fqx "ERROR: $1: not found" "$error_file"; then
               rm -f "$error_file"
               return 1
             fi
@@ -380,7 +381,8 @@ jobs:
               printf '%s\n' "$output" | awk '$1 == "Digest:" { print $2; exit }'
               return 0
             fi
-            if grep -Eqi 'manifest unknown|name unknown' "$error_file"; then
+            if grep -Eqi 'manifest unknown|name unknown' "$error_file" || \
+              grep -Fqx "ERROR: $1: not found" "$error_file"; then
               rm -f "$error_file"
               return 1
             fi
