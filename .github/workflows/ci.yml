@@ -22,11 +22,27 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install review console dependencies
+        run: npm ci --prefix web
+
       - name: Run unit tests
         run: go test ./...
 
       - name: Build all packages
         run: go build ./...
+
+      - name: Test review console
+        run: make web-test
+
+      - name: Build review console
+        run: make web-build
 
       - name: Validate Docker Compose configuration
         run: docker compose config --quiet

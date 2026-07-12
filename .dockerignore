@@ -7,6 +7,9 @@
 tmp/
 logs/
 *.log
+web/node_modules/
+web/dist/
+web/*.tsbuildinfo
 
 hatesentry
 coverage.out

@@ -661,6 +661,31 @@ make test
 
 默认测试不包含带 `integration` build tag 的 MySQL 集成测试。
 
+### 运行人工复核控制台
+
+人工复核控制台位于 `web/`，使用 Vue 3、TypeScript、Vite 和 Tailwind CSS。开发模式默认把 `/api` 代理到 `http://127.0.0.1:8080`，因此无需为本地前后端开发开放额外 CORS 配置。
+
+```bash
+cd web
+npm install
+npm run dev
+```
+
+如后端运行在其他地址，可在启动前设置：
+
+```bash
+VITE_API_PROXY_TARGET=http://127.0.0.1:9000 npm run dev
+```
+
+当前 UI 只覆盖管理员登录、待复核队列、单条案件详情、通过、拒绝和标记误判。JWT 会话只保存在当前浏览器标签页的 `sessionStorage` 中。客户端管理、策略编辑、审核历史和仪表盘仍属于后续阶段。
+
+前端验证命令：
+
+```bash
+make web-test
+make web-build
+```
+
 ### 运行集成测试
 ```bash
 docker compose up -d mysql
@@ -899,6 +924,7 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 - [x] Docker Compose 端到端健康检查验证
 
 ### 进行中 🚧
+- [ ] 人工复核控制台（登录、待复核队列和单条处理已实现，部署接入待完成）
 - [ ] 更完整的操作指标、失败分类和延迟观测
 - [ ] README、API 文档和运维文档持续按实现校准
 
@@ -906,7 +932,7 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 - [ ] 完整异步审核队列
 - [ ] 批量审核状态和结果接口
 - [ ] 真实图片审核（下载、校验、provider 图片 API）
-- [ ] 管理后台 UI
+- [ ] 客户端、策略、审核历史和 Webhook 管理界面
 - [ ] 数据导出功能
 - [ ] 指标仪表盘和告警建议
 

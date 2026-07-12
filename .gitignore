@@ -12,6 +12,8 @@
 bin/
 dist/
 logs/
+node_modules/
+*.tsbuildinfo
 
 # Go
 *.mod.sum

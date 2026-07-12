@@ -1,4 +1,4 @@
-.PHONY: all build run clean test test-integration deps docker-build docker-up docker-down docker-logs verify-compose smoke-moderation smoke-mvp-local install-deps
+.PHONY: all build run clean test test-integration web-test web-build deps docker-build docker-up docker-down docker-logs verify-compose smoke-moderation smoke-mvp-local install-deps
 
 # Variables
 BINARY_NAME=hatesentry
@@ -39,6 +39,16 @@ test:
 test-integration:
 	@echo "Running integration tests..."
 	@go test -p 1 -v -tags=integration ./...
+
+# Run review console component tests
+web-test:
+	@echo "Running review console tests..."
+	@npm --prefix web test
+
+# Type-check and build the review console
+web-build:
+	@echo "Building review console..."
+	@npm --prefix web run build
 
 # Run tests with coverage
 test-coverage:
