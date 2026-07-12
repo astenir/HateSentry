@@ -1,4 +1,4 @@
-.PHONY: all build run clean test test-integration web-test web-build deps docker-build docker-up docker-down docker-logs verify-compose smoke-moderation smoke-mvp-local install-deps
+.PHONY: all build run clean test test-integration web-test web-build deps docker-build docker-up docker-down docker-logs verify-compose smoke-moderation smoke-mvp-local smoke-console-local install-deps
 
 # Variables
 BINARY_NAME=hatesentry
@@ -93,11 +93,14 @@ verify-compose:
 	@for i in $$(seq 1 30); do \
 		if response=$$(curl -fsS http://localhost:8080/api/v1/health 2>/dev/null); then \
 			echo "$$response"; \
-			exit 0; \
+			if curl -fsS http://localhost:8080/console/ >/dev/null; then \
+				echo "Review console is available at http://localhost:8080/console/"; \
+				exit 0; \
+			fi; \
 		fi; \
 		sleep 2; \
 	done; \
-	echo "API health check did not become healthy in time"; \
+	echo "API health or review console check did not pass in time"; \
 	docker compose ps; \
 	docker compose logs --no-color --tail=80 hatesentry; \
 	exit 1
@@ -137,6 +140,11 @@ smoke-moderation:
 smoke-mvp-local:
 	@echo "Running local text moderation MVP smoke workflow..."
 	@python3 scripts/smoke_mvp_local.py
+
+# Run the MVP smoke workflow plus a real Chromium review-console workflow
+smoke-console-local: web-build
+	@echo "Running same-origin review console smoke workflow..."
+	@HATESENTRY_SMOKE_CONSOLE=1 python3 scripts/smoke_mvp_local.py
 
 # Install development tools
 install-deps:

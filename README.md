@@ -679,12 +679,29 @@ VITE_API_PROXY_TARGET=http://127.0.0.1:9000 npm run dev
 
 当前 UI 只覆盖管理员登录、待复核队列、单条案件详情、通过、拒绝和标记误判。JWT 会话只保存在当前浏览器标签页的 `sessionStorage` 中。客户端管理、策略编辑、审核历史和仪表盘仍属于后续阶段。
 
+生产构建由 Go 服务在 `/console/` 同源提供。使用 Docker Compose 时，启动完成后直接访问：
+
+```text
+http://localhost:8080/console/
+```
+
+Dockerfile 会在独立 Node 构建阶段执行前端生产构建，再把 `web/dist` 复制到最终镜像的 `/app/web/dist`；Go 进程以 `/app` 为工作目录，因此容器内的静态目录路径固定可用。HTML 使用 `no-cache`，带内容 hash 的 `/console/assets/*` 使用一年 immutable cache；控制台响应还包含 CSP、禁止 iframe、`nosniff` 和 `no-referrer` 安全头。若不使用该镜像直接运行二进制，当前实现要求进程工作目录下已有 `web/dist`；可先在仓库根目录执行 `make web-build`，并从仓库根目录启动服务。
+
 前端验证命令：
 
 ```bash
 make web-test
 make web-build
 ```
+
+验证真实浏览器复核闭环前，先安装 Chromium：
+
+```bash
+npm --prefix web exec playwright install chromium
+make smoke-console-local
+```
+
+`smoke-console-local` 会保留原有 API MVP 烟测，并额外使用真实 Chromium 从 `/console/` 登录管理员、通过真实 moderation API 创建一条 `review` 案件、在控制台批准，再反查持久化后的 `approved` / `allow` 最终状态。
 
 ### 运行集成测试
 ```bash
@@ -922,9 +939,10 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 - [x] 结构化日志系统
 - [x] Docker 部署支持
 - [x] Docker Compose 端到端健康检查验证
+- [x] 人工复核控制台登录、待复核队列和单条处理
+- [x] `/console/` 同源部署和真实 Chromium 复核烟测
 
 ### 进行中 🚧
-- [ ] 人工复核控制台（登录、待复核队列和单条处理已实现，部署接入待完成）
 - [ ] 更完整的操作指标、失败分类和延迟观测
 - [ ] README、API 文档和运维文档持续按实现校准
 

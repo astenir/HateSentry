@@ -21,6 +21,9 @@ MYSQL_ROOT_PASSWORD = os.getenv("HATESENTRY_SMOKE_MYSQL_PASSWORD", "password")
 ADMIN_EMAIL = "smoke-admin@example.test"
 ADMIN_PASSWORD = "password123"
 ADMIN_BOOTSTRAP_TOKEN = "smoke-bootstrap-token"
+DEPENDENCY_WAIT_SECONDS = 60
+DEPENDENCY_PROBE_TIMEOUT_SECONDS = 5
+CLEANUP_TIMEOUT_SECONDS = 10
 
 
 def main():
@@ -33,6 +36,8 @@ def main():
     try:
         run(["docker", "compose", "up", "-d", "mysql", "redis", "rabbitmq"])
         wait_for_mysql()
+        wait_for_redis()
+        wait_for_rabbitmq()
         create_database(database_name)
 
         openai_server = start_openai_stub()
@@ -43,6 +48,8 @@ def main():
         wait_for_health(api_port)
 
         run_smoke_workflow(api_port)
+        if console_smoke_enabled():
+            run_console_workflow(api_port)
     except BaseException:
         failed = True
         raise
@@ -206,6 +213,27 @@ def run_smoke_workflow(api_port):
     run(["python3", "scripts/smoke_moderation_workflow.py"], env=env)
 
 
+def run_console_workflow(api_port):
+    env = os.environ.copy()
+    env.update(
+        {
+            "HATESENTRY_BASE_URL": "http://127.0.0.1:{}".format(api_port),
+            "HATESENTRY_ADMIN_EMAIL": ADMIN_EMAIL,
+            "HATESENTRY_ADMIN_PASSWORD": ADMIN_PASSWORD,
+            "HATESENTRY_CONSOLE_SMOKE_CONTENT": "Browser smoke content requiring review.",
+        }
+    )
+    run(["node", "web/scripts/smoke_review_console.mjs"], env=env)
+
+
+def console_smoke_enabled():
+    return os.getenv("HATESENTRY_SMOKE_CONSOLE", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+
 def create_database(database_name):
     run(
         [
@@ -226,49 +254,103 @@ def create_database(database_name):
 
 
 def wait_for_mysql():
-    deadline = time.monotonic() + 60
-
-    while time.monotonic() < deadline:
-        completed = run(
-            [
-                "docker",
-                "compose",
-                "exec",
-                "-T",
-                "mysql",
-                "mysqladmin",
-                "ping",
-                "-h",
-                "127.0.0.1",
-                "-uroot",
-                "-p" + MYSQL_ROOT_PASSWORD,
-                "--silent",
-            ],
-            check=False,
-        )
-        if completed.returncode == 0:
-            return
-        time.sleep(1)
-
-    raise SystemExit("MySQL did not become ready within 60 seconds")
-
-
-def drop_database(database_name):
-    run(
+    wait_for_dependency(
+        "MySQL",
         [
             "docker",
             "compose",
             "exec",
             "-T",
             "mysql",
-            "mysql",
+            "mysqladmin",
+            "ping",
+            "-h",
+            "127.0.0.1",
             "-uroot",
             "-p" + MYSQL_ROOT_PASSWORD,
-            "-e",
-            "DROP DATABASE IF EXISTS `{}`".format(database_name),
+            "--silent",
         ],
-        check=False,
     )
+
+
+def wait_for_redis():
+    wait_for_dependency(
+        "Redis",
+        ["docker", "compose", "exec", "-T", "redis", "redis-cli", "ping"],
+    )
+
+
+def wait_for_rabbitmq():
+    wait_for_dependency(
+        "RabbitMQ",
+        [
+            "docker",
+            "compose",
+            "exec",
+            "-T",
+            "rabbitmq",
+            "rabbitmq-diagnostics",
+            "-q",
+            "ping",
+        ],
+    )
+
+
+def wait_for_dependency(name, args):
+    deadline = time.monotonic() + DEPENDENCY_WAIT_SECONDS
+
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            completed = subprocess.run(
+                args,
+                cwd=ROOT_DIR,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=min(DEPENDENCY_PROBE_TIMEOUT_SECONDS, remaining),
+            )
+        except subprocess.TimeoutExpired:
+            continue
+        if completed.returncode == 0:
+            print("+ {} # {} ready".format(" ".join(redact_command_args(args)), name))
+            return
+        time.sleep(min(1, max(0, deadline - time.monotonic())))
+
+    raise SystemExit(
+        "{} did not become ready within {} seconds".format(
+            name, DEPENDENCY_WAIT_SECONDS
+        )
+    )
+
+
+def drop_database(database_name):
+    try:
+        run(
+            [
+                "docker",
+                "compose",
+                "exec",
+                "-T",
+                "mysql",
+                "mysql",
+                "-uroot",
+                "-p" + MYSQL_ROOT_PASSWORD,
+                "-e",
+                "DROP DATABASE IF EXISTS `{}`".format(database_name),
+            ],
+            check=False,
+            timeout=CLEANUP_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        print(
+            "warning: smoke database cleanup timed out after {} seconds".format(
+                CLEANUP_TIMEOUT_SECONDS
+            ),
+            file=sys.stderr,
+        )
 
 
 def stop_process(process):
@@ -303,7 +385,7 @@ def free_port():
         return sock.getsockname()[1]
 
 
-def run(args, env=None, check=True):
+def run(args, env=None, check=True, timeout=None):
     display_args = redact_command_args(args)
     print("+ " + " ".join(display_args))
     completed = subprocess.run(
@@ -311,6 +393,7 @@ def run(args, env=None, check=True):
         cwd=ROOT_DIR,
         env=env,
         text=True,
+        timeout=timeout,
     )
     if check and completed.returncode != 0:
         raise SystemExit(

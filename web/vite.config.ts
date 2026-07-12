@@ -4,6 +4,7 @@ import { defineConfig } from 'vitest/config'
 import { fileURLToPath, URL } from 'node:url'
 
 export default defineConfig({
+  base: '/console/',
   plugins: [vue(), tailwindcss()],
   resolve: {
     alias: {

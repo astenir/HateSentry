@@ -82,7 +82,7 @@ jobs:
         run: go test -p 1 -tags=integration ./...
 
   smoke:
-    name: Local MVP smoke workflow
+    name: Local MVP and console smoke workflow
     runs-on: ubuntu-latest
     needs: [test, integration]
     steps:
@@ -95,8 +95,21 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Run self-contained moderation smoke test
-        run: make smoke-mvp-local
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install review console dependencies
+        run: npm ci --prefix web
+
+      - name: Install Chromium
+        run: npm --prefix web exec playwright install --with-deps chromium
+
+      - name: Run self-contained moderation and console smoke test
+        run: make smoke-console-local
 
       - name: Show dependency logs after failure
         if: failure()

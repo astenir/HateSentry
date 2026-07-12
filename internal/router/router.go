@@ -14,7 +14,9 @@ import (
 	"hatesentry/internal/observability"
 	"hatesentry/internal/queue"
 	"hatesentry/internal/webhooks"
+	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -110,6 +112,7 @@ func (r *Router) Setup() *gin.Engine {
 	r.engine.Use(gin.Logger())
 	r.engine.Use(corsMiddleware())
 	r.engine.Use(observability.MetricsMiddleware())
+	registerConsoleRoutes(r.engine, gin.Dir("web/dist", false))
 
 	// Handlers
 	clientRepository := clients.NewGormRepository(r.db)
@@ -207,6 +210,30 @@ func (r *Router) Setup() *gin.Engine {
 	observability.RegisterMetricsEndpoint(r.engine)
 
 	return r.engine
+}
+
+func registerConsoleRoutes(engine *gin.Engine, files http.FileSystem) {
+	console := engine.Group("/console")
+	console.Use(consoleSecurityHeaders())
+	console.GET("", func(c *gin.Context) {
+		c.Redirect(http.StatusTemporaryRedirect, "/console/")
+	})
+	console.StaticFS("", files)
+}
+
+func consoleSecurityHeaders() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("Content-Security-Policy", "default-src 'self'; base-uri 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data:; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'")
+		c.Header("Referrer-Policy", "no-referrer")
+		c.Header("X-Content-Type-Options", "nosniff")
+		c.Header("X-Frame-Options", "DENY")
+		if strings.HasPrefix(c.Request.URL.Path, "/console/assets/") {
+			c.Header("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			c.Header("Cache-Control", "no-cache")
+		}
+		c.Next()
+	}
 }
 
 // corsMiddleware adds CORS support
