@@ -7,10 +7,12 @@ import {
   finalizeReview,
   listClients,
   listModerationPolicies,
+  listWebhookDeliveries,
   listPendingReviews,
   listReviewHistory,
   login,
   rotateClientAPIKey,
+  retryWebhookDelivery,
   updateClientPolicy,
   updateClientWebhook,
 } from './api'
@@ -222,5 +224,15 @@ describe('review console API client', () => {
     }))
     expect(result.webhook_secret).toBe('whsec_secret')
     expect(reset.webhook_url).toBeUndefined()
+  })
+
+  it('filters and retries Webhook deliveries with administrator authorization', async () => {
+    const item = { id: 7, delivery_id: 'delivery-7', request_id: 'request-7', client_id: 4, event: 'moderation.finalized', status: 'failed', attempt_count: 1, last_attempt_at: '2026-07-12T08:00:00Z', created_at: '2026-07-12T08:00:00Z', updated_at: '2026-07-12T08:00:00Z' }
+    const fetchMock = vi.fn().mockImplementation(async () => new Response(JSON.stringify({ items: [item], ...item }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    await listWebhookDeliveries('jwt-token', { status: 'failed', clientId: ' 4 ', requestId: ' request-7 ' })
+    await retryWebhookDelivery('jwt-token', 7)
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/v1/admin/webhook-deliveries?limit=50&status=failed&client_id=4&request_id=request-7', expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer jwt-token' }) }))
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/v1/admin/webhook-deliveries/7/retry', expect.objectContaining({ method: 'POST' }))
   })
 })

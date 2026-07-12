@@ -491,7 +491,7 @@ func TestServiceCheckDoesNotDispatchWebhookForReviewDecision(t *testing.T) {
 }
 
 func TestServiceCheckDoesNotFailWhenWebhookDispatchFails(t *testing.T) {
-	dispatcher := &fakeWebhookDispatcher{err: errors.New("webhook unavailable")}
+	dispatcher := &fakeWebhookDispatcher{err: errors.New("send https://example.com/hook?token=secret-token: webhook unavailable")}
 	repository := &fakeRepository{
 		webhookClient: models.ClientApplication{
 			ID:            11,
@@ -532,8 +532,23 @@ func TestServiceCheckDoesNotFailWhenWebhookDispatchFails(t *testing.T) {
 	if repository.webhookDelivery.Status != string(WebhookDeliveryFailed) {
 		t.Fatalf("webhook delivery status = %q, want failed", repository.webhookDelivery.Status)
 	}
-	if !strings.Contains(repository.webhookDelivery.ErrorMessage, "webhook unavailable") {
-		t.Fatalf("webhook delivery error = %q, want dispatch failure", repository.webhookDelivery.ErrorMessage)
+	if repository.webhookDelivery.ErrorMessage != "webhook delivery failed" {
+		t.Fatalf("webhook delivery error = %q, want safe failure category", repository.webhookDelivery.ErrorMessage)
+	}
+	if strings.Contains(repository.webhookDelivery.ErrorMessage, "secret-token") {
+		t.Fatalf("webhook delivery error leaked URL token: %q", repository.webhookDelivery.ErrorMessage)
+	}
+}
+
+func TestWebhookDeliveryOutputSanitizesLegacySensitiveError(t *testing.T) {
+	output := webhookDeliveryOutputFromModel(models.WebhookDelivery{
+		ErrorMessage: "send https://example.com/hook?token=secret-token: connection refused",
+	})
+	if output.ErrorMessage != "webhook delivery failed" {
+		t.Fatalf("ErrorMessage = %q, want safe category", output.ErrorMessage)
+	}
+	if strings.Contains(output.ErrorMessage, "secret-token") {
+		t.Fatalf("ErrorMessage leaked legacy URL token: %q", output.ErrorMessage)
 	}
 }
 

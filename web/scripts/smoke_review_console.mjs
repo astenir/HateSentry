@@ -231,6 +231,48 @@ try {
   await page.getByRole('button', { name: '关闭一次性 Webhook secret' }).click()
   await oneTimeWebhookSecret.waitFor({ state: 'detached' })
 
+  const webhookModerationResponse = await submitWithAPIKey(page, baseURL, rotatedKey, 'webhook-delivery')
+  if (!webhookModerationResponse.ok()) {
+    throw new Error(`Webhook delivery seed moderation failed with ${webhookModerationResponse.status()}`)
+  }
+  const webhookModeration = await webhookModerationResponse.json()
+  const pendingResponse = await page.request.get(`${baseURL}/api/v1/reviews?status=pending`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  const pendingReviews = await pendingResponse.json()
+  const webhookReview = pendingReviews.items?.find((item) => item.request_id === webhookModeration.request_id)
+  if (!webhookReview) throw new Error('Webhook delivery seed review was not created')
+  const approveWebhookReview = await page.request.post(
+    `${baseURL}/api/v1/reviews/${webhookReview.id}/approve`,
+    { headers: { Authorization: `Bearer ${token}` }, data: { notes: 'Webhook delivery smoke' } },
+  )
+  if (!approveWebhookReview.ok()) {
+    throw new Error(`Webhook delivery seed review approval failed with ${approveWebhookReview.status()}`)
+  }
+
+  await page.getByRole('button', { name: 'Webhook 投递' }).click()
+  await page.getByRole('heading', { name: 'Webhook 投递记录' }).waitFor()
+  await page.getByLabel('状态').selectOption('failed')
+  await page.getByLabel('请求 ID').fill(webhookModeration.request_id)
+  await page.getByRole('button', { name: '应用筛选' }).click()
+  const deliveryCard = page.locator('li').filter({ hasText: webhookModeration.request_id })
+  await deliveryCard.waitFor()
+  await deliveryCard.getByRole('button', { name: '手动重试' }).click()
+  await deliveryCard.getByRole('button', { name: '确认立即重试' }).click()
+  await page.getByText('Webhook 重试已完成，请查看最新状态。').waitFor()
+  const deliveryListResponse = await page.request.get(
+    `${baseURL}/api/v1/admin/webhook-deliveries?request_id=${webhookModeration.request_id}&limit=50`,
+    { headers: { Authorization: `Bearer ${token}` } },
+  )
+  const deliveryList = await deliveryListResponse.json()
+  if (deliveryList.items?.length !== 1 || deliveryList.items[0].attempt_count < 2) {
+    throw new Error('manual Webhook retry did not increment the persisted attempt count')
+  }
+
+  await page.getByRole('button', { name: '客户端管理' }).click()
+  await page.getByRole('button', { name: `配置 ${clientName} 的 Webhook` }).click()
+  await page.getByRole('heading', { name: `配置 ${clientName} 的 Webhook` }).waitFor()
+
   await page.getByRole('button', { name: '清除 Webhook', exact: true }).click()
   await page.getByRole('button', { name: '确认清除 Webhook' }).click()
   await page.getByText('Webhook 已清除，回调已停止，原签名 secret 已失效。').waitFor()
@@ -256,6 +298,8 @@ try {
     webhook_configured: true,
     webhook_secret_rotated: true,
     webhook_cleared: true,
+    webhook_delivery_queried: true,
+    webhook_manual_retry: true,
     old_key_rejected: true,
     new_key_accepted: true,
   }, null, 2)}\n`)

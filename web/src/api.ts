@@ -12,6 +12,8 @@ import type {
   ReviewStatus,
   Session,
   WebhookUpdateCredential,
+  WebhookDelivery,
+  WebhookDeliveryFilter,
 } from './types'
 
 const API_PREFIX = '/api/v1'
@@ -183,6 +185,27 @@ export function updateClientWebhook(
     method: 'POST',
     headers: authorized(token),
     body: JSON.stringify({ webhook_url: webhookURL }),
+  })
+}
+
+export async function listWebhookDeliveries(
+  token: string,
+  filter: WebhookDeliveryFilter,
+): Promise<WebhookDelivery[]> {
+  const query = new URLSearchParams({ limit: '50' })
+  if (filter.status !== 'all') query.set('status', filter.status)
+  if (filter.clientId.trim()) query.set('client_id', filter.clientId.trim())
+  if (filter.requestId.trim()) query.set('request_id', filter.requestId.trim())
+  const response = await request<{ items: WebhookDelivery[] }>(`/admin/webhook-deliveries?${query}`, {
+    headers: authorized(token),
+  })
+  return response.items
+}
+
+export function retryWebhookDelivery(token: string, id: number): Promise<WebhookDelivery> {
+  return request<WebhookDelivery>(`/admin/webhook-deliveries/${id}/retry`, {
+    method: 'POST',
+    headers: authorized(token),
   })
 }
 

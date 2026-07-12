@@ -8,6 +8,7 @@ import {
   listModerationPolicies,
   listPendingReviews,
   listReviewHistory,
+  listWebhookDeliveries,
 } from '@/api'
 import type { ReviewCase, Session } from '@/types'
 import App from './App.vue'
@@ -22,6 +23,7 @@ vi.mock('@/api', async (importOriginal) => {
     listReviewHistory: vi.fn(),
     listClients: vi.fn(),
     listModerationPolicies: vi.fn(),
+    listWebhookDeliveries: vi.fn(),
     login: vi.fn(),
   }
 })
@@ -31,6 +33,7 @@ const mockedList = vi.mocked(listPendingReviews)
 const mockedHistory = vi.mocked(listReviewHistory)
 const mockedClients = vi.mocked(listClients)
 const mockedPolicies = vi.mocked(listModerationPolicies)
+const mockedDeliveries = vi.mocked(listWebhookDeliveries)
 
 const session: Session = {
   token: 'jwt-token',
@@ -72,6 +75,7 @@ describe('App authentication boundary', () => {
     mockedPolicies.mockResolvedValue([
       { version: 'default-v1', review_threshold: 0.4, block_threshold: 0.75, default: true },
     ])
+    mockedDeliveries.mockResolvedValue([])
   })
 
   it('clears the session and returns to login after a detail 401', async () => {
@@ -165,5 +169,12 @@ describe('App authentication boundary', () => {
 
     expect(wrapper.text()).toContain('进入复核队列')
     expect(sessionStorage.getItem('hatesentry-operator-session')).toBeNull()
+  })
+
+  it('switches to the Webhook delivery operations view', async () => {
+    const wrapper = mount(App); await flushPromises()
+    await wrapper.get('button:nth-child(4)[aria-pressed="false"]').trigger('click'); await flushPromises()
+    expect(mockedDeliveries).toHaveBeenCalledWith('jwt-token', { status: 'all', clientId: '', requestId: '' })
+    expect(wrapper.text()).toContain('Webhook 投递记录')
   })
 })

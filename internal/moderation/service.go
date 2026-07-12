@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 	"time"
@@ -1167,7 +1168,7 @@ func (s *Service) retryWebhookDelivery(
 
 	client, found, err := s.repository.GetClient(ctx, delivery.ClientID)
 	if err != nil {
-		s.recordClaimedWebhookDeliveryFailure(statusCtx, delivery.ID, err.Error())
+		s.recordClaimedWebhookDeliveryFailure(statusCtx, delivery.ID, "webhook client lookup failed")
 		s.recordWebhookDeliveryMetric(WebhookDeliveryFailed, trigger, time.Since(startedAt))
 		return models.WebhookDelivery{}, err
 	}
@@ -1179,7 +1180,7 @@ func (s *Service) retryWebhookDelivery(
 
 	var payload webhooks.FinalDecisionPayload
 	if err := json.Unmarshal([]byte(delivery.Payload), &payload); err != nil {
-		s.recordClaimedWebhookDeliveryFailure(statusCtx, delivery.ID, err.Error())
+		s.recordClaimedWebhookDeliveryFailure(statusCtx, delivery.ID, "webhook payload decode failed")
 		s.recordWebhookDeliveryMetric(WebhookDeliveryFailed, trigger, time.Since(startedAt))
 		return models.WebhookDelivery{}, apperrors.Internal("failed to decode webhook payload").WithDetails(err.Error())
 	}
@@ -1670,10 +1671,29 @@ func deliverFinalDecision(
 		if errors.As(err, &deliveryErr) && deliveryErr.StatusCode != 0 {
 			httpStatus = &deliveryErr.StatusCode
 		}
-		return WebhookDeliveryFailed, httpStatus, err.Error()
+		return WebhookDeliveryFailed, httpStatus, safeWebhookDeliveryError(err)
 	}
 
 	return WebhookDeliverySucceeded, nil, ""
+}
+
+func safeWebhookDeliveryError(err error) string {
+	var deliveryErr *webhooks.DeliveryError
+	if errors.As(err, &deliveryErr) && deliveryErr.StatusCode != 0 {
+		return fmt.Sprintf("webhook returned HTTP status %d", deliveryErr.StatusCode)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "webhook delivery timed out"
+	}
+	var networkErr net.Error
+	if errors.As(err, &networkErr) && networkErr.Timeout() {
+		return "webhook delivery timed out"
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return "webhook DNS resolution failed"
+	}
+	return "webhook delivery failed"
 }
 
 func isWebhookRetryConflict(err error) bool {
@@ -1692,9 +1712,30 @@ func webhookDeliveryOutputFromModel(delivery models.WebhookDelivery) WebhookDeli
 		AttemptCount:  delivery.AttemptCount,
 		LastAttemptAt: delivery.LastAttemptAt,
 		HTTPStatus:    delivery.HTTPStatus,
-		ErrorMessage:  delivery.ErrorMessage,
+		ErrorMessage:  safeStoredWebhookDeliveryError(delivery.ErrorMessage, delivery.HTTPStatus),
 		CreatedAt:     delivery.CreatedAt,
 		UpdatedAt:     delivery.UpdatedAt,
+	}
+}
+
+func safeStoredWebhookDeliveryError(message string, httpStatus *int) string {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return ""
+	}
+	if httpStatus != nil {
+		return fmt.Sprintf("webhook returned HTTP status %d", *httpStatus)
+	}
+	switch message {
+	case "webhook delivery failed",
+		"webhook delivery timed out",
+		"webhook DNS resolution failed",
+		"Webhook client not found",
+		"webhook client lookup failed",
+		"webhook payload decode failed":
+		return message
+	default:
+		return "webhook delivery failed"
 	}
 }
 

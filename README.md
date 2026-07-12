@@ -702,7 +702,7 @@ npm run dev
 VITE_API_PROXY_TARGET=http://127.0.0.1:9000 npm run dev
 ```
 
-当前 UI 覆盖管理员登录、待复核队列、单条案件详情、通过、拒绝、标记误判、按人工状态筛选的审核历史，以及外部客户端列表、创建、启停、API Key 轮换、策略分配和 Webhook 配置。历史详情会展示 AI 风险建议、策略决定、人工最终决定、复核人 ID、复核时间和备注。客户端页会只读展示服务端已配置策略及其阈值，可为客户端选择具体策略版本或恢复为跟随系统默认策略，也可配置、更新或清除客户端 Webhook URL；Webhook 投递历史和失败重试管理仍属于后续阶段。
+当前 UI 覆盖管理员登录、待复核队列、审核历史、外部客户端管理，以及 Webhook 投递运营。客户端页支持创建、启停、API Key 轮换、策略分配和 Webhook URL 配置；投递页可按状态、客户端 ID、请求 ID 查询每个 delivery 的最新状态，并对失败记录执行二次确认的手动重试。当前持久化模型只保存 delivery 最新状态和累计尝试次数，不是逐次尝试明细历史。运营接口中的失败原因会归一化为有限安全类别，不返回底层请求 URL、查询参数或数据库错误详情。
 
 JWT 会话只保存在当前浏览器标签页的 `sessionStorage` 中。完整客户端 API Key 和 Webhook 签名 secret 只存在于创建、轮换或 Webhook 更新响应以及当前页面的一次性内存面板中，不写入客户端列表、`localStorage` 或 `sessionStorage`；关闭面板后即从前端状态清除。API Key 如未保存只能再次轮换，Webhook secret 如未保存只能重新配置 Webhook。停用会立即拒绝该客户端的 API Key；API Key 轮换会立即使旧 Key 失效；每次保存非空 Webhook URL 都会生成新 secret 并使旧 secret 失效，清除 URL 会停止回调并清除 secret。
 
@@ -975,6 +975,7 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 - [x] 客户端列表、创建、启停和 API Key 轮换控制台
 - [x] 客户端策略目录、策略分配和恢复默认控制台
 - [x] 客户端 Webhook 配置、secret 轮换和清除控制台
+- [x] Webhook 投递状态查询、筛选和失败手动重试控制台
 
 ### 进行中 🚧
 - [ ] 更完整的操作指标、失败分类和延迟观测
@@ -984,7 +985,7 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 - [ ] 完整异步审核队列
 - [ ] 批量审核状态和结果接口
 - [ ] 真实图片审核（下载、校验、provider 图片 API）
-- [ ] Webhook 投递历史和失败重试管理界面
+- [ ] Webhook 逐次尝试明细历史和更完整的投递诊断
 - [ ] 数据导出功能
 - [ ] 指标仪表盘和告警建议
 

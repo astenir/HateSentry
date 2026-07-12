@@ -93,6 +93,30 @@ export interface WebhookUpdateCredential extends ClientApplication {
   webhook_secret?: string
 }
 
+export type WebhookDeliveryStatus = 'succeeded' | 'failed' | 'retrying'
+export type WebhookDeliveryStatusFilter = 'all' | WebhookDeliveryStatus
+
+export interface WebhookDelivery {
+  id: number
+  delivery_id: string
+  request_id: string
+  client_id: number
+  event: string
+  status: WebhookDeliveryStatus
+  attempt_count: number
+  last_attempt_at: string
+  http_status?: number
+  error_message?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface WebhookDeliveryFilter {
+  status: WebhookDeliveryStatusFilter
+  clientId: string
+  requestId: string
+}
+
 export interface ErrorResponse {
   code?: string
   error?: string

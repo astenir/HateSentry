@@ -3,6 +3,7 @@ import { shallowRef } from 'vue'
 
 import ReviewHistoryWorkspace from '@/components/history/ReviewHistoryWorkspace.vue'
 import ClientManagementWorkspace from '@/components/clients/ClientManagementWorkspace.vue'
+import WebhookDeliveryWorkspace from '@/components/webhooks/WebhookDeliveryWorkspace.vue'
 import PendingReviewWorkspace from './PendingReviewWorkspace.vue'
 import type { Session } from '@/types'
 
@@ -14,7 +15,7 @@ const emit = defineEmits<{
   logout: []
 }>()
 
-const activeView = shallowRef<'pending' | 'history' | 'clients'>('pending')
+const activeView = shallowRef<'pending' | 'history' | 'clients' | 'deliveries'>('pending')
 </script>
 
 <template>
@@ -62,6 +63,7 @@ const activeView = shallowRef<'pending' | 'history' | 'clients'>('pending')
       >
         客户端管理
       </button>
+      <button type="button" :aria-pressed="activeView === 'deliveries'" :class="{ 'nav-active': activeView === 'deliveries' }" @click="activeView = 'deliveries'">Webhook 投递</button>
     </nav>
 
     <PendingReviewWorkspace
@@ -75,10 +77,11 @@ const activeView = shallowRef<'pending' | 'history' | 'clients'>('pending')
       @unauthorized="emit('logout')"
     />
     <ClientManagementWorkspace
-      v-else
+      v-else-if="activeView === 'clients'"
       :token="session.token"
       @unauthorized="emit('logout')"
     />
+    <WebhookDeliveryWorkspace v-else :token="session.token" @unauthorized="emit('logout')" />
   </div>
 </template>
 
