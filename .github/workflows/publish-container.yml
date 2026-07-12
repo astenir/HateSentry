@@ -1,0 +1,429 @@
+name: Publish container
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing release tag, for example v0.2.0
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/astenir/hatesentry
+
+concurrency:
+  group: publish-container
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Build, publish, and sign
+    if: github.event_name != 'workflow_dispatch' || (github.ref == 'refs/heads/main' && endsWith(github.workflow_ref, '@refs/heads/main'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      image: ${{ steps.release.outputs.image }}
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+      commit: ${{ steps.release.outputs.commit }}
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          ref: ${{ inputs.version || github.ref_name }}
+          fetch-depth: 0
+
+      - name: Validate release tag
+        id: release
+        env:
+          RELEASE_TAG: ${{ inputs.version || github.ref_name }}
+        run: |
+          set -eu
+          if ! printf '%s' "$RELEASE_TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "release tag must match vMAJOR.MINOR.PATCH" >&2
+            exit 1
+          fi
+          git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"
+          if [ "$(git cat-file -t "refs/tags/$RELEASE_TAG")" != tag ]; then
+            echo "release tag must be annotated" >&2
+            exit 1
+          fi
+          tag_commit=$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")
+          if [ "$tag_commit" != "$(git rev-parse HEAD)" ]; then
+            echo "checked out commit does not match release tag" >&2
+            exit 1
+          fi
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$tag_commit" origin/main; then
+            echo "release tag commit must belong to origin/main history" >&2
+            exit 1
+          fi
+          highest_tag=$(git tag --merged origin/main | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
+          if [ "$RELEASE_TAG" != "$highest_tag" ]; then
+            echo "only the highest stable release tag may update latest (found $highest_tag)" >&2
+            exit 1
+          fi
+          {
+            echo "candidate=candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            echo "commit=$tag_commit"
+            echo "image=$IMAGE"
+            echo "tag=$RELEASE_TAG"
+            echo "version=${RELEASE_TAG#v}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Refuse an existing release version
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -eu
+          inspect_digest() {
+            error_file="$RUNNER_TEMP/registry-inspect-error"
+            if output=$(docker buildx imagetools inspect "$1" 2>"$error_file"); then
+              rm -f "$error_file"
+              printf '%s\n' "$output" | awk '$1 == "Digest:" { print $2; exit }'
+              return 0
+            fi
+            if grep -Eqi 'manifest unknown|name unknown' "$error_file"; then
+              rm -f "$error_file"
+              return 1
+            fi
+            cat "$error_file" >&2
+            rm -f "$error_file"
+            return 2
+          }
+          for tag in "$RELEASE_TAG" "$RELEASE_VERSION"; do
+            if existing_digest=$(inspect_digest "$IMAGE:$tag"); then
+              echo "registry tag already exists and will not be overwritten: $IMAGE:$tag@$existing_digest" >&2
+              exit 1
+            else
+              status=$?
+              if [ "$status" -ne 1 ]; then
+                echo "registry state could not be determined safely for $IMAGE:$tag" >&2
+                exit "$status"
+              fi
+            fi
+          done
+
+      - name: Build and publish multi-platform image
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.IMAGE }}:${{ steps.release.outputs.candidate }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ steps.release.outputs.commit }}
+            org.opencontainers.image.version=${{ steps.release.outputs.version }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@f713795cb21599bc4e5c4b58cbad1da852d7eeb9 # v3
+
+      - name: Sign published image digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: cosign sign --yes "$IMAGE@$DIGEST"
+
+      - name: Verify signature and build attestations
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          EXPECTED_COMMIT: ${{ steps.release.outputs.commit }}
+          SIGNING_IDENTITY: ${{ github.server_url }}/${{ github.workflow_ref }}
+          SOURCE_REPOSITORY: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          set -eu
+          cosign verify \
+            --certificate-identity "$SIGNING_IDENTITY" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "$IMAGE@$DIGEST"
+          provenance="$RUNNER_TEMP/provenance.json"
+          sbom="$RUNNER_TEMP/sbom.json"
+          index="$RUNNER_TEMP/index.json"
+          docker buildx imagetools inspect "$IMAGE@$DIGEST" --format '{{ json .Provenance }}' > "$provenance"
+          docker buildx imagetools inspect "$IMAGE@$DIGEST" --format '{{ json .SBOM }}' > "$sbom"
+          docker buildx imagetools inspect "$IMAGE@$DIGEST" --raw > "$index"
+          python3 - "$provenance" "$sbom" "$index" "$EXPECTED_COMMIT" "$SOURCE_REPOSITORY" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          provenance = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          sbom = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
+          index = json.loads(pathlib.Path(sys.argv[3]).read_text(encoding="utf-8"))
+          expected_commit = sys.argv[4].lower()
+          source_repository = sys.argv[5].lower()
+          platforms = {"linux/amd64", "linux/arm64"}
+
+          assert platforms.issubset(provenance), "provenance is missing a target platform"
+          assert platforms.issubset(sbom), "SBOM is missing a target platform"
+          for platform in platforms:
+              slsa = provenance[platform].get("SLSA")
+              assert isinstance(slsa, dict), f"{platform} is missing SLSA provenance"
+              assert "buildkit" in slsa.get("buildType", "").lower(), f"{platform} has an unexpected provenance build type"
+              config_source = slsa.get("invocation", {}).get("configSource", {})
+              external_source = slsa.get("externalParameters", {}).get("source", {})
+              materials = slsa.get("materials", [])
+              source_fields = [config_source, external_source, *materials]
+              authoritative_source = json.dumps(source_fields).lower()
+              assert source_repository in authoritative_source, f"{platform} provenance has the wrong source repository"
+              assert expected_commit in authoritative_source, f"{platform} provenance has the wrong source revision"
+
+              spdx = sbom[platform].get("SPDX")
+              assert isinstance(spdx, dict), f"{platform} is missing an SPDX SBOM"
+              assert spdx.get("spdxVersion", "").startswith("SPDX-"), f"{platform} has an invalid SPDX version"
+              assert spdx.get("SPDXID") == "SPDXRef-DOCUMENT", f"{platform} has an invalid SPDX document ID"
+              assert spdx.get("packages"), f"{platform} SPDX document has no packages"
+
+          platform_digests = set()
+          attestation_subjects = set()
+          for manifest in index.get("manifests", []):
+              platform = manifest.get("platform", {})
+              name = f'{platform.get("os")}/{platform.get("architecture")}'
+              annotations = manifest.get("annotations", {})
+              if name in platforms:
+                  platform_digests.add(manifest["digest"])
+              if annotations.get("vnd.docker.reference.type") == "attestation-manifest":
+                  attestation_subjects.add(annotations.get("vnd.docker.reference.digest"))
+          assert len(platform_digests) == 2, "image index is missing a target platform manifest"
+          assert platform_digests.issubset(attestation_subjects), "attestations do not cover both platform manifests"
+          PY
+
+      - name: Record immutable image reference
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          {
+            echo "### Published container"
+            echo
+            echo "- Candidate release: \`$RELEASE_TAG\`"
+            echo "- Candidate digest: \`$IMAGE@$DIGEST\`"
+            echo "- Platforms: \`linux/amd64\`, \`linux/arm64\`"
+            echo "- Supply chain: SBOM, provenance, and keyless Cosign signature"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  staging:
+    name: Verify published digest
+    runs-on: ubuntu-latest
+    needs: publish
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          ref: ${{ needs.publish.outputs.tag }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run release-mode staging workflow from published digest
+        env:
+          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+          STAGING_IMAGE: ${{ needs.publish.outputs.image }}@${{ needs.publish.outputs.digest }}
+        run: |
+          set -eu
+          release_env="$RUNNER_TEMP/hatesentry-staging.env"
+          compose_override="$RUNNER_TEMP/hatesentry-staging.yml"
+          install -m 600 /dev/null "$release_env"
+          {
+            echo "APP_VERSION=$RELEASE_VERSION"
+            echo 'SERVER_MODE=release'
+            echo 'JWT_SECRET=jwt-A3d9K7m2Q8x4R6t1V5z0P2n8S4w6'
+            echo 'DB_USERNAME=hatesentry_staging'
+            echo 'DB_PASSWORD=db-B4e8L2q6U0y3I7o1P5a9D3f7'
+            echo 'DB_DATABASE=hatesentry'
+            echo 'MYSQL_ROOT_PASSWORD=root-C5f9M3r7V1z4J8p2T6b0E4g8'
+            echo 'REDIS_PASSWORD=redis-D6g0N4s8W2a5K9q3U7c1F5h9'
+            echo 'RABBITMQ_USERNAME=hatesentry_queue'
+            echo 'RABBITMQ_PASSWORD=queue-E7h1P5t9X3b6L0r4V8d2G6j0'
+            echo 'ADMIN_BOOTSTRAP_TOKEN=bootstrap-F8j2Q6u0Y4c7M1s5W9e3H7k1'
+            echo 'AI_PROVIDER=openai'
+            echo 'OPENAI_API_KEY=staging-provider-G9k3R7v1Z5d8N2t6'
+            echo 'OPENAI_BASE_URL=http://openai-stub:8000/v1'
+            echo 'OPENAI_MODEL=release-smoke-model'
+          } >> "$release_env"
+          cat > "$compose_override" <<EOF
+          services:
+            hatesentry:
+              image: $STAGING_IMAGE
+          EOF
+          compose() {
+            docker compose \
+              -f docker-compose.yml \
+              -f "$compose_override" \
+              --profile release-smoke \
+              --env-file "$release_env" \
+              "$@"
+          }
+          cleanup() {
+            compose logs --no-color --tail=100 hatesentry mysql redis rabbitmq openai-stub || true
+            compose down -v || true
+            rm -f "$release_env" "$compose_override"
+          }
+          trap cleanup EXIT
+
+          RELEASE_ENV_FILE="$release_env" RELEASE_BOOTSTRAP=1 make release-preflight
+          docker pull "$STAGING_IMAGE"
+          compose up -d --no-build
+
+          health=''
+          for _ in $(seq 1 30); do
+            if health=$(curl -fsS http://127.0.0.1:8080/api/v1/health 2>/dev/null); then
+              break
+            fi
+            sleep 2
+          done
+          test -n "$health"
+          printf '%s' "$health" | python3 -c 'import json,os,sys; payload=json.load(sys.stdin); assert payload["status"] == "healthy"; assert payload["version"] == os.environ["RELEASE_VERSION"]'
+          curl -fsS http://127.0.0.1:8080/console/ >/dev/null
+          # Variables in these single-quoted commands are intentionally expanded inside each container.
+          # shellcheck disable=SC2016
+          compose exec -T mysql sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" mysql -u"$MYSQL_USER" "$MYSQL_DATABASE" -e "SELECT 1"'
+          # shellcheck disable=SC2016
+          compose exec -T redis sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli ping'
+          # shellcheck disable=SC2016
+          compose exec -T rabbitmq sh -c 'rabbitmqctl authenticate_user "$RABBITMQ_DEFAULT_USER" "$RABBITMQ_DEFAULT_PASS"'
+          running_image=$(docker inspect hatesentry-api --format '{{.Image}}')
+          pulled_image=$(docker image inspect "$STAGING_IMAGE" --format '{{.Id}}')
+          test "$running_image" = "$pulled_image"
+
+          HATESENTRY_BASE_URL=http://127.0.0.1:8080 \
+          HATESENTRY_ADMIN_EMAIL=registry-staging@example.test \
+          HATESENTRY_ADMIN_PASSWORD=registry-staging-password \
+          HATESENTRY_ADMIN_BOOTSTRAP_TOKEN=bootstrap-F8j2Q6u0Y4c7M1s5W9e3H7k1 \
+          HATESENTRY_ADMIN_USERNAME=registry-staging \
+          HATESENTRY_EXPECT_DECISION=review \
+          python3 scripts/smoke_moderation_workflow.py
+
+          sed -i 's/^ADMIN_BOOTSTRAP_TOKEN=.*/ADMIN_BOOTSTRAP_TOKEN=/' "$release_env"
+          RELEASE_ENV_FILE="$release_env" make release-preflight
+          compose down -v
+          rm -f "$release_env" "$compose_override"
+          trap - EXIT
+
+      - name: Record staging result
+        env:
+          DIGEST: ${{ needs.publish.outputs.digest }}
+          IMAGE: ${{ needs.publish.outputs.image }}
+        run: |
+          {
+            echo "### Registry staging passed"
+            echo
+            echo "Fresh-volume release deployment and the complete moderation workflow passed for \`$IMAGE@$DIGEST\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  promote:
+    name: Promote verified release
+    runs-on: ubuntu-latest
+    needs: [publish, staging]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Promote verified digest to release tags
+        env:
+          DIGEST: ${{ needs.publish.outputs.digest }}
+          IMAGE: ${{ needs.publish.outputs.image }}
+          RELEASE_TAG: ${{ needs.publish.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+        run: |
+          set -eu
+          inspect_digest() {
+            error_file="$RUNNER_TEMP/registry-inspect-error"
+            if output=$(docker buildx imagetools inspect "$1" 2>"$error_file"); then
+              rm -f "$error_file"
+              printf '%s\n' "$output" | awk '$1 == "Digest:" { print $2; exit }'
+              return 0
+            fi
+            if grep -Eqi 'manifest unknown|name unknown' "$error_file"; then
+              rm -f "$error_file"
+              return 1
+            fi
+            cat "$error_file" >&2
+            rm -f "$error_file"
+            return 2
+          }
+          ensure_immutable_tag() {
+            reference="$IMAGE:$1"
+            if existing_digest=$(inspect_digest "$reference"); then
+              if [ "$existing_digest" != "$DIGEST" ]; then
+                echo "immutable release tag points to a different digest: $reference@$existing_digest" >&2
+                return 1
+              fi
+              return 0
+            else
+              status=$?
+              if [ "$status" -ne 1 ]; then
+                echo "registry state could not be determined safely for $reference" >&2
+                return "$status"
+              fi
+            fi
+            docker buildx imagetools create --tag "$reference" "$IMAGE@$DIGEST"
+            promoted_digest=$(inspect_digest "$reference")
+            test "$promoted_digest" = "$DIGEST"
+          }
+          for tag in "$RELEASE_VERSION" "$RELEASE_TAG"; do
+            ensure_immutable_tag "$tag"
+          done
+          docker buildx imagetools create --tag "$IMAGE:latest" "$IMAGE@$DIGEST"
+          latest_digest=$(inspect_digest "$IMAGE:latest")
+          test "$latest_digest" = "$DIGEST"
+
+      - name: Record promoted release
+        env:
+          DIGEST: ${{ needs.publish.outputs.digest }}
+          IMAGE: ${{ needs.publish.outputs.image }}
+          RELEASE_TAG: ${{ needs.publish.outputs.tag }}
+        run: |
+          {
+            echo "### Verified release promoted"
+            echo
+            echo "- Release: \`$RELEASE_TAG\`"
+            echo "- Immutable image: \`$IMAGE@$DIGEST\`"
+            echo "- Tags: version, release tag, and latest"
+          } >> "$GITHUB_STEP_SUMMARY"

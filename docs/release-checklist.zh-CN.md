@@ -146,4 +146,37 @@ remote_commit="$(git ls-remote --tags origin 'refs/tags/v0.2.0^{}' | cut -f1)"
 test "$remote_commit" = "$(git rev-parse HEAD)"
 ```
 
-发布说明以 `CHANGELOG.md` 对应版本为准。应用回滚使用上一稳定标签重新构建；数据库回滚必须使用发布前备份，不要假设应用镜像回退会自动撤销 schema 或业务数据变化。
+标签推送会触发 `Publish container` 工作流；对于工作流加入前已经存在的标签，只能从 `main` 手动触发并填写已有版本标签。工作流只接受指向当前检出提交的 `vMAJOR.MINOR.PATCH` annotated tag，不接受任意分支或未标记提交。
+
+工作流将 `linux/amd64` 和 `linux/arm64` 候选镜像发布到 GHCR，同时生成并检查 SBOM、provenance 和 keyless Cosign 签名。它随后从 registry 按不可变 digest 拉取镜像，使用空数据卷和 release 模式启动依赖，并执行健康、控制台、依赖认证及完整审核/复核流程。验收通过后，才把同一 digest 晋级为版本标签和 `latest`。
+
+正式发布入口会串行执行，并拒绝以下情况：标签不在 `origin/main` 历史中、不是主线最高稳定版本、同版本 registry 标签已经存在，或验收期间出现版本标签碰撞。因此，失败的签名或 staging 不会覆盖正式版本标签和 `latest`，同一版本也不能通过重跑静默替换 digest。只有 `Build, publish, and sign`、`Verify published digest` 与 `Promote verified release` 全部成功，才视为容器发布完成。
+
+发布记录必须保存工作流输出的不可变引用：
+
+```text
+ghcr.io/astenir/hatesentry@sha256:<digest>
+```
+
+公开 package 可使用以下命令验证签名；private package 需要先用具备读取权限的凭据登录 GHCR：
+
+```bash
+cosign verify \
+  --certificate-identity-regexp='^https://github.com/astenir/HateSentry/.github/workflows/publish-container.yml@refs/(heads/main|tags/v[0-9]+\.[0-9]+\.[0-9]+)$' \
+  --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
+  ghcr.io/astenir/hatesentry@sha256:<digest>
+```
+
+Buildx 生成的 provenance 和 SPDX SBOM 是独立的 OCI attestations，可分别查看；正式工作流还会检查 provenance 包含发布提交与源仓库：
+
+```bash
+docker buildx imagetools inspect \
+  ghcr.io/astenir/hatesentry@sha256:<digest> \
+  --format '{{ json .Provenance }}'
+
+docker buildx imagetools inspect \
+  ghcr.io/astenir/hatesentry@sha256:<digest> \
+  --format '{{ json .SBOM }}'
+```
+
+发布说明以 `CHANGELOG.md` 对应版本为准，并补充 GHCR 地址、digest、目标架构及签名验证命令。应用回滚必须使用上一稳定版本的不可变 digest；数据库回滚必须使用发布前备份，不要假设应用镜像回退会自动撤销 schema 或业务数据变化。

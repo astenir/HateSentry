@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- 新增 GHCR 多架构候选镜像发布、SBOM、provenance、keyless Cosign 签名及按不可变 digest 执行的 release-mode staging 验收；版本标签和 `latest` 仅在验收通过后晋级。
+
 ## [0.2.0] - 2026-07-12
 
 ### Added
