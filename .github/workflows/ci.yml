@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Unit tests and build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run unit tests
+        run: go test ./...
+
+      - name: Build all packages
+        run: go build ./...
+
+      - name: Validate Docker Compose configuration
+        run: docker compose config --quiet
+
+      - name: Build container image
+        run: docker compose build hatesentry
+
+  integration:
+    name: MySQL integration tests
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: password
+          MYSQL_DATABASE: hatesentry_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -ppassword --silent"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    env:
+      HATESENTRY_TEST_DSN: root:password@tcp(127.0.0.1:3306)/hatesentry_test?charset=utf8mb4&parseTime=True&loc=Local
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run integration tests
+        run: go test -p 1 -tags=integration ./...
+
+  smoke:
+    name: Local MVP smoke workflow
+    runs-on: ubuntu-latest
+    needs: [test, integration]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run self-contained moderation smoke test
+        run: make smoke-mvp-local
+
+      - name: Show dependency logs after failure
+        if: failure()
+        run: docker compose logs --no-color --tail=100 mysql redis rabbitmq

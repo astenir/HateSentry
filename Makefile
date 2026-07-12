@@ -38,7 +38,7 @@ test:
 # Run integration tests that need external services
 test-integration:
 	@echo "Running integration tests..."
-	@go test -v -tags=integration ./...
+	@go test -p 1 -v -tags=integration ./...
 
 # Run tests with coverage
 test-coverage:

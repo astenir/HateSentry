@@ -667,7 +667,7 @@ docker compose up -d mysql
 HATESENTRY_TEST_DSN='root:password@tcp(127.0.0.1:3306)/hatesentry?charset=utf8mb4&parseTime=True&loc=Local' make test-integration
 ```
 
-集成测试会通过 `go test -tags=integration ./...` 运行，需要可连接的 MySQL 测试库。部分测试会创建并删除临时数据库，测试账号需要 `CREATE DATABASE` 和 `DROP DATABASE` 权限；本地 Docker 示例中的 `root` 账号已满足该要求。
+集成测试会通过 `make test-integration` 调用 `go test -p 1 -tags=integration ./...`，需要可连接的 MySQL 测试库。当前多个包会对同一个测试库执行迁移，因此必须保持包级串行，避免并发 `AutoMigrate` 互相干扰。部分测试会创建并删除临时数据库，测试账号需要 `CREATE DATABASE` 和 `DROP DATABASE` 权限；本地 Docker 示例中的 `root` 账号已满足该要求。
 
 ### 验证 Docker Compose 运行状态
 ```bash
@@ -817,8 +817,8 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 ### 贡献流程
 
 1. Fork 本仓库
-2. 创建特性分支 (`git checkout -b feature/AmazingFeature`)
-3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
+2. 创建聚焦的特性或修复分支
+3. 使用 `<type>: <简短中文说明>` 格式提交更改
 4. 推送到分支 (`git push origin feature/AmazingFeature`)
 5. 开启 Pull Request
 
@@ -830,13 +830,9 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 - 添加必要的单元测试
 - 更新相关文档
 
-## 📧 联系
+## 📧 问题反馈
 
-如有问题或建议，欢迎通过以下方式联系：
-
-- 提交 [Issue](https://github.com/yourusername/hatesentry/issues)
-- 发送邮件: support@example.com
-- 加入讨论组
+如有问题或建议，请通过 [GitHub Issues](https://github.com/astenir/HateSentry/issues) 提交，并附上可复现步骤、期望行为和必要日志。请勿在 Issue 中提交 API Key、JWT、Webhook secret 或其他敏感配置。
 
 ## 📚 相关文档
 

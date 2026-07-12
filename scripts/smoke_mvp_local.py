@@ -25,22 +25,32 @@ ADMIN_BOOTSTRAP_TOKEN = "smoke-bootstrap-token"
 
 def main():
     api_process = None
+    api_log_path = None
     openai_server = None
+    failed = False
     database_name = "hatesentry_smoke_" + uuid.uuid4().hex[:12]
 
     try:
         run(["docker", "compose", "up", "-d", "mysql", "redis", "rabbitmq"])
+        wait_for_mysql()
         create_database(database_name)
 
         openai_server = start_openai_stub()
         api_port = free_port()
-        api_process = start_api(database_name, api_port, openai_server.server_port)
+        api_process, api_log_path = start_api(
+            database_name, api_port, openai_server.server_port
+        )
         wait_for_health(api_port)
 
         run_smoke_workflow(api_port)
+    except BaseException:
+        failed = True
+        raise
     finally:
         if api_process is not None:
             stop_process(api_process)
+        if failed and api_log_path is not None:
+            print_api_log(api_log_path)
         if openai_server is not None:
             openai_server.shutdown()
             openai_server.server_close()
@@ -149,7 +159,7 @@ def start_api(database_name, api_port, openai_port):
     )
     print("local API log: {}".format(log_file.name))
 
-    return subprocess.Popen(
+    process = subprocess.Popen(
         ["go", "run", "."],
         cwd=ROOT_DIR,
         env=env,
@@ -158,6 +168,7 @@ def start_api(database_name, api_port, openai_port):
         text=True,
         start_new_session=True,
     )
+    return process, log_file.name
 
 
 def wait_for_health(api_port):
@@ -214,6 +225,34 @@ def create_database(database_name):
     )
 
 
+def wait_for_mysql():
+    deadline = time.monotonic() + 60
+
+    while time.monotonic() < deadline:
+        completed = run(
+            [
+                "docker",
+                "compose",
+                "exec",
+                "-T",
+                "mysql",
+                "mysqladmin",
+                "ping",
+                "-h",
+                "127.0.0.1",
+                "-uroot",
+                "-p" + MYSQL_ROOT_PASSWORD,
+                "--silent",
+            ],
+            check=False,
+        )
+        if completed.returncode == 0:
+            return
+        time.sleep(1)
+
+    raise SystemExit("MySQL did not become ready within 60 seconds")
+
+
 def drop_database(database_name):
     run(
         [
@@ -244,6 +283,20 @@ def stop_process(process):
         process.wait(timeout=5)
 
 
+def print_api_log(path):
+    print("--- local API log (last 200 lines) ---", file=sys.stderr)
+    try:
+        with open(path, encoding="utf-8", errors="replace") as log_file:
+            lines = log_file.readlines()
+    except OSError as err:
+        print("unable to read local API log: {}".format(err), file=sys.stderr)
+        return
+
+    for line in lines[-200:]:
+        print(line, end="", file=sys.stderr)
+    print("--- end local API log ---", file=sys.stderr)
+
+
 def free_port():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
@@ -251,7 +304,8 @@ def free_port():
 
 
 def run(args, env=None, check=True):
-    print("+ " + " ".join(args))
+    display_args = redact_command_args(args)
+    print("+ " + " ".join(display_args))
     completed = subprocess.run(
         args,
         cwd=ROOT_DIR,
@@ -260,9 +314,23 @@ def run(args, env=None, check=True):
     )
     if check and completed.returncode != 0:
         raise SystemExit(
-            "command failed with exit {}: {}".format(completed.returncode, args)
+            "command failed with exit {}: {}".format(
+                completed.returncode, display_args
+            )
         )
     return completed
+
+
+def redact_command_args(args):
+    redacted = []
+    for arg in args:
+        if arg.startswith("-p") and len(arg) > 2:
+            redacted.append("-p***")
+        elif arg.startswith("--password="):
+            redacted.append("--password=***")
+        else:
+            redacted.append(arg)
+    return redacted
 
 
 if __name__ == "__main__":
