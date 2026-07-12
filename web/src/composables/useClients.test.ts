@@ -9,6 +9,7 @@ import {
   listModerationPolicies,
   rotateClientAPIKey,
   updateClientPolicy,
+  updateClientWebhook,
 } from '@/api'
 import type { ClientApplication } from '@/types'
 import { useClients } from './useClients'
@@ -18,6 +19,7 @@ vi.mock('@/api', async (importOriginal) => ({
   activateClient: vi.fn(), createClient: vi.fn(), deactivateClient: vi.fn(),
   listClients: vi.fn(), listModerationPolicies: vi.fn(), rotateClientAPIKey: vi.fn(),
   updateClientPolicy: vi.fn(),
+  updateClientWebhook: vi.fn(),
 }))
 
 const client: ClientApplication = {
@@ -42,7 +44,7 @@ describe('useClients', () => {
 
     expect(state.items.value.map((item) => item.name)).toEqual(['forum', 'blog'])
     expect(state.items.value[0]).not.toHaveProperty('api_key')
-    expect(state.credential.value?.apiKey).toBe('hs_created_secret')
+    expect(state.credential.value).toMatchObject({ apiKey: 'hs_created_secret' })
     state.clearCredential()
     expect(state.credential.value).toBeNull()
   })
@@ -67,7 +69,7 @@ describe('useClients', () => {
     expect(state.items.value[0].api_key_prefix).toBe('hs_new_')
     expect(state.items.value[0].created_at).toBe(client.created_at)
     expect(state.items.value[0]).not.toHaveProperty('api_key')
-    expect(state.credential.value?.apiKey).toBe('hs_new_secret')
+    expect(state.credential.value).toMatchObject({ apiKey: 'hs_new_secret' })
   })
 
   it('ends the session when a client operation returns unauthorized', async () => {
@@ -122,7 +124,7 @@ describe('useClients', () => {
 
     expect(createClient).toHaveBeenCalledOnce()
     expect(rotateClientAPIKey).not.toHaveBeenCalled()
-    expect(state.credential.value?.apiKey).toBe('hs_first_secret')
+    expect(state.credential.value).toMatchObject({ apiKey: 'hs_first_secret' })
     expect(state.error.value).toContain('先保存并关闭')
   })
 
@@ -197,5 +199,91 @@ describe('useClients', () => {
     await state.assignPolicy(client, 'strict-v1')
 
     expect(onUnauthorized).toHaveBeenCalledOnce()
+  })
+
+  it('configures a Webhook without leaking its one-time secret into the client list', async () => {
+    vi.mocked(listClients).mockResolvedValue([client])
+    vi.mocked(updateClientWebhook).mockResolvedValue({
+      ...client,
+      webhook_url: 'https://example.com/hook',
+      webhook_secret: 'whsec_secret',
+    })
+    const state = useClients({ token: 'jwt', onUnauthorized: vi.fn() })
+    await state.load()
+
+    await state.configureWebhook(client, 'https://example.com/hook')
+
+    expect(state.items.value[0].webhook_url).toBe('https://example.com/hook')
+    expect(state.items.value[0]).not.toHaveProperty('webhook_secret')
+    expect(state.credential.value).toMatchObject({
+      kind: 'webhook', webhookSecret: 'whsec_secret',
+    })
+    expect(state.notice.value).toContain('旧签名 secret 已失效')
+  })
+
+  it('clears an omitted Webhook URL deterministically after closing the credential', async () => {
+    const configured = { ...client, webhook_url: 'https://example.com/hook' }
+    vi.mocked(listClients).mockResolvedValue([configured])
+    vi.mocked(updateClientWebhook)
+      .mockResolvedValueOnce({ ...configured, webhook_secret: 'whsec_secret' })
+      .mockResolvedValueOnce((({ webhook_url: _url, ...withoutURL }) => withoutURL)(configured))
+    const state = useClients({ token: 'jwt', onUnauthorized: vi.fn() })
+    await state.load()
+    await state.configureWebhook(configured, 'https://example.com/new-hook')
+    state.clearCredential()
+
+    await state.configureWebhook(state.items.value[0], '')
+
+    expect(updateClientWebhook).toHaveBeenLastCalledWith('jwt', 4, '')
+    expect(state.items.value[0].webhook_url).toBe('')
+    expect(state.credential.value).toBeNull()
+    expect(state.notice.value).toContain('回调已停止')
+  })
+
+  it('does not overwrite an open one-time credential with a Webhook secret', async () => {
+    vi.mocked(createClient).mockResolvedValue({ ...client, api_key: 'hs_secret' })
+    const state = useClients({ token: 'jwt', onUnauthorized: vi.fn() })
+    await state.create('blog')
+
+    await state.configureWebhook(client, 'https://example.com/hook')
+
+    expect(updateClientWebhook).not.toHaveBeenCalled()
+    expect(state.credential.value).toMatchObject({ kind: 'created', apiKey: 'hs_secret' })
+    expect(state.error.value).toContain('先保存并关闭')
+  })
+
+  it('ends the session when Webhook configuration returns unauthorized', async () => {
+    vi.mocked(updateClientWebhook).mockRejectedValue(new ApiError('expired', 401))
+    const onUnauthorized = vi.fn()
+    const state = useClients({ token: 'jwt', onUnauthorized })
+
+    await state.configureWebhook(client, 'https://example.com/hook')
+
+    expect(onUnauthorized).toHaveBeenCalledOnce()
+  })
+
+  it('serializes all operations that can return a one-time credential', async () => {
+    let resolveWebhook: (value: Awaited<ReturnType<typeof updateClientWebhook>>) => void = () => undefined
+    vi.mocked(updateClientWebhook).mockReturnValue(new Promise((done) => { resolveWebhook = done }))
+    const otherClient = { ...client, id: 9, name: 'support' }
+    const state = useClients({ token: 'jwt', onUnauthorized: vi.fn() })
+
+    const configuring = state.configureWebhook(client, 'https://example.com/hook')
+    await state.create('new-client')
+    await state.rotate(otherClient)
+    await state.configureWebhook(otherClient, 'https://example.com/support-hook')
+
+    expect(state.isGeneratingCredential.value).toBe(true)
+    expect(createClient).not.toHaveBeenCalled()
+    expect(rotateClientAPIKey).not.toHaveBeenCalled()
+    expect(updateClientWebhook).toHaveBeenCalledOnce()
+
+    resolveWebhook({
+      ...client, webhook_url: 'https://example.com/hook', webhook_secret: 'whsec_first',
+    })
+    await configuring
+
+    expect(state.isGeneratingCredential.value).toBe(false)
+    expect(state.credential.value).toMatchObject({ webhookSecret: 'whsec_first' })
   })
 })

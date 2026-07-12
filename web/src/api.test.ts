@@ -12,6 +12,7 @@ import {
   login,
   rotateClientAPIKey,
   updateClientPolicy,
+  updateClientWebhook,
 } from './api'
 
 afterEach(() => {
@@ -196,5 +197,30 @@ describe('review console API client', () => {
       body: JSON.stringify({ policy_version: '' }),
     }))
     expect(reset.policy_version).toBeUndefined()
+  })
+
+  it('configures and clears a client Webhook with the exact request body', async () => {
+    const configured = {
+      id: 11, name: 'blog', status: 'active', api_key_prefix: 'hs_blog_',
+      webhook_url: 'https://example.com/hook', webhook_secret: 'whsec_secret',
+      created_at: '2026-07-12T08:00:00Z',
+    }
+    const cleared = (({ webhook_url: _url, webhook_secret: _secret, ...rest }) => rest)(configured)
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(configured), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(cleared), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await updateClientWebhook('jwt-token', 11, configured.webhook_url)
+    const reset = await updateClientWebhook('jwt-token', 11, '')
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/v1/admin/clients/11/webhook', expect.objectContaining({
+      method: 'POST', body: JSON.stringify({ webhook_url: configured.webhook_url }),
+    }))
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/v1/admin/clients/11/webhook', expect.objectContaining({
+      body: JSON.stringify({ webhook_url: '' }),
+    }))
+    expect(result.webhook_secret).toBe('whsec_secret')
+    expect(reset.webhook_url).toBeUndefined()
   })
 })

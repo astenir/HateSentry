@@ -27,7 +27,7 @@ describe('ClientList', () => {
     expect(wrapper.text()).toContain('跟随系统默认')
     expect(wrapper.text()).toContain('strict-v1')
     expect(wrapper.text()).toContain('未配置')
-    expect(wrapper.text()).toContain('已配置')
+    expect(wrapper.text()).toContain('https://example.com/hook')
 
     const statusButtons = wrapper.findAll('.row-actions button').filter((button) => ['停用', '启用'].includes(button.text()))
     await statusButtons[0].trigger('click')
@@ -66,5 +66,15 @@ describe('ClientList', () => {
     await wrapper.get('.policy-editor').trigger('submit')
 
     expect(wrapper.emitted('assignPolicy')).toEqual([[active, 'strict-v1']])
+  })
+
+  it('emits the client identifier when opening Webhook configuration', async () => {
+    const wrapper = mount(ClientList, {
+      props: { items: [active], policies, loading: false, busyClientIds: new Set<number>(), credentialOpen: false },
+    })
+
+    await wrapper.get('[aria-label="配置 blog 的 Webhook"]').trigger('click')
+
+    expect(wrapper.emitted('editWebhook')).toEqual([[active.id]])
   })
 })

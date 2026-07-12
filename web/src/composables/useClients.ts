@@ -9,6 +9,7 @@ import {
   listModerationPolicies,
   rotateClientAPIKey,
   updateClientPolicy,
+  updateClientWebhook,
 } from '@/api'
 import type {
   ClientApplication,
@@ -29,6 +30,13 @@ export interface OneTimeCredential {
   kind: 'created' | 'rotated'
 }
 
+export interface OneTimeWebhookCredential {
+  clientId: number
+  clientName: string
+  webhookSecret: string
+  kind: 'webhook'
+}
+
 function messageFor(error: unknown): string {
   if (error instanceof ApiError) return error.message
   if (error instanceof Error) return error.message
@@ -37,9 +45,10 @@ function messageFor(error: unknown): string {
 
 export function useClients(options: UseClientsOptions) {
   const items = ref<ClientApplication[]>([])
-  const credential = shallowRef<OneTimeCredential | null>(null)
+  const credential = shallowRef<OneTimeCredential | OneTimeWebhookCredential | null>(null)
   const isLoading = shallowRef(false)
   const isCreating = shallowRef(false)
+  const isGeneratingCredential = shallowRef(false)
   const policies = ref<ModerationPolicy[]>([])
   const isLoadingPolicies = shallowRef(false)
   const busyClientIds = ref<ReadonlySet<number>>(new Set())
@@ -112,12 +121,13 @@ export function useClients(options: UseClientsOptions) {
 
   async function create(name: string): Promise<void> {
     if (isCreating.value) return
-    if (credential.value) {
+    if (credential.value || isGeneratingCredential.value) {
       error.value = '请先保存并关闭当前一次性 API Key，再创建其他客户端。'
       return
     }
     invalidatePendingLoad()
     isCreating.value = true
+    isGeneratingCredential.value = true
     error.value = ''
     notice.value = ''
     try {
@@ -134,6 +144,7 @@ export function useClients(options: UseClientsOptions) {
       handleError(cause)
     } finally {
       isCreating.value = false
+      isGeneratingCredential.value = false
     }
   }
 
@@ -148,21 +159,26 @@ export function useClients(options: UseClientsOptions) {
   }
 
   async function rotate(client: ClientApplication): Promise<void> {
-    if (credential.value) {
+    if (credential.value || isGeneratingCredential.value) {
       error.value = '请先保存并关闭当前一次性 API Key，再轮换其他密钥。'
       return
     }
-    await runClientOperation(client.id, async () => {
-      const rotated = await rotateClientAPIKey(options.token, client.id)
-      replaceClient(rotated)
-      credential.value = {
-        clientId: rotated.id,
-        clientName: rotated.name,
-        apiKey: rotated.api_key,
-        kind: 'rotated',
-      }
-      notice.value = 'API Key 已轮换，旧 Key 已立即失效。请保存新 Key。'
-    })
+    isGeneratingCredential.value = true
+    try {
+      await runClientOperation(client.id, async () => {
+        const rotated = await rotateClientAPIKey(options.token, client.id)
+        replaceClient(rotated)
+        credential.value = {
+          clientId: rotated.id,
+          clientName: rotated.name,
+          apiKey: rotated.api_key,
+          kind: 'rotated',
+        }
+        notice.value = 'API Key 已轮换，旧 Key 已立即失效。请保存新 Key。'
+      })
+    } finally {
+      isGeneratingCredential.value = false
+    }
   }
 
   async function assignPolicy(client: ClientApplication, policyVersion: string): Promise<void> {
@@ -173,6 +189,38 @@ export function useClients(options: UseClientsOptions) {
         ? `客户端策略已更新为 ${policyVersion}，将用于后续审核请求。`
         : '客户端已恢复为跟随系统默认策略。'
     })
+  }
+
+  async function configureWebhook(client: ClientApplication, webhookURL: string): Promise<void> {
+    if (credential.value || isGeneratingCredential.value) {
+      error.value = '请先保存并关闭当前一次性凭证，再修改 Webhook。'
+      return
+    }
+    if (webhookURL) isGeneratingCredential.value = true
+    try {
+      await runClientOperation(client.id, async () => {
+        const updated = await updateClientWebhook(options.token, client.id, webhookURL)
+        const { webhook_secret: webhookSecret, ...safeUpdated } = updated
+        replaceClient({ ...safeUpdated, webhook_url: webhookURL })
+        if (webhookURL) {
+          if (!webhookSecret) {
+            error.value = 'Webhook 已更新，但服务未返回一次性签名 secret。请再次保存当前 URL 以生成新 secret。'
+            return
+          }
+          credential.value = {
+            clientId: updated.id,
+            clientName: updated.name,
+            webhookSecret,
+            kind: 'webhook',
+          }
+          notice.value = 'Webhook 已配置，旧签名 secret 已失效。请立即保存新 secret。'
+          return
+        }
+        notice.value = 'Webhook 已清除，回调已停止，原签名 secret 已失效。'
+      })
+    } finally {
+      if (webhookURL) isGeneratingCredential.value = false
+    }
   }
 
   async function runClientOperation(id: number, operation: () => Promise<void>): Promise<void> {
@@ -202,6 +250,7 @@ export function useClients(options: UseClientsOptions) {
     policies: readonly(policies),
     isLoading: readonly(isLoading),
     isCreating: readonly(isCreating),
+    isGeneratingCredential: readonly(isGeneratingCredential),
     isLoadingPolicies: readonly(isLoadingPolicies),
     busyClientIds: readonly(busyClientIds),
     error: readonly(error),
@@ -212,6 +261,7 @@ export function useClients(options: UseClientsOptions) {
     setActive,
     rotate,
     assignPolicy,
+    configureWebhook,
     clearCredential,
   }
 }

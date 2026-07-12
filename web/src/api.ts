@@ -11,6 +11,7 @@ import type {
   ReviewHistoryPage,
   ReviewStatus,
   Session,
+  WebhookUpdateCredential,
 } from './types'
 
 const API_PREFIX = '/api/v1'
@@ -170,6 +171,18 @@ export function updateClientPolicy(
     method: 'POST',
     headers: authorized(token),
     body: JSON.stringify({ policy_version: policyVersion }),
+  })
+}
+
+export function updateClientWebhook(
+  token: string,
+  id: number,
+  webhookURL: string,
+): Promise<WebhookUpdateCredential> {
+  return request<WebhookUpdateCredential>(`/admin/clients/${id}/webhook`, {
+    method: 'POST',
+    headers: authorized(token),
+    body: JSON.stringify({ webhook_url: webhookURL }),
   })
 }
 

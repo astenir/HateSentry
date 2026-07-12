@@ -1,15 +1,20 @@
 <script setup lang="ts">
-import { shallowRef } from 'vue'
+import { computed, shallowRef } from 'vue'
 
-import type { OneTimeCredential } from '@/composables/useClients'
+import type { OneTimeCredential, OneTimeWebhookCredential } from '@/composables/useClients'
 
-const props = defineProps<{ credential: OneTimeCredential }>()
+const props = defineProps<{ credential: OneTimeCredential | OneTimeWebhookCredential }>()
 const emit = defineEmits<{ close: [] }>()
 const copyStatus = shallowRef('')
+const isWebhook = computed(() => props.credential.kind === 'webhook')
+const credentialValue = computed(() => isWebhook.value
+  ? (props.credential as OneTimeWebhookCredential).webhookSecret
+  : (props.credential as OneTimeCredential).apiKey)
+const credentialLabel = computed(() => isWebhook.value ? 'Webhook 签名 secret' : 'API Key')
 
 async function copyKey(): Promise<void> {
   try {
-    await navigator.clipboard.writeText(props.credential.apiKey)
+    await navigator.clipboard.writeText(credentialValue.value)
     copyStatus.value = '已复制到剪贴板。'
   } catch {
     copyStatus.value = '复制失败，请手动选择并复制。'
@@ -23,20 +28,32 @@ async function copyKey(): Promise<void> {
       <div>
         <span class="eyebrow">一次性凭证</span>
         <h3 id="credential-title">
-          {{ credential.kind === 'created' ? '客户端已创建' : 'API Key 已轮换' }}
+          {{ isWebhook ? 'Webhook 已配置' : credential.kind === 'created' ? '客户端已创建' : 'API Key 已轮换' }}
         </h3>
       </div>
-      <button type="button" class="close-button" aria-label="关闭一次性 API Key" @click="emit('close')">
+      <button
+        type="button"
+        class="close-button"
+        :aria-label="isWebhook ? '关闭一次性 Webhook secret' : '关闭一次性 API Key'"
+        @click="emit('close')"
+      >
         关闭
       </button>
     </div>
-    <p><strong>{{ credential.clientName }}</strong> 的完整 API Key 仅在此处显示一次。</p>
-    <code data-testid="one-time-api-key">{{ credential.apiKey }}</code>
+    <p>
+      <strong>{{ credential.clientName }}</strong> 的完整
+      {{ ` ${credentialLabel} ` }}仅在此处显示一次。
+    </p>
+    <code :data-testid="isWebhook ? 'one-time-webhook-secret' : 'one-time-api-key'">{{ credentialValue }}</code>
     <div class="credential-actions">
-      <button type="button" class="copy-button" @click="copyKey">复制 API Key</button>
+      <button type="button" class="copy-button" @click="copyKey">
+        复制 {{ isWebhook ? 'Webhook secret' : 'API Key' }}
+      </button>
       <span role="status">{{ copyStatus }}</span>
     </div>
-    <p class="warning">请立即复制并安全保存。关闭后无法再次查看；如丢失，只能轮换 API Key。</p>
+    <p class="warning">
+      请立即复制并安全保存。关闭后无法再次查看；如丢失，{{ isWebhook ? '只能重新配置 Webhook' : '只能轮换 API Key' }}。
+    </p>
   </section>
 </template>
 

@@ -89,6 +89,10 @@ export interface ModerationPolicy {
   default: boolean
 }
 
+export interface WebhookUpdateCredential extends ClientApplication {
+  webhook_secret?: string
+}
+
 export interface ErrorResponse {
   code?: string
   error?: string

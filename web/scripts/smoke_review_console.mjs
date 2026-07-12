@@ -176,6 +176,72 @@ try {
   if (defaultPolicyModeration.policy_version !== 'default-v1') {
     throw new Error(`reset policy = ${defaultPolicyModeration.policy_version}, want default-v1`)
   }
+
+  await clientRow.getByRole('button', { name: `配置 ${clientName} 的 Webhook` }).click()
+  await page.getByRole('heading', { name: `配置 ${clientName} 的 Webhook` }).waitFor()
+  const webhookInput = page.getByLabel('HTTPS 回调地址')
+  const firstWebhookURL = `https://example.com/hatesentry-smoke/${Date.now()}`
+  await webhookInput.fill(firstWebhookURL)
+  await page.getByRole('button', { name: '配置 Webhook', exact: true }).click()
+  const oneTimeWebhookSecret = page.getByTestId('one-time-webhook-secret')
+  await oneTimeWebhookSecret.waitFor()
+  const firstWebhookSecret = (await oneTimeWebhookSecret.textContent())?.trim() ?? ''
+  if (!firstWebhookSecret) throw new Error('Webhook configuration did not return a one-time secret')
+
+  const configuredClientResponse = await page.request.get(
+    `${baseURL}/api/v1/admin/clients/${clientID}`,
+    { headers: { Authorization: `Bearer ${token}` } },
+  )
+  const configuredClient = await configuredClientResponse.json()
+  if (configuredClient.webhook_url !== firstWebhookURL || 'webhook_secret' in configuredClient) {
+    throw new Error('configured client Webhook representation is incorrect or leaked its secret')
+  }
+  const configuredListResponse = await page.request.get(
+    `${baseURL}/api/v1/admin/clients`,
+    { headers: { Authorization: `Bearer ${token}` } },
+  )
+  const configuredList = await configuredListResponse.json()
+  if (configuredList.items?.some((item) => 'webhook_secret' in item)) {
+    throw new Error('client list leaked a Webhook secret')
+  }
+  const storageContainsSecret = await page.evaluate((secret) => {
+    const values = (storage) => Array.from(
+      { length: storage.length },
+      (_, index) => storage.getItem(storage.key(index) ?? '') ?? '',
+    )
+    const localValues = values(localStorage)
+    const sessionValues = values(sessionStorage)
+    return [...localValues, ...sessionValues].some((value) => value.includes(secret))
+  }, firstWebhookSecret)
+  if (storageContainsSecret) throw new Error('browser storage contains the Webhook secret')
+  await page.getByRole('button', { name: '关闭一次性 Webhook secret' }).click()
+  await oneTimeWebhookSecret.waitFor({ state: 'detached' })
+  if (await page.getByText(firstWebhookSecret, { exact: true }).count() !== 0) {
+    throw new Error('closed one-time Webhook secret remains in the DOM')
+  }
+
+  const secondWebhookURL = `https://example.com/hatesentry-smoke-rotated/${Date.now()}`
+  await webhookInput.fill(secondWebhookURL)
+  await page.getByRole('button', { name: '更新并轮换 secret' }).click()
+  await oneTimeWebhookSecret.waitFor()
+  const secondWebhookSecret = (await oneTimeWebhookSecret.textContent())?.trim() ?? ''
+  if (!secondWebhookSecret || secondWebhookSecret === firstWebhookSecret) {
+    throw new Error('Webhook secret rotation did not return a distinct secret')
+  }
+  await page.getByRole('button', { name: '关闭一次性 Webhook secret' }).click()
+  await oneTimeWebhookSecret.waitFor({ state: 'detached' })
+
+  await page.getByRole('button', { name: '清除 Webhook', exact: true }).click()
+  await page.getByRole('button', { name: '确认清除 Webhook' }).click()
+  await page.getByText('Webhook 已清除，回调已停止，原签名 secret 已失效。').waitFor()
+  const clearedClientResponse = await page.request.get(
+    `${baseURL}/api/v1/admin/clients/${clientID}`,
+    { headers: { Authorization: `Bearer ${token}` } },
+  )
+  const clearedClient = await clearedClientResponse.json()
+  if ('webhook_url' in clearedClient || 'webhook_secret' in clearedClient) {
+    throw new Error('cleared client still exposes Webhook configuration or secret')
+  }
   await clientRow.getByRole('button', { name: '停用' }).click()
   await clientRow.getByRole('button', { name: '启用' }).waitFor()
 
@@ -187,11 +253,14 @@ try {
     policy_assigned: true,
     policy_applied_to_moderation: true,
     policy_reset_to_default: true,
+    webhook_configured: true,
+    webhook_secret_rotated: true,
+    webhook_cleared: true,
     old_key_rejected: true,
     new_key_accepted: true,
   }, null, 2)}\n`)
 } catch (error) {
-  await page.getByTestId('one-time-api-key').evaluateAll((nodes) => {
+  await page.locator('[data-testid="one-time-api-key"], [data-testid="one-time-webhook-secret"]').evaluateAll((nodes) => {
     for (const node of nodes) node.textContent = '[REDACTED]'
   }).catch(() => undefined)
   await page.screenshot({ path: screenshotPath, fullPage: true }).catch(() => undefined)

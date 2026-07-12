@@ -16,6 +16,7 @@ const emit = defineEmits<{
   setActive: [client: ClientApplication, active: boolean]
   rotate: [client: ClientApplication]
   assignPolicy: [client: ClientApplication, policyVersion: string]
+  editWebhook: [clientId: number]
 }>()
 
 const confirmingRotation = shallowRef<number | null>(null)
@@ -52,7 +53,7 @@ function assignPolicy(client: ClientApplication, policyVersion: string): void {
     <div class="list-heading">
       <div>
         <h3 id="client-list-title">外部客户端</h3>
-        <p>可分配服务端已配置策略；Webhook 状态仍为只读。</p>
+        <p>可分配策略，并配置客户端 Webhook 回调。</p>
       </div>
       <span>{{ items.length }} 个客户端</span>
     </div>
@@ -83,7 +84,19 @@ function assignPolicy(client: ClientApplication, policyVersion: string): void {
                 @assign="assignPolicy"
               />
             </td>
-            <td data-label="Webhook"><span :class="client.webhook_url ? 'configured' : 'muted'">{{ client.webhook_url ? '已配置' : '未配置' }}</span></td>
+            <td data-label="Webhook">
+              <span
+                :class="client.webhook_url ? 'configured' : 'muted'"
+                :title="client.webhook_url || '未配置'"
+              >{{ client.webhook_url || '未配置' }}</span>
+              <button
+                type="button"
+                class="webhook-button"
+                :aria-label="`配置 ${client.name} 的 Webhook`"
+                :disabled="busyClientIds.has(client.id) || credentialOpen"
+                @click="emit('editWebhook', client.id)"
+              >{{ client.webhook_url ? '修改 Webhook' : '配置 Webhook' }}</button>
+            </td>
             <td data-label="创建时间"><time :datetime="client.created_at">{{ formatDate(client.created_at) }}</time></td>
             <td data-label="操作">
               <div class="row-actions">
@@ -127,11 +140,11 @@ function assignPolicy(client: ClientApplication, policyVersion: string): void {
 table { @apply w-full table-fixed border-collapse text-left; }
 .col-client { width: 13%; }
 .col-status { width: 8%; }
-.col-prefix { width: 11%; }
-.col-policy { width: 23%; }
-.col-webhook { width: 9%; }
-.col-created { width: 14%; }
-.col-actions { width: 22%; }
+.col-prefix { width: 10%; }
+.col-policy { width: 20%; }
+.col-webhook { width: 16%; }
+.col-created { width: 13%; }
+.col-actions { width: 20%; }
 th { @apply bg-[#f4f1e8] px-3 py-3 text-[0.68rem] font-bold uppercase tracking-wide text-[#69736b]; }
 td { @apply border-t border-[#e4e3da] px-3 py-4 align-top text-xs text-[#4e5c51]; }
 td strong, td span, td code { @apply block max-w-full truncate; }
@@ -142,6 +155,7 @@ td code { @apply font-mono text-[#334037]; }
 .status-inactive { @apply bg-[#ecebe6] text-[#666d67]; }
 .configured { @apply font-semibold text-[#37633f]; }
 .muted { @apply text-[#8a928b]; }
+.webhook-button { @apply mt-2 min-h-11 w-full rounded-lg border border-[#c7cabf] bg-white px-2 text-xs font-bold text-[#334037] hover:bg-[#f4f1e8] focus:outline-none focus:ring-4 focus:ring-[#456b4d]/15 disabled:opacity-50; }
 .row-actions { @apply flex flex-col items-stretch gap-2; }
 .row-actions button { @apply min-h-11 rounded-lg border border-[#c7cabf] bg-white px-2 text-xs font-bold text-[#334037] transition hover:bg-[#f4f1e8] focus:outline-none focus:ring-4 focus:ring-[#456b4d]/15 disabled:cursor-wait disabled:opacity-50; }
 .row-actions .confirming { @apply border-[#bf7348] bg-[#fff0e8] text-[#874122]; }

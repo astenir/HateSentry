@@ -12,9 +12,9 @@ HateSentry 当前应被理解为一个文本内容审核网关，而不是完整
 
 旧版 `/api/v1/detection/*`、RabbitMQ 队列、批量检测、图片提示词和监控代码仍存在于仓库中，但不属于当前 MVP 的稳定主线。它们需要在后续阶段重新验证或重构后，才能作为当前能力对外说明。
 
-管理控制台位于 `web/`，生产构建由同一个 Go 服务在 `/console/` 提供。控制台包含待处理队列、已处理审核历史和客户端管理三个视图；顶层工作区只负责视图切换和 JWT 会话边界，各视图通过独立 composable 管理请求状态。历史视图复用管理员 reviews API，“全部已处理”使用单次 `completed` 查询，单状态可按 `approved`、`rejected`、`mistake` 查询。客户端视图复用管理员 clients API，支持列表、创建、启停、密钥轮换和策略分配；策略目录及阈值来自只读的管理员 policies API，空 `policy_version` 表示跟随系统默认策略。Webhook 配置状态仍为只读。
+管理控制台位于 `web/`，生产构建由同一个 Go 服务在 `/console/` 提供。控制台包含待处理队列、已处理审核历史和客户端管理三个视图；顶层工作区只负责视图切换和 JWT 会话边界，各视图通过独立 composable 管理请求状态。历史视图复用管理员 reviews API，“全部已处理”使用单次 `completed` 查询，单状态可按 `approved`、`rejected`、`mistake` 查询。客户端视图复用管理员 clients API，支持列表、创建、启停、密钥轮换、策略分配和 Webhook URL 配置；策略目录及阈值来自只读的管理员 policies API，空 `policy_version` 表示跟随系统默认策略。Webhook 投递历史和失败重试尚未进入控制台。
 
-客户端完整 API Key 只从创建或轮换响应进入当前页面的内存凭证面板，不进入客户端列表、`localStorage` 或 `sessionStorage`；关闭面板会清除该引用。轮换操作要求二次确认，成功后列表只保留新的短前缀。控制台与 `/api/v1/*` 保持同源，不新增独立认证、跨域 cookie 或第二套后端代理边界。Docker 镜像固定使用 `/app` 工作目录并把产物复制到 `/app/web/dist`；非容器运行时，进程工作目录下必须存在 `web/dist`。
+客户端完整 API Key 和 Webhook 签名 secret 只从创建、轮换或 Webhook 更新响应进入当前页面的内存凭证面板，不进入客户端列表、`localStorage` 或 `sessionStorage`；关闭面板会清除该引用。API Key 轮换和 Webhook 清除操作要求二次确认。Webhook 更新响应进入列表前会剥离 `webhook_secret`，清除操作则显式把本地 URL 置空以处理后端 `omitempty` 响应。控制台与 `/api/v1/*` 保持同源，不新增独立认证、跨域 cookie 或第二套后端代理边界。Docker 镜像固定使用 `/app` 工作目录并把产物复制到 `/app/web/dist`；非容器运行时，进程工作目录下必须存在 `web/dist`。
 
 已处理历史由后端按 `reviewed_at DESC, id DESC` 稳定排序并生成不透明游标，默认每页 50 条、最多 100 条。仓储先查询一页 review cases，再分别批量加载关联的 moderation requests 和 moderation results，因此每页固定为三次读取，不随条目数产生 N+1 查询。前端只保存已经加载的页面，并在存在 `next_cursor` 时允许继续加载。
 
@@ -327,4 +327,4 @@ HATESENTRY_TEST_DSN='root:password@tcp(127.0.0.1:3306)/hatesentry?charset=utf8mb
 - 真实图片下载、校验和 provider 图片输入。
 - 独立 Webhook 投递队列和完整逐次尝试历史。
 - 更完整的失败分类、运营仪表盘和告警规则。
-- Webhook 配置和投递管理界面。
+- Webhook 投递历史和失败重试管理界面。

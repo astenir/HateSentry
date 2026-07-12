@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { computed, onMounted, shallowRef } from 'vue'
 
 import ClientCreateForm from './ClientCreateForm.vue'
 import ClientList from './ClientList.vue'
+import ClientWebhookEditor from './ClientWebhookEditor.vue'
 import OneTimeCredentialPanel from './OneTimeCredentialPanel.vue'
 import PolicyCatalog from './PolicyCatalog.vue'
 import { useClients } from '@/composables/useClients'
@@ -15,6 +16,8 @@ const clients = useClients({
   token: props.token,
   onUnauthorized: () => emit('unauthorized'),
 })
+const webhookClientId = shallowRef<number | null>(null)
+const webhookClient = computed(() => clients.items.value.find((client) => client.id === webhookClientId.value) || null)
 
 onMounted(() => {
   void clients.load()
@@ -51,22 +54,31 @@ function setActive(client: ClientApplication, active: boolean): void {
       />
       <ClientCreateForm
         :busy="clients.isCreating.value"
-        :locked="Boolean(clients.credential.value)"
+        :locked="Boolean(clients.credential.value) || clients.isGeneratingCredential.value"
         @submit="clients.create"
       />
       <PolicyCatalog
         :policies="clients.policies.value"
         :loading="clients.isLoadingPolicies.value"
       />
+      <ClientWebhookEditor
+        v-if="webhookClient"
+        :client="webhookClient"
+        :busy="clients.busyClientIds.value.has(webhookClient.id)"
+        :credential-open="Boolean(clients.credential.value) || clients.isGeneratingCredential.value"
+        @save="clients.configureWebhook"
+        @close="webhookClientId = null"
+      />
       <ClientList
         :items="clients.items.value"
         :loading="clients.isLoading.value"
         :busy-client-ids="clients.busyClientIds.value"
-        :credential-open="Boolean(clients.credential.value)"
+        :credential-open="Boolean(clients.credential.value) || clients.isGeneratingCredential.value"
         :policies="clients.policies.value"
         @set-active="setActive"
         @rotate="clients.rotate"
         @assign-policy="clients.assignPolicy"
+        @edit-webhook="webhookClientId = $event"
       />
     </div>
   </div>
