@@ -3,11 +3,14 @@ import { reactive, watch } from 'vue'
 
 import type { ReviewActionInput, ReviewCase } from '@/types'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   item: ReviewCase | null
   loading: boolean
   busy: boolean
-}>()
+  context?: 'queue' | 'history'
+}>(), {
+  context: 'queue',
+})
 
 const emit = defineEmits<{
   action: [input: ReviewActionInput]
@@ -18,6 +21,18 @@ const form = reactive({
   mistakeDecision: '' as '' | 'allow' | 'block',
   validationError: '',
 })
+
+const dateFormatter = new Intl.DateTimeFormat('zh-CN', {
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+})
+
+function formatDate(value: string): string {
+  return dateFormatter.format(new Date(value))
+}
 
 watch(
   () => props.item?.id,
@@ -51,8 +66,11 @@ function submit(action: ReviewActionInput['action']): void {
         <span></span>
       </div>
       <p class="section-kicker">REVIEW WORKSPACE</p>
-      <h2 id="detail-title">选择一条待复核内容</h2>
-      <p>在左侧队列中选择案件，查看策略依据并记录人工最终决定。</p>
+      <h2 id="detail-title">
+        {{ context === 'history' ? '选择一条审核历史' : '选择一条待复核内容' }}
+      </h2>
+      <p v-if="context === 'history'">在左侧选择已处理案件，查看策略判断和人工复核记录。</p>
+      <p v-else>在左侧队列中选择案件，查看策略依据并记录人工最终决定。</p>
     </div>
     <div v-else class="detail-content">
       <header class="detail-heading">
@@ -120,7 +138,8 @@ function submit(action: ReviewActionInput['action']): void {
       </div>
 
       <section class="reason-card">
-        <p class="section-kicker">OPERATOR REASON</p>
+        <p class="section-kicker">AI SUGGESTION</p>
+        <h3>AI 建议依据</h3>
         <p>{{ item.reason }}</p>
       </section>
 
@@ -170,6 +189,10 @@ function submit(action: ReviewActionInput['action']): void {
       <section v-else class="completed-card">
         <strong>该案件已经处理</strong>
         <p>人工最终决定：{{ item.final_decision || '—' }}</p>
+        <p>复核人：{{ item.reviewer_id ? `操作员 #${item.reviewer_id}` : '—' }}</p>
+        <p v-if="item.reviewed_at">
+          复核时间：<time :datetime="item.reviewed_at">{{ formatDate(item.reviewed_at) }}</time>
+        </p>
         <p v-if="item.review_notes">备注：{{ item.review_notes }}</p>
       </section>
     </div>
@@ -332,6 +355,10 @@ function submit(action: ReviewActionInput['action']): void {
 
 .reason-card > p:last-child {
   @apply mt-3 text-sm leading-6 text-[#4e5a50];
+}
+
+.reason-card h3 {
+  @apply mt-2 text-sm font-semibold text-[#27352a];
 }
 
 .action-card {

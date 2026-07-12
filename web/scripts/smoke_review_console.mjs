@@ -59,6 +59,15 @@ try {
   await page.getByText('复核结果已保存，待处理队列已更新。').waitFor()
   await page.getByText('人工最终决定：allow').waitFor()
 
+  await page.getByRole('button', { name: '审核历史' }).click()
+  await page.getByRole('heading', { name: '审核历史', exact: true }).waitFor()
+  await page.getByLabel('人工状态').selectOption('approved')
+  const historyContent = page.getByText(content, { exact: true })
+  await historyContent.waitFor()
+  await historyContent.click()
+  await page.getByText('复核人：操作员 #1').waitFor()
+  await page.getByText('人工最终决定：allow').waitFor()
+
   const resultResponse = await page.request.get(
     `${baseURL}/api/v1/moderation/results/${moderation.request_id}`,
     { headers: { Authorization: `Bearer ${token}` } },
@@ -79,6 +88,7 @@ try {
     console_url: `${baseURL}/console/`,
     decision: moderation.decision,
     final_decision: result.final_decision,
+    history_filter: 'approved',
     request_id: moderation.request_id,
     review_status: result.review_status,
   }, null, 2)}\n`)

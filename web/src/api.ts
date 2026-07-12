@@ -3,6 +3,8 @@ import type {
   LoginCredentials,
   ReviewActionInput,
   ReviewCase,
+  ReviewHistoryFilter,
+  ReviewStatus,
   Session,
 } from './types'
 
@@ -64,11 +66,34 @@ export function login(credentials: LoginCredentials): Promise<Session> {
   })
 }
 
-export async function listPendingReviews(token: string): Promise<ReviewCase[]> {
-  const response = await request<{ items: ReviewCase[] }>('/reviews?status=pending', {
+export async function listReviews(
+  token: string,
+  status: ReviewStatus,
+): Promise<ReviewCase[]> {
+  const response = await request<{ items: ReviewCase[] }>(`/reviews?status=${status}`, {
     headers: authorized(token),
   })
   return response.items
+}
+
+export function listPendingReviews(token: string): Promise<ReviewCase[]> {
+  return listReviews(token, 'pending')
+}
+
+export async function listReviewHistory(
+  token: string,
+  filter: ReviewHistoryFilter,
+): Promise<ReviewCase[]> {
+  const statuses: ReviewStatus[] = filter === 'all'
+    ? ['approved', 'rejected', 'mistake']
+    : [filter]
+  const groups = await Promise.all(statuses.map((status) => listReviews(token, status)))
+
+  return groups.flat().sort((left, right) => {
+    const leftTime = Date.parse(left.reviewed_at || left.created_at)
+    const rightTime = Date.parse(right.reviewed_at || right.created_at)
+    return rightTime - leftTime || right.id - left.id
+  })
 }
 
 export function getReview(token: string, id: number): Promise<ReviewCase> {

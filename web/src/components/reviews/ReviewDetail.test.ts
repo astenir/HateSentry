@@ -49,4 +49,33 @@ describe('ReviewDetail', () => {
       [{ action: 'mark-mistake', notes: '', finalDecision: 'allow' }],
     ])
   })
+
+  it('shows the operator and review time for a completed case', () => {
+    const wrapper = mount(ReviewDetail, {
+      props: {
+        context: 'history',
+        item: {
+          ...pendingCase,
+          status: 'approved',
+          final_decision: 'allow',
+          reviewer_id: 9,
+          review_notes: '人工确认语境无害',
+          reviewed_at: '2026-07-12T08:00:00Z',
+        },
+        loading: false,
+        busy: false,
+      },
+    })
+
+    expect(wrapper.text()).toContain('人工最终决定：allow')
+    expect(wrapper.text()).toContain('复核人：操作员 #9')
+    expect(wrapper.text()).toContain('AI 建议依据')
+    expect(wrapper.text()).toContain('风险位于人工复核区间')
+    expect(wrapper.text()).toContain('60')
+    expect(wrapper.text()).toContain('harassment')
+    expect(wrapper.text()).toContain('策略决定')
+    expect(wrapper.text()).toContain('default-v1')
+    expect(wrapper.text()).toContain('备注：人工确认语境无害')
+    expect(wrapper.get('time').attributes('datetime')).toBe('2026-07-12T08:00:00Z')
+  })
 })

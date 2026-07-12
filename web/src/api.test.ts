@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { finalizeReview, listPendingReviews, login } from './api'
+import { finalizeReview, listPendingReviews, listReviewHistory, login } from './api'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -44,6 +44,44 @@ describe('review console API client', () => {
         headers: expect.objectContaining({ Authorization: 'Bearer jwt-token' }),
       }),
     )
+  })
+
+  it('combines completed review statuses and sorts them by review time', async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      const status = new URL(url, 'http://console.local').searchParams.get('status')
+      const items = status === 'approved'
+        ? [{ id: 1, reviewed_at: '2026-07-12T09:00:00Z', created_at: '2026-07-12T07:00:00Z' }]
+        : status === 'rejected'
+          ? [{ id: 2, reviewed_at: '2026-07-12T09:00:00Z', created_at: '2026-07-12T07:30:00Z' }]
+          : []
+      return Promise.resolve(new Response(JSON.stringify({ items }), { status: 200 }))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const history = await listReviewHistory('jwt-token', 'all')
+
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      '/api/v1/reviews?status=approved',
+      '/api/v1/reviews?status=rejected',
+      '/api/v1/reviews?status=mistake',
+    ])
+    expect(history.map((item) => item.id)).toEqual([2, 1])
+  })
+
+  it('does not return partial all-history results when one status request fails', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url: string) => {
+      const failed = url.includes('status=rejected')
+      return Promise.resolve(new Response(
+        JSON.stringify(failed ? { message: '历史查询失败' } : { items: [] }),
+        { status: failed ? 503 : 200 },
+      ))
+    }))
+
+    await expect(listReviewHistory('jwt-token', 'all')).rejects.toMatchObject({
+      message: '历史查询失败',
+      status: 503,
+    })
   })
 
   it('preserves conflict status and code for concurrent review handling', async () => {

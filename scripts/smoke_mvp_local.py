@@ -291,7 +291,7 @@ def wait_for_rabbitmq():
             "rabbitmq",
             "rabbitmq-diagnostics",
             "-q",
-            "ping",
+            "check_port_connectivity",
         ],
     )
 

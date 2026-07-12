@@ -1,10 +1,9 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { shallowRef } from 'vue'
 
-import ReviewDetail from './ReviewDetail.vue'
-import ReviewQueue from './ReviewQueue.vue'
-import { useReviews } from '@/composables/useReviews'
-import type { ReviewActionInput, Session } from '@/types'
+import ReviewHistoryWorkspace from '@/components/history/ReviewHistoryWorkspace.vue'
+import PendingReviewWorkspace from './PendingReviewWorkspace.vue'
+import type { Session } from '@/types'
 
 const props = defineProps<{
   session: Session
@@ -14,27 +13,7 @@ const emit = defineEmits<{
   logout: []
 }>()
 
-const {
-  items,
-  selected,
-  isLoading,
-  isLoadingDetail,
-  isSubmitting,
-  error,
-  notice,
-  loadQueue,
-  selectReview,
-  submitAction,
-} = useReviews({
-  token: props.session.token,
-  onUnauthorized: () => emit('logout'),
-})
-
-onMounted(loadQueue)
-
-function handleAction(input: ReviewActionInput): void {
-  void submitAction(input)
-}
+const activeView = shallowRef<'pending' | 'history'>('pending')
 </script>
 
 <template>
@@ -57,27 +36,35 @@ function handleAction(input: ReviewActionInput): void {
       </div>
     </header>
 
-    <div class="feedback-region" aria-live="polite" aria-atomic="true">
-      <p v-if="error" class="feedback feedback-error">{{ error }}</p>
-      <p v-else-if="notice" class="feedback feedback-success">{{ notice }}</p>
-    </div>
+    <nav class="console-nav" aria-label="复核控制台视图">
+      <button
+        type="button"
+        :aria-pressed="activeView === 'pending'"
+        :class="{ 'nav-active': activeView === 'pending' }"
+        @click="activeView = 'pending'"
+      >
+        待处理队列
+      </button>
+      <button
+        type="button"
+        :aria-pressed="activeView === 'history'"
+        :class="{ 'nav-active': activeView === 'history' }"
+        @click="activeView = 'history'"
+      >
+        审核历史
+      </button>
+    </nav>
 
-    <div class="workspace-grid">
-      <ReviewQueue
-        :items="items"
-        :selected-id="selected?.id"
-        :loading="isLoading"
-        :busy="isSubmitting"
-        @select="selectReview"
-        @refresh="loadQueue"
-      />
-      <ReviewDetail
-        :item="selected"
-        :loading="isLoadingDetail"
-        :busy="isSubmitting"
-        @action="handleAction"
-      />
-    </div>
+    <PendingReviewWorkspace
+      v-if="activeView === 'pending'"
+      :token="session.token"
+      @unauthorized="emit('logout')"
+    />
+    <ReviewHistoryWorkspace
+      v-else
+      :token="session.token"
+      @unauthorized="emit('logout')"
+    />
   </div>
 </template>
 
@@ -85,7 +72,7 @@ function handleAction(input: ReviewActionInput): void {
 @reference "../../styles.css";
 
 .workspace-shell {
-  @apply flex min-h-screen flex-col bg-[#fbfaf5] text-[#172119];
+  @apply flex min-h-screen flex-col bg-[#fbfaf5] text-[#172119] lg:h-screen;
 }
 
 .app-header {
@@ -132,30 +119,15 @@ function handleAction(input: ReviewActionInput): void {
   @apply min-h-11 rounded-lg border border-white/15 px-3 py-2 text-xs font-semibold transition hover:bg-white/10 focus:outline-none focus:ring-4 focus:ring-white/10;
 }
 
-.feedback-region {
-  @apply bg-[#ebe9df];
+.console-nav {
+  @apply flex gap-1 border-b border-[#d8d8cd] bg-[#ebe9df] px-4 py-2 md:px-7;
 }
 
-.feedback {
-  @apply border-b px-5 py-3 text-sm md:px-7;
+.console-nav button {
+  @apply min-h-11 rounded-lg px-4 text-sm font-semibold text-[#5f6961] transition hover:bg-white/60 focus:outline-none focus:ring-4 focus:ring-[#456b4d]/15;
 }
 
-.feedback-error {
-  @apply border-[#e0b7b0] bg-[#f7e8e5] text-[#8b392f];
-}
-
-.feedback-success {
-  @apply border-[#bfd2ba] bg-[#eaf4e7] text-[#365e3e];
-}
-
-.workspace-grid {
-  @apply grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[22rem_minmax(0,1fr)];
-  height: calc(100vh - 4.5rem);
-}
-
-@media (max-width: 1023px) {
-  .workspace-grid {
-    height: auto;
-  }
+.console-nav .nav-active {
+  @apply bg-white text-[#23402a] shadow-sm;
 }
 </style>

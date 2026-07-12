@@ -1,5 +1,7 @@
 export type Decision = 'allow' | 'review' | 'block'
 export type ReviewStatus = 'pending' | 'approved' | 'rejected' | 'mistake'
+export type CompletedReviewStatus = Exclude<ReviewStatus, 'pending'>
+export type ReviewHistoryFilter = 'all' | CompletedReviewStatus
 export type ReviewAction = 'approve' | 'reject' | 'mark-mistake'
 
 export interface UserInfo {

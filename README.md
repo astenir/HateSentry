@@ -677,7 +677,9 @@ npm run dev
 VITE_API_PROXY_TARGET=http://127.0.0.1:9000 npm run dev
 ```
 
-当前 UI 只覆盖管理员登录、待复核队列、单条案件详情、通过、拒绝和标记误判。JWT 会话只保存在当前浏览器标签页的 `sessionStorage` 中。客户端管理、策略编辑、审核历史和仪表盘仍属于后续阶段。
+当前 UI 覆盖管理员登录、待复核队列、单条案件详情、通过、拒绝、标记误判，以及按人工状态筛选的审核历史。历史详情会展示 AI 风险建议、策略决定、人工最终决定、复核人 ID、复核时间和备注。JWT 会话只保存在当前浏览器标签页的 `sessionStorage` 中。客户端管理、策略编辑、Webhook 管理和仪表盘仍属于后续阶段。
+
+审核历史当前面向小型应用和 MVP 数据量：选择“全部已处理”时，浏览器会分别读取 `approved`、`rejected`、`mistake` 三类完整列表并在本地按复核时间排序。服务端分页、单次 completed 查询和确定性的游标排序尚未实现；数据持续增长的部署应先补齐这些能力，再把该页面作为长期大规模审计入口。
 
 生产构建由 Go 服务在 `/console/` 同源提供。使用 Docker Compose 时，启动完成后直接访问：
 
@@ -701,7 +703,7 @@ npm --prefix web exec playwright install chromium
 make smoke-console-local
 ```
 
-`smoke-console-local` 会保留原有 API MVP 烟测，并额外使用真实 Chromium 从 `/console/` 登录管理员、通过真实 moderation API 创建一条 `review` 案件、在控制台批准，再反查持久化后的 `approved` / `allow` 最终状态。
+`smoke-console-local` 会保留原有 API MVP 烟测，并额外使用真实 Chromium 从 `/console/` 登录管理员、通过真实 moderation API 创建一条 `review` 案件、在控制台批准、进入审核历史按 `approved` 筛选并查看该记录，再反查持久化后的 `approved` / `allow` 最终状态。
 
 ### 运行集成测试
 ```bash
@@ -941,6 +943,7 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 - [x] Docker Compose 端到端健康检查验证
 - [x] 人工复核控制台登录、待复核队列和单条处理
 - [x] `/console/` 同源部署和真实 Chromium 复核烟测
+- [x] 审核历史、人工状态筛选和复核详情追溯
 
 ### 进行中 🚧
 - [ ] 更完整的操作指标、失败分类和延迟观测

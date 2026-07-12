@@ -1,7 +1,7 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { ApiError, getReview, listPendingReviews } from '@/api'
+import { ApiError, getReview, listPendingReviews, listReviewHistory } from '@/api'
 import type { ReviewCase, Session } from '@/types'
 import App from './App.vue'
 
@@ -12,12 +12,14 @@ vi.mock('@/api', async (importOriginal) => {
     finalizeReview: vi.fn(),
     getReview: vi.fn(),
     listPendingReviews: vi.fn(),
+    listReviewHistory: vi.fn(),
     login: vi.fn(),
   }
 })
 
 const mockedGet = vi.mocked(getReview)
 const mockedList = vi.mocked(listPendingReviews)
+const mockedHistory = vi.mocked(listReviewHistory)
 
 const session: Session = {
   token: 'jwt-token',
@@ -39,11 +41,22 @@ const pendingCase: ReviewCase = {
   created_at: '2026-07-12T06:00:00Z',
 }
 
+const approvedCase: ReviewCase = {
+  ...pendingCase,
+  id: 8,
+  content: '已经人工通过的内容',
+  status: 'approved',
+  final_decision: 'allow',
+  reviewer_id: 1,
+  reviewed_at: '2026-07-12T08:00:00Z',
+}
+
 describe('App authentication boundary', () => {
   beforeEach(() => {
     sessionStorage.clear()
     sessionStorage.setItem('hatesentry-operator-session', JSON.stringify(session))
     mockedList.mockResolvedValue([pendingCase])
+    mockedHistory.mockResolvedValue([approvedCase])
   })
 
   it('clears the session and returns to login after a detail 401', async () => {
@@ -69,5 +82,32 @@ describe('App authentication boundary', () => {
     expect(wrapper.text()).toContain('Forbidden')
     expect(wrapper.find('.detail-placeholder').exists()).toBe(true)
     expect(sessionStorage.getItem('hatesentry-operator-session')).not.toBeNull()
+  })
+
+  it('switches from the pending queue to completed review history', async () => {
+    const wrapper = mount(App)
+    await flushPromises()
+
+    await wrapper.get('button[aria-pressed="false"]').trigger('click')
+    await flushPromises()
+
+    expect(mockedHistory).toHaveBeenCalledWith('jwt-token', 'all')
+    expect(wrapper.text()).toContain('审核历史')
+    expect(wrapper.text()).toContain('已经人工通过的内容')
+    expect(wrapper.text()).toContain('策略 review → 人工 allow')
+  })
+
+  it('clears the session after a history detail 401', async () => {
+    mockedGet.mockRejectedValue(new ApiError('Token expired', 401, 'UNAUTHORIZED'))
+    const wrapper = mount(App)
+    await flushPromises()
+
+    await wrapper.get('button[aria-pressed="false"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('.history-item').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('进入复核队列')
+    expect(sessionStorage.getItem('hatesentry-operator-session')).toBeNull()
   })
 })
