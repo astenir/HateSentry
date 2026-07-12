@@ -747,9 +747,9 @@ Content-Type: application/json
 
 响应字段与通过复核一致，其中 `status` 为 `mistake`。
 
-### 6. 复核与审核统计
+### 6. 复核、审核与 Webhook 投递统计
 
-返回当前审核工作流的最小运营统计。`allowed` / `blocked` 会把自动策略终态和人工复核终态合并统计；待复核内容只计入 `pending_review`，不会提前计入 `allowed` 或 `blocked`。
+返回当前持久化记录的一致累计快照，不包含时间窗口。`allowed` / `blocked` 会把自动策略终态和人工复核终态合并统计；待复核内容只计入 `pending_review`，不会提前计入 `allowed` 或 `blocked`。所有计数均排除已经软删除的记录。
 
 **端点**: `GET /reviews/stats`
 
@@ -767,9 +767,15 @@ Authorization: Bearer <admin-token>
   "pending_review": 10,
   "reviewed": 25,
   "mistakes": 2,
-  "mistake_rate": 0.08
+  "mistake_rate": 0.08,
+  "webhook_total": 18,
+  "webhook_succeeded": 15,
+  "webhook_failed": 2,
+  "webhook_retrying": 1
 }
 ```
+
+Webhook 字段按每个 delivery 的最新状态计数，不代表逐次投递尝试次数。三个状态计数之和等于 `webhook_total`。
 
 ## 旧版检测接口
 

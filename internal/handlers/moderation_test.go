@@ -835,6 +835,10 @@ func TestModerationHandlerGetReviewStats(t *testing.T) {
 			PendingReview:      1,
 			Reviewed:           3,
 			Mistakes:           1,
+			WebhookTotal:       8,
+			WebhookSucceeded:   5,
+			WebhookFailed:      2,
+			WebhookRetrying:    1,
 		},
 	}
 	handler := NewModerationHandler(moderation.NewService(
@@ -880,6 +884,9 @@ func TestModerationHandlerGetReviewStats(t *testing.T) {
 	}
 	if response.MistakeRate != float64(1)/float64(3) {
 		t.Fatalf("MistakeRate = %v, want %v", response.MistakeRate, float64(1)/float64(3))
+	}
+	if response.WebhookTotal != 8 || response.WebhookSucceeded != 5 || response.WebhookFailed != 2 || response.WebhookRetrying != 1 {
+		t.Fatalf("Webhook stats = %#v, want 8/5/2/1", response)
 	}
 }
 

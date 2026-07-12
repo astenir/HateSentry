@@ -344,6 +344,26 @@ GET /api/v1/reviews/stats
 Authorization: Bearer <admin-token>
 ```
 
+响应是当前持久化数据的累计快照：
+
+```json
+{
+  "total_moderated": 120,
+  "allowed": 72,
+  "blocked": 31,
+  "pending_review": 17,
+  "reviewed": 24,
+  "mistakes": 2,
+  "mistake_rate": 0.08333333333333333,
+  "webhook_total": 18,
+  "webhook_succeeded": 15,
+  "webhook_failed": 2,
+  "webhook_retrying": 1
+}
+```
+
+`allowed` 和 `blocked` 包含自动策略结果及已完成人工复核后的最终决定。Webhook 字段按每个 delivery 的最新状态计数，不是逐次投递尝试次数。
+
 #### 处理复核记录
 ```http
 POST /api/v1/reviews/:id/approve
@@ -702,7 +722,7 @@ npm run dev
 VITE_API_PROXY_TARGET=http://127.0.0.1:9000 npm run dev
 ```
 
-当前 UI 覆盖管理员登录、待复核队列、审核历史、外部客户端管理，以及 Webhook 投递运营。客户端页支持创建、启停、API Key 轮换、策略分配和 Webhook URL 配置；投递页可按状态、客户端 ID、请求 ID 查询每个 delivery 的最新状态，并对失败记录执行二次确认的手动重试。当前持久化模型只保存 delivery 最新状态和累计尝试次数，不是逐次尝试明细历史。运营接口中的失败原因会归一化为有限安全类别，不返回底层请求 URL、查询参数或数据库错误详情。
+当前 UI 覆盖管理员登录、待复核队列、审核历史、外部客户端管理、Webhook 投递运营和运营概览。运营概览展示累计审核总量、最终允许/阻断、待复核、已复核、误判率及 Webhook 最新状态分布；它是当前持久化状态的只读快照，不是带时间窗口的趋势报表。客户端页支持创建、启停、API Key 轮换、策略分配和 Webhook URL 配置；投递页可按状态、客户端 ID、请求 ID 查询每个 delivery 的最新状态，并对失败记录执行二次确认的手动重试。当前持久化模型只保存 delivery 最新状态和累计尝试次数，不是逐次尝试明细历史。运营接口中的失败原因会归一化为有限安全类别，不返回底层请求 URL、查询参数或数据库错误详情。
 
 JWT 会话只保存在当前浏览器标签页的 `sessionStorage` 中。完整客户端 API Key 和 Webhook 签名 secret 只存在于创建、轮换或 Webhook 更新响应以及当前页面的一次性内存面板中，不写入客户端列表、`localStorage` 或 `sessionStorage`；关闭面板后即从前端状态清除。API Key 如未保存只能再次轮换，Webhook secret 如未保存只能重新配置 Webhook。停用会立即拒绝该客户端的 API Key；API Key 轮换会立即使旧 Key 失效；每次保存非空 Webhook URL 都会生成新 secret 并使旧 secret 失效，清除 URL 会停止回调并清除 secret。
 
@@ -830,7 +850,7 @@ make create-user
 - 人工复核队列：`GET /api/v1/reviews?status=pending`。
 - 已处理复核历史：`GET /api/v1/reviews?status=completed&limit=50`，支持 `approved`、`rejected`、`mistake` 单状态过滤及不透明游标分页。
 - 单条复核记录查询：`GET /api/v1/reviews/:id`。
-- 复核与审核统计：`GET /api/v1/reviews/stats`。
+- 复核、审核和 Webhook 最新状态累计统计：`GET /api/v1/reviews/stats`。
 - 复核处理接口：`POST /api/v1/reviews/:id/approve`、`reject`、`mark-mistake`。
 - 外部客户端管理：`POST /api/v1/admin/clients`、`GET /api/v1/admin/clients`、`GET /api/v1/admin/clients/:id`。
 - 外部客户端名称更新：`POST /api/v1/admin/clients/:id/name`。
@@ -976,9 +996,10 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 - [x] 客户端策略目录、策略分配和恢复默认控制台
 - [x] 客户端 Webhook 配置、secret 轮换和清除控制台
 - [x] Webhook 投递状态查询、筛选和失败手动重试控制台
+- [x] 审核、人工复核和 Webhook 最新状态基础运营仪表盘
 
 ### 进行中 🚧
-- [ ] 更完整的操作指标、失败分类和延迟观测
+- [ ] 带时间窗口的趋势指标、失败分类和延迟观测
 - [ ] README、API 文档和运维文档持续按实现校准
 
 ### 计划中 📋
@@ -987,7 +1008,7 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 - [ ] 真实图片审核（下载、校验、provider 图片 API）
 - [ ] Webhook 逐次尝试明细历史和更完整的投递诊断
 - [ ] 数据导出功能
-- [ ] 指标仪表盘和告警建议
+- [ ] 趋势报表和告警建议
 
 ---
 

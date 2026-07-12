@@ -269,6 +269,29 @@ try {
     throw new Error('manual Webhook retry did not increment the persisted attempt count')
   }
 
+  const statsResponsePromise = page.waitForResponse((response) => {
+    const url = new URL(response.url())
+    return url.pathname === '/api/v1/reviews/stats'
+  })
+  await page.getByRole('button', { name: '运营概览' }).click()
+  const statsResponse = await statsResponsePromise
+  if (!statsResponse.ok()) {
+    throw new Error(`operations stats request failed with ${statsResponse.status()}`)
+  }
+  const operationsStats = await statsResponse.json()
+  await page.getByRole('heading', { name: '运营概览', exact: true }).waitFor()
+  await page.getByRole('heading', { name: '审核运营' }).waitFor()
+  await page.getByRole('heading', { name: '投递健康度' }).waitFor()
+  if (Number(await page.getByTestId('total-moderated').textContent()) !== operationsStats.total_moderated) {
+    throw new Error('dashboard moderation total does not match the operations API')
+  }
+  if (Number(await page.getByTestId('webhook-total').textContent()) !== operationsStats.webhook_total) {
+    throw new Error('dashboard Webhook total does not match the operations API')
+  }
+  if (operationsStats.total_moderated < 1 || operationsStats.reviewed < 1 || operationsStats.webhook_total < 1) {
+    throw new Error('dashboard did not include the smoke moderation, review, and Webhook records')
+  }
+
   await page.getByRole('button', { name: '客户端管理' }).click()
   await page.getByRole('button', { name: `配置 ${clientName} 的 Webhook` }).click()
   await page.getByRole('heading', { name: `配置 ${clientName} 的 Webhook` }).waitFor()
@@ -300,6 +323,7 @@ try {
     webhook_cleared: true,
     webhook_delivery_queried: true,
     webhook_manual_retry: true,
+    operations_dashboard_verified: true,
     old_key_rejected: true,
     new_key_accepted: true,
   }, null, 2)}\n`)

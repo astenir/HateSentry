@@ -154,6 +154,10 @@ type StoredStats struct {
 	PendingReview      int64
 	Reviewed           int64
 	Mistakes           int64
+	WebhookTotal       int64
+	WebhookSucceeded   int64
+	WebhookFailed      int64
+	WebhookRetrying    int64
 }
 
 // HistoryFilter contains validated filters for operator moderation history.
@@ -327,13 +331,17 @@ type ReviewCaseListOutput struct {
 
 // StatsOutput is the public representation of moderation and review operations metrics.
 type StatsOutput struct {
-	TotalModerated int64   `json:"total_moderated"`
-	Allowed        int64   `json:"allowed"`
-	Blocked        int64   `json:"blocked"`
-	PendingReview  int64   `json:"pending_review"`
-	Reviewed       int64   `json:"reviewed"`
-	Mistakes       int64   `json:"mistakes"`
-	MistakeRate    float64 `json:"mistake_rate"`
+	TotalModerated   int64   `json:"total_moderated"`
+	Allowed          int64   `json:"allowed"`
+	Blocked          int64   `json:"blocked"`
+	PendingReview    int64   `json:"pending_review"`
+	Reviewed         int64   `json:"reviewed"`
+	Mistakes         int64   `json:"mistakes"`
+	MistakeRate      float64 `json:"mistake_rate"`
+	WebhookTotal     int64   `json:"webhook_total"`
+	WebhookSucceeded int64   `json:"webhook_succeeded"`
+	WebhookFailed    int64   `json:"webhook_failed"`
+	WebhookRetrying  int64   `json:"webhook_retrying"`
 }
 
 // WebhookDeliveryOutput is the operator view of a persisted webhook delivery.
@@ -977,13 +985,17 @@ func (s *Service) GetStats(ctx context.Context, reviewerID uint) (StatsOutput, e
 	}
 
 	return StatsOutput{
-		TotalModerated: stored.TotalModerated,
-		Allowed:        allowed,
-		Blocked:        blocked,
-		PendingReview:  stored.PendingReview,
-		Reviewed:       stored.Reviewed,
-		Mistakes:       stored.Mistakes,
-		MistakeRate:    mistakeRate,
+		TotalModerated:   stored.TotalModerated,
+		Allowed:          allowed,
+		Blocked:          blocked,
+		PendingReview:    stored.PendingReview,
+		Reviewed:         stored.Reviewed,
+		Mistakes:         stored.Mistakes,
+		MistakeRate:      mistakeRate,
+		WebhookTotal:     stored.WebhookTotal,
+		WebhookSucceeded: stored.WebhookSucceeded,
+		WebhookFailed:    stored.WebhookFailed,
+		WebhookRetrying:  stored.WebhookRetrying,
 	}, nil
 }
 

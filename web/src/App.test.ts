@@ -9,6 +9,7 @@ import {
   listPendingReviews,
   listReviewHistory,
   listWebhookDeliveries,
+  getOperationsStats,
 } from '@/api'
 import type { ReviewCase, Session } from '@/types'
 import App from './App.vue'
@@ -24,6 +25,7 @@ vi.mock('@/api', async (importOriginal) => {
     listClients: vi.fn(),
     listModerationPolicies: vi.fn(),
     listWebhookDeliveries: vi.fn(),
+    getOperationsStats: vi.fn(),
     login: vi.fn(),
   }
 })
@@ -34,6 +36,7 @@ const mockedHistory = vi.mocked(listReviewHistory)
 const mockedClients = vi.mocked(listClients)
 const mockedPolicies = vi.mocked(listModerationPolicies)
 const mockedDeliveries = vi.mocked(listWebhookDeliveries)
+const mockedStats = vi.mocked(getOperationsStats)
 
 const session: Session = {
   token: 'jwt-token',
@@ -76,6 +79,19 @@ describe('App authentication boundary', () => {
       { version: 'default-v1', review_threshold: 0.4, block_threshold: 0.75, default: true },
     ])
     mockedDeliveries.mockResolvedValue([])
+    mockedStats.mockResolvedValue({
+      total_moderated: 12,
+      allowed: 7,
+      blocked: 3,
+      pending_review: 2,
+      reviewed: 5,
+      mistakes: 1,
+      mistake_rate: 0.2,
+      webhook_total: 9,
+      webhook_succeeded: 6,
+      webhook_failed: 2,
+      webhook_retrying: 1,
+    })
   })
 
   it('clears the session and returns to login after a detail 401', async () => {
@@ -176,5 +192,30 @@ describe('App authentication boundary', () => {
     await wrapper.get('button:nth-child(4)[aria-pressed="false"]').trigger('click'); await flushPromises()
     expect(mockedDeliveries).toHaveBeenCalledWith('jwt-token', { status: 'all', clientId: '', requestId: '' })
     expect(wrapper.text()).toContain('Webhook 投递记录')
+  })
+
+  it('switches to the operations dashboard and loads persisted metrics', async () => {
+    const wrapper = mount(App)
+    await flushPromises()
+
+    await wrapper.get('button:nth-child(5)[aria-pressed="false"]').trigger('click')
+    await flushPromises()
+
+    expect(mockedStats).toHaveBeenCalledWith('jwt-token')
+    expect(wrapper.text()).toContain('运营概览')
+    expect(wrapper.text()).toContain('审核总量')
+    expect(wrapper.text()).toContain('投递健康度')
+  })
+
+  it('clears the session after an operations metrics 401', async () => {
+    mockedStats.mockRejectedValue(new ApiError('Token expired', 401, 'UNAUTHORIZED'))
+    const wrapper = mount(App)
+    await flushPromises()
+
+    await wrapper.get('button:nth-child(5)[aria-pressed="false"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('进入复核队列')
+    expect(sessionStorage.getItem('hatesentry-operator-session')).toBeNull()
   })
 })

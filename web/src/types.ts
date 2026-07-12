@@ -117,6 +117,20 @@ export interface WebhookDeliveryFilter {
   requestId: string
 }
 
+export interface OperationsStats {
+  total_moderated: number
+  allowed: number
+  blocked: number
+  pending_review: number
+  reviewed: number
+  mistakes: number
+  mistake_rate: number
+  webhook_total: number
+  webhook_succeeded: number
+  webhook_failed: number
+  webhook_retrying: number
+}
+
 export interface ErrorResponse {
   code?: string
   error?: string

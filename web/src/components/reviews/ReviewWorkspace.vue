@@ -4,6 +4,7 @@ import { shallowRef } from 'vue'
 import ReviewHistoryWorkspace from '@/components/history/ReviewHistoryWorkspace.vue'
 import ClientManagementWorkspace from '@/components/clients/ClientManagementWorkspace.vue'
 import WebhookDeliveryWorkspace from '@/components/webhooks/WebhookDeliveryWorkspace.vue'
+import OperationsDashboardWorkspace from '@/components/dashboard/OperationsDashboardWorkspace.vue'
 import PendingReviewWorkspace from './PendingReviewWorkspace.vue'
 import type { Session } from '@/types'
 
@@ -15,7 +16,7 @@ const emit = defineEmits<{
   logout: []
 }>()
 
-const activeView = shallowRef<'pending' | 'history' | 'clients' | 'deliveries'>('pending')
+const activeView = shallowRef<'pending' | 'history' | 'clients' | 'deliveries' | 'dashboard'>('pending')
 </script>
 
 <template>
@@ -64,6 +65,14 @@ const activeView = shallowRef<'pending' | 'history' | 'clients' | 'deliveries'>(
         客户端管理
       </button>
       <button type="button" :aria-pressed="activeView === 'deliveries'" :class="{ 'nav-active': activeView === 'deliveries' }" @click="activeView = 'deliveries'">Webhook 投递</button>
+      <button
+        type="button"
+        :aria-pressed="activeView === 'dashboard'"
+        :class="{ 'nav-active': activeView === 'dashboard' }"
+        @click="activeView = 'dashboard'"
+      >
+        运营概览
+      </button>
     </nav>
 
     <PendingReviewWorkspace
@@ -81,7 +90,12 @@ const activeView = shallowRef<'pending' | 'history' | 'clients' | 'deliveries'>(
       :token="session.token"
       @unauthorized="emit('logout')"
     />
-    <WebhookDeliveryWorkspace v-else :token="session.token" @unauthorized="emit('logout')" />
+    <WebhookDeliveryWorkspace
+      v-else-if="activeView === 'deliveries'"
+      :token="session.token"
+      @unauthorized="emit('logout')"
+    />
+    <OperationsDashboardWorkspace v-else :token="session.token" @unauthorized="emit('logout')" />
   </div>
 </template>
 
@@ -137,11 +151,11 @@ const activeView = shallowRef<'pending' | 'history' | 'clients' | 'deliveries'>(
 }
 
 .console-nav {
-  @apply flex gap-1 border-b border-[#d8d8cd] bg-[#ebe9df] px-4 py-2 md:px-7;
+  @apply flex gap-1 overflow-x-auto border-b border-[#d8d8cd] bg-[#ebe9df] px-4 py-2 md:px-7;
 }
 
 .console-nav button {
-  @apply min-h-11 rounded-lg px-4 text-sm font-semibold text-[#5f6961] transition hover:bg-white/60 focus:outline-none focus:ring-4 focus:ring-[#456b4d]/15;
+  @apply min-h-11 shrink-0 rounded-lg px-4 text-sm font-semibold text-[#5f6961] transition hover:bg-white/60 focus:outline-none focus:ring-4 focus:ring-[#456b4d]/15;
 }
 
 .console-nav .nav-active {

@@ -5,6 +5,7 @@ import {
   createClient,
   deactivateClient,
   finalizeReview,
+  getOperationsStats,
   listClients,
   listModerationPolicies,
   listWebhookDeliveries,
@@ -59,6 +60,19 @@ describe('review console API client', () => {
         headers: expect.objectContaining({ Authorization: 'Bearer jwt-token' }),
       }),
     )
+  })
+
+  it('loads operations statistics with the administrator bearer token', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ total_moderated: 12 }), { status: 200 }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await getOperationsStats('jwt-token')
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/reviews/stats', expect.objectContaining({
+      headers: expect.objectContaining({ Authorization: 'Bearer jwt-token' }),
+    }))
   })
 
   it('loads all completed reviews through one cursor-paginated request', async () => {

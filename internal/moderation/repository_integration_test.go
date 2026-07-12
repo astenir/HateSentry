@@ -805,9 +805,11 @@ func TestGormRepositoryGetStatsIntegration(t *testing.T) {
 	}
 	if err := db.AutoMigrate(
 		&models.User{},
+		&models.ClientApplication{},
 		&models.ModerationRequest{},
 		&models.ModerationResult{},
 		&models.ReviewCase{},
+		&models.WebhookDelivery{},
 	); err != nil {
 		t.Fatalf("auto migrate test database: %v", err)
 	}
@@ -816,11 +818,23 @@ func TestGormRepositoryGetStatsIntegration(t *testing.T) {
 	ctx := context.Background()
 	prefix := uuid.New().String()
 	user := createIntegrationUser(t, ctx, db, "stats")
+	client := models.ClientApplication{
+		UserID:       user.ID,
+		Name:         "Stats Test",
+		APIKeyHash:   uuid.New().String(),
+		APIKeyPrefix: "hs_stats",
+		Status:       "active",
+	}
+	if err := db.WithContext(ctx).Create(&client).Error; err != nil {
+		t.Fatalf("create stats client: %v", err)
+	}
 
 	t.Cleanup(func() {
+		db.Unscoped().Where("delivery_id LIKE ?", prefix+"%").Delete(&models.WebhookDelivery{})
 		db.Unscoped().Where("request_id LIKE ?", prefix+"%").Delete(&models.ReviewCase{})
 		db.Unscoped().Where("request_id LIKE ?", prefix+"%").Delete(&models.ModerationResult{})
 		db.Unscoped().Where("request_id LIKE ?", prefix+"%").Delete(&models.ModerationRequest{})
+		db.Unscoped().Delete(&models.ClientApplication{}, client.ID)
 		db.Unscoped().Delete(&models.User{}, user.ID)
 	})
 
@@ -875,6 +889,42 @@ func TestGormRepositoryGetStatsIntegration(t *testing.T) {
 		}
 	}
 
+	for index, status := range []WebhookDeliveryStatus{
+		WebhookDeliverySucceeded,
+		WebhookDeliveryFailed,
+		WebhookDeliveryRetrying,
+	} {
+		delivery := models.WebhookDelivery{
+			DeliveryID:    prefix + "-delivery-" + strconv.Itoa(index),
+			RequestID:     prefix + "-delivery-request-" + strconv.Itoa(index),
+			ClientID:      client.ID,
+			Event:         "moderation.final_decision",
+			Status:        string(status),
+			AttemptCount:  1,
+			LastAttemptAt: time.Now().UTC(),
+			Payload:       `{}`,
+		}
+		if err := db.WithContext(ctx).Create(&delivery).Error; err != nil {
+			t.Fatalf("seed webhook delivery %q: %v", status, err)
+		}
+	}
+	softDeletedDelivery := models.WebhookDelivery{
+		DeliveryID:    prefix + "-delivery-deleted",
+		RequestID:     prefix + "-delivery-request-deleted",
+		ClientID:      client.ID,
+		Event:         "moderation.final_decision",
+		Status:        string(WebhookDeliveryFailed),
+		AttemptCount:  1,
+		LastAttemptAt: time.Now().UTC(),
+		Payload:       `{}`,
+	}
+	if err := db.WithContext(ctx).Create(&softDeletedDelivery).Error; err != nil {
+		t.Fatalf("seed soft-deleted webhook delivery: %v", err)
+	}
+	if err := db.WithContext(ctx).Delete(&softDeletedDelivery).Error; err != nil {
+		t.Fatalf("soft delete webhook delivery: %v", err)
+	}
+
 	stats, err := repository.GetStats(ctx)
 	if err != nil {
 		t.Fatalf("GetStats() error = %v", err)
@@ -888,6 +938,16 @@ func TestGormRepositoryGetStatsIntegration(t *testing.T) {
 	assertStatsDelta(t, "PendingReview", stats.PendingReview, baseline.PendingReview, 1)
 	assertStatsDelta(t, "Reviewed", stats.Reviewed, baseline.Reviewed, 3)
 	assertStatsDelta(t, "Mistakes", stats.Mistakes, baseline.Mistakes, 1)
+	assertStatsDelta(t, "WebhookTotal", stats.WebhookTotal, baseline.WebhookTotal, 3)
+	assertStatsDelta(t, "WebhookSucceeded", stats.WebhookSucceeded, baseline.WebhookSucceeded, 1)
+	assertStatsDelta(t, "WebhookFailed", stats.WebhookFailed, baseline.WebhookFailed, 1)
+	assertStatsDelta(t, "WebhookRetrying", stats.WebhookRetrying, baseline.WebhookRetrying, 1)
+	if stats.PolicyAllowed+stats.PolicyBlocked+stats.ReviewFinalAllowed+stats.ReviewFinalBlocked+stats.PendingReview != stats.TotalModerated {
+		t.Fatalf("moderation stats are not internally consistent: %#v", stats)
+	}
+	if stats.WebhookSucceeded+stats.WebhookFailed+stats.WebhookRetrying != stats.WebhookTotal {
+		t.Fatalf("webhook stats are not internally consistent: %#v", stats)
+	}
 }
 
 func TestGormRepositoryListHistoryIntegration(t *testing.T) {

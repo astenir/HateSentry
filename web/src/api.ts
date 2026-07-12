@@ -14,6 +14,7 @@ import type {
   WebhookUpdateCredential,
   WebhookDelivery,
   WebhookDeliveryFilter,
+  OperationsStats,
 } from './types'
 
 const API_PREFIX = '/api/v1'
@@ -205,6 +206,12 @@ export async function listWebhookDeliveries(
 export function retryWebhookDelivery(token: string, id: number): Promise<WebhookDelivery> {
   return request<WebhookDelivery>(`/admin/webhook-deliveries/${id}/retry`, {
     method: 'POST',
+    headers: authorized(token),
+  })
+}
+
+export function getOperationsStats(token: string): Promise<OperationsStats> {
+  return request<OperationsStats>('/reviews/stats', {
     headers: authorized(token),
   })
 }

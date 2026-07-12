@@ -2,6 +2,7 @@ package moderation
 
 import (
 	"context"
+	"database/sql"
 	stderrors "errors"
 	"strings"
 	"time"
@@ -459,55 +460,18 @@ func (r *GormRepository) GetStats(ctx context.Context) (StoredStats, error) {
 		return StoredStats{}, apperrors.ConfigurationError("moderation database is not configured")
 	}
 
-	db := r.db.WithContext(ctx)
 	var stats StoredStats
-	counts := []statsCountQuery{
-		{
-			name:  "total moderated",
-			query: totalModeratedStatsQuery(db),
-			dest:  &stats.TotalModerated,
-		},
-		{
-			name:  "policy allowed",
-			query: policyDecisionStatsQuery(db, DecisionAllow),
-			dest:  &stats.PolicyAllowed,
-		},
-		{
-			name:  "policy blocked",
-			query: policyDecisionStatsQuery(db, DecisionBlock),
-			dest:  &stats.PolicyBlocked,
-		},
-		{
-			name:  "review final allowed",
-			query: reviewFinalDecisionStatsQuery(db, DecisionAllow),
-			dest:  &stats.ReviewFinalAllowed,
-		},
-		{
-			name:  "review final blocked",
-			query: reviewFinalDecisionStatsQuery(db, DecisionBlock),
-			dest:  &stats.ReviewFinalBlocked,
-		},
-		{
-			name:  "pending review",
-			query: reviewStatusStatsQuery(db, ReviewStatusPending),
-			dest:  &stats.PendingReview,
-		},
-		{
-			name:  "reviewed",
-			query: reviewedStatsQuery(db),
-			dest:  &stats.Reviewed,
-		},
-		{
-			name:  "mistakes",
-			query: reviewStatusStatsQuery(db, ReviewStatusMistake),
-			dest:  &stats.Mistakes,
-		},
-	}
-
-	for _, count := range counts {
-		if err := count.query.Count(count.dest).Error; err != nil {
-			return StoredStats{}, apperrors.DatabaseError(err, "failed to count "+count.name)
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		counts := statsCountQueries(tx, &stats)
+		for _, count := range counts {
+			if err := count.query.Count(count.dest).Error; err != nil {
+				return apperrors.DatabaseError(err, "failed to count "+count.name)
+			}
 		}
+		return nil
+	}, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	if err != nil {
+		return StoredStats{}, err
 	}
 
 	return stats, nil
@@ -517,6 +481,23 @@ type statsCountQuery struct {
 	name  string
 	query *gorm.DB
 	dest  *int64
+}
+
+func statsCountQueries(db *gorm.DB, stats *StoredStats) []statsCountQuery {
+	return []statsCountQuery{
+		{name: "total moderated", query: totalModeratedStatsQuery(db), dest: &stats.TotalModerated},
+		{name: "policy allowed", query: policyDecisionStatsQuery(db, DecisionAllow), dest: &stats.PolicyAllowed},
+		{name: "policy blocked", query: policyDecisionStatsQuery(db, DecisionBlock), dest: &stats.PolicyBlocked},
+		{name: "review final allowed", query: reviewFinalDecisionStatsQuery(db, DecisionAllow), dest: &stats.ReviewFinalAllowed},
+		{name: "review final blocked", query: reviewFinalDecisionStatsQuery(db, DecisionBlock), dest: &stats.ReviewFinalBlocked},
+		{name: "pending review", query: reviewStatusStatsQuery(db, ReviewStatusPending), dest: &stats.PendingReview},
+		{name: "reviewed", query: reviewedStatsQuery(db), dest: &stats.Reviewed},
+		{name: "mistakes", query: reviewStatusStatsQuery(db, ReviewStatusMistake), dest: &stats.Mistakes},
+		{name: "webhook deliveries", query: webhookDeliveryStatsQuery(db, ""), dest: &stats.WebhookTotal},
+		{name: "succeeded webhook deliveries", query: webhookDeliveryStatsQuery(db, WebhookDeliverySucceeded), dest: &stats.WebhookSucceeded},
+		{name: "failed webhook deliveries", query: webhookDeliveryStatsQuery(db, WebhookDeliveryFailed), dest: &stats.WebhookFailed},
+		{name: "retrying webhook deliveries", query: webhookDeliveryStatsQuery(db, WebhookDeliveryRetrying), dest: &stats.WebhookRetrying},
+	}
 }
 
 // ListReviewCases retrieves review cases by workflow status.
@@ -850,6 +831,14 @@ func reviewStatusStatsQuery(db *gorm.DB, status ReviewStatus) *gorm.DB {
 
 func reviewedStatsQuery(db *gorm.DB) *gorm.DB {
 	return db.Model(&models.ReviewCase{}).Where("status <> ?", string(ReviewStatusPending))
+}
+
+func webhookDeliveryStatsQuery(db *gorm.DB, status WebhookDeliveryStatus) *gorm.DB {
+	query := db.Model(&models.WebhookDelivery{})
+	if status != "" {
+		query = query.Where("status = ?", string(status))
+	}
+	return query
 }
 
 func (r *GormRepository) loadStoredReviewCase(

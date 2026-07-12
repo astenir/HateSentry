@@ -1390,6 +1390,10 @@ func TestServiceGetStatsMapsStoredCounts(t *testing.T) {
 			PendingReview:      2,
 			Reviewed:           5,
 			Mistakes:           1,
+			WebhookTotal:       9,
+			WebhookSucceeded:   6,
+			WebhookFailed:      2,
+			WebhookRetrying:    1,
 		},
 	}
 	service := NewService(fakeAnalyzer{}, repository, DefaultPolicy())
@@ -1419,6 +1423,9 @@ func TestServiceGetStatsMapsStoredCounts(t *testing.T) {
 	}
 	if output.MistakeRate != 0.2 {
 		t.Fatalf("MistakeRate = %v, want 0.2", output.MistakeRate)
+	}
+	if output.WebhookTotal != 9 || output.WebhookSucceeded != 6 || output.WebhookFailed != 2 || output.WebhookRetrying != 1 {
+		t.Fatalf("Webhook stats = %#v, want 9/6/2/1", output)
 	}
 }
 
