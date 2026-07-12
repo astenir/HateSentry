@@ -189,14 +189,25 @@ jobs:
           for platform in platforms:
               slsa = provenance[platform].get("SLSA")
               assert isinstance(slsa, dict), f"{platform} is missing SLSA provenance"
-              assert "buildkit" in slsa.get("buildType", "").lower(), f"{platform} has an unexpected provenance build type"
-              config_source = slsa.get("invocation", {}).get("configSource", {})
-              external_source = slsa.get("externalParameters", {}).get("source", {})
-              materials = slsa.get("materials", [])
-              source_fields = [config_source, external_source, *materials]
-              authoritative_source = json.dumps(source_fields).lower()
-              assert source_repository in authoritative_source, f"{platform} provenance has the wrong source repository"
-              assert expected_commit in authoritative_source, f"{platform} provenance has the wrong source revision"
+              build_definition = slsa.get("buildDefinition", {})
+              assert "moby/buildkit" in build_definition.get("buildType", "").lower(), f"{platform} has an unexpected provenance build type"
+              request_args = (
+                  build_definition.get("externalParameters", {})
+                  .get("request", {})
+                  .get("root", {})
+                  .get("request", {})
+                  .get("args", {})
+              )
+              source_vcs = (
+                  slsa.get("runDetails", {})
+                  .get("metadata", {})
+                  .get("buildkit_metadata", {})
+                  .get("vcs", {})
+              )
+              assert request_args.get("vcs:source", "").lower() == source_repository, f"{platform} request has the wrong source repository"
+              assert request_args.get("vcs:revision", "").lower() == expected_commit, f"{platform} request has the wrong source revision"
+              assert source_vcs.get("source", "").lower() == source_repository, f"{platform} metadata has the wrong source repository"
+              assert source_vcs.get("revision", "").lower() == expected_commit, f"{platform} metadata has the wrong source revision"
 
               spdx = sbom[platform].get("SPDX")
               assert isinstance(spdx, dict), f"{platform} is missing an SPDX SBOM"
