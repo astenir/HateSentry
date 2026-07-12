@@ -702,7 +702,7 @@ npm run dev
 VITE_API_PROXY_TARGET=http://127.0.0.1:9000 npm run dev
 ```
 
-当前 UI 覆盖管理员登录、待复核队列、单条案件详情、通过、拒绝、标记误判、按人工状态筛选的审核历史，以及外部客户端列表、创建、启停和 API Key 轮换。历史详情会展示 AI 风险建议、策略决定、人工最终决定、复核人 ID、复核时间和备注。客户端页只读展示策略版本和 Webhook 是否已配置；策略编辑、Webhook 配置编辑和投递管理仍属于后续阶段。
+当前 UI 覆盖管理员登录、待复核队列、单条案件详情、通过、拒绝、标记误判、按人工状态筛选的审核历史，以及外部客户端列表、创建、启停、API Key 轮换和策略分配。历史详情会展示 AI 风险建议、策略决定、人工最终决定、复核人 ID、复核时间和备注。客户端页会只读展示服务端已配置策略及其阈值，可为客户端选择具体策略版本或恢复为跟随系统默认策略；Webhook 是否已配置仍为只读，Webhook 配置编辑和投递管理属于后续阶段。
 
 JWT 会话只保存在当前浏览器标签页的 `sessionStorage` 中。完整客户端 API Key 只存在于创建或轮换响应以及当前页面的一次性内存面板中，不写入 `localStorage` 或 `sessionStorage`；关闭面板后即从前端状态清除，如未保存只能再次轮换。停用会立即拒绝该客户端的 API Key；轮换会立即使旧 Key 失效。
 
@@ -730,7 +730,7 @@ npm --prefix web exec playwright install chromium
 make smoke-console-local
 ```
 
-`smoke-console-local` 会保留原有 API MVP 烟测，并额外使用真实 Chromium 从 `/console/` 登录管理员、完成待复核案件与审核历史闭环，再从客户端管理页创建客户端、关闭一次性凭证、停用和重新启用客户端、轮换 API Key，并通过真实 moderation 请求确认停用 Key 和旧 Key 被拒绝、新 Key 可用。烟测结束时会再次停用该客户端，且不会输出完整 Key。
+`smoke-console-local` 会保留原有 API MVP 烟测，并额外使用真实 Chromium 从 `/console/` 登录管理员、完成待复核案件与审核历史闭环，再从客户端管理页创建客户端、分配 `strict-v1` 策略、关闭一次性凭证、停用和重新启用客户端、轮换 API Key，并通过真实 moderation 请求确认停用 Key 和旧 Key 被拒绝、新 Key 可用且审核结果使用 `strict-v1`。烟测结束前会把客户端恢复为跟随系统默认策略并再次停用，且不会输出完整 Key。
 
 ### 运行集成测试
 ```bash
@@ -973,6 +973,7 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 - [x] `/console/` 同源部署和真实 Chromium 复核烟测
 - [x] 审核历史、人工状态筛选和复核详情追溯
 - [x] 客户端列表、创建、启停和 API Key 轮换控制台
+- [x] 客户端策略目录、策略分配和恢复默认控制台
 
 ### 进行中 🚧
 - [ ] 更完整的操作指标、失败分类和延迟观测
@@ -982,7 +983,7 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 - [ ] 完整异步审核队列
 - [ ] 批量审核状态和结果接口
 - [ ] 真实图片审核（下载、校验、provider 图片 API）
-- [ ] 客户端策略编辑、Webhook 配置和投递管理界面
+- [ ] Webhook 配置和投递管理界面
 - [ ] 数据导出功能
 - [ ] 指标仪表盘和告警建议
 

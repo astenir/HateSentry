@@ -2,7 +2,12 @@ import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 
 import ClientList from './ClientList.vue'
-import type { ClientApplication } from '@/types'
+import type { ClientApplication, ModerationPolicy } from '@/types'
+
+const policies: ModerationPolicy[] = [
+  { version: 'default-v1', review_threshold: 0.4, block_threshold: 0.75, default: true },
+  { version: 'strict-v1', review_threshold: 0.2, block_threshold: 0.5, default: false },
+]
 
 const active: ClientApplication = {
   id: 4, name: 'blog', status: 'active', api_key_prefix: 'hs_blog_',
@@ -16,10 +21,10 @@ const inactive: ClientApplication = {
 describe('ClientList', () => {
   it('shows read-only policy and webhook state with correct status operations', async () => {
     const wrapper = mount(ClientList, {
-      props: { items: [active, inactive], loading: false, busyClientIds: new Set<number>(), credentialOpen: false },
+      props: { items: [active, inactive], policies, loading: false, busyClientIds: new Set<number>(), credentialOpen: false },
     })
 
-    expect(wrapper.text()).toContain('默认策略')
+    expect(wrapper.text()).toContain('跟随系统默认')
     expect(wrapper.text()).toContain('strict-v1')
     expect(wrapper.text()).toContain('未配置')
     expect(wrapper.text()).toContain('已配置')
@@ -32,7 +37,7 @@ describe('ClientList', () => {
 
   it('requires a second explicit click before rotating a key', async () => {
     const wrapper = mount(ClientList, {
-      props: { items: [active], loading: false, busyClientIds: new Set<number>(), credentialOpen: false },
+      props: { items: [active], policies, loading: false, busyClientIds: new Set<number>(), credentialOpen: false },
     })
     const rotate = wrapper.get('.rotate-button')
 
@@ -45,10 +50,21 @@ describe('ClientList', () => {
 
   it('disables rotation while another one-time credential is open', () => {
     const wrapper = mount(ClientList, {
-      props: { items: [active], loading: false, busyClientIds: new Set<number>(), credentialOpen: true },
+      props: { items: [active], policies, loading: false, busyClientIds: new Set<number>(), credentialOpen: true },
     })
 
     expect(wrapper.get('.rotate-button').attributes()).toHaveProperty('disabled')
     expect(wrapper.get('.row-actions button').attributes()).not.toHaveProperty('disabled')
+  })
+
+  it('forwards an explicit policy assignment from the row editor', async () => {
+    const wrapper = mount(ClientList, {
+      props: { items: [active], policies, loading: false, busyClientIds: new Set<number>(), credentialOpen: false },
+    })
+
+    await wrapper.get('select').setValue('strict-v1')
+    await wrapper.get('.policy-editor').trigger('submit')
+
+    expect(wrapper.emitted('assignPolicy')).toEqual([[active, 'strict-v1']])
   })
 })

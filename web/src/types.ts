@@ -82,6 +82,13 @@ export interface RotatedClientCredential {
   updated_at: string
 }
 
+export interface ModerationPolicy {
+  version: string
+  review_threshold: number
+  block_threshold: number
+  default: boolean
+}
+
 export interface ErrorResponse {
   code?: string
   error?: string

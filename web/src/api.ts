@@ -4,6 +4,7 @@ import type {
   CreatedClientCredential,
   RotatedClientCredential,
   LoginCredentials,
+  ModerationPolicy,
   ReviewActionInput,
   ReviewCase,
   ReviewHistoryFilter,
@@ -150,6 +151,25 @@ export function rotateClientAPIKey(token: string, id: number): Promise<RotatedCl
   return request<RotatedClientCredential>(`/admin/clients/${id}/api-key/rotate`, {
     method: 'POST',
     headers: authorized(token),
+  })
+}
+
+export async function listModerationPolicies(token: string): Promise<ModerationPolicy[]> {
+  const response = await request<{ items: ModerationPolicy[] }>('/admin/moderation/policies', {
+    headers: authorized(token),
+  })
+  return response.items
+}
+
+export function updateClientPolicy(
+  token: string,
+  id: number,
+  policyVersion: string,
+): Promise<ClientApplication> {
+  return request<ClientApplication>(`/admin/clients/${id}/policy`, {
+    method: 'POST',
+    headers: authorized(token),
+    body: JSON.stringify({ policy_version: policyVersion }),
   })
 }
 

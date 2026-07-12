@@ -6,9 +6,16 @@ import {
   createClient,
   deactivateClient,
   listClients,
+  listModerationPolicies,
   rotateClientAPIKey,
+  updateClientPolicy,
 } from '@/api'
-import type { ClientApplication, CreatedClientCredential, RotatedClientCredential } from '@/types'
+import type {
+  ClientApplication,
+  CreatedClientCredential,
+  ModerationPolicy,
+  RotatedClientCredential,
+} from '@/types'
 
 interface UseClientsOptions {
   token: string
@@ -33,10 +40,13 @@ export function useClients(options: UseClientsOptions) {
   const credential = shallowRef<OneTimeCredential | null>(null)
   const isLoading = shallowRef(false)
   const isCreating = shallowRef(false)
+  const policies = ref<ModerationPolicy[]>([])
+  const isLoadingPolicies = shallowRef(false)
   const busyClientIds = ref<ReadonlySet<number>>(new Set())
   const error = shallowRef('')
   const notice = shallowRef('')
   let loadSequence = 0
+  let policyLoadSequence = 0
   const operationSequences = new Map<number, number>()
 
   function handleError(cause: unknown): void {
@@ -83,6 +93,20 @@ export function useClients(options: UseClientsOptions) {
       if (sequence === loadSequence) handleError(cause)
     } finally {
       if (sequence === loadSequence) isLoading.value = false
+    }
+  }
+
+  async function loadPolicies(): Promise<void> {
+    const sequence = ++policyLoadSequence
+    isLoadingPolicies.value = true
+    error.value = ''
+    try {
+      const configured = await listModerationPolicies(options.token)
+      if (sequence === policyLoadSequence) policies.value = configured
+    } catch (cause) {
+      if (sequence === policyLoadSequence) handleError(cause)
+    } finally {
+      if (sequence === policyLoadSequence) isLoadingPolicies.value = false
     }
   }
 
@@ -141,6 +165,16 @@ export function useClients(options: UseClientsOptions) {
     })
   }
 
+  async function assignPolicy(client: ClientApplication, policyVersion: string): Promise<void> {
+    await runClientOperation(client.id, async () => {
+      const updated = await updateClientPolicy(options.token, client.id, policyVersion)
+      replaceClient({ ...updated, policy_version: policyVersion })
+      notice.value = policyVersion
+        ? `客户端策略已更新为 ${policyVersion}，将用于后续审核请求。`
+        : '客户端已恢复为跟随系统默认策略。'
+    })
+  }
+
   async function runClientOperation(id: number, operation: () => Promise<void>): Promise<void> {
     if (busyClientIds.value.has(id)) return
     invalidatePendingLoad()
@@ -165,15 +199,19 @@ export function useClients(options: UseClientsOptions) {
   return {
     items: readonly(items),
     credential: readonly(credential),
+    policies: readonly(policies),
     isLoading: readonly(isLoading),
     isCreating: readonly(isCreating),
+    isLoadingPolicies: readonly(isLoadingPolicies),
     busyClientIds: readonly(busyClientIds),
     error: readonly(error),
     notice: readonly(notice),
     load,
+    loadPolicies,
     create,
     setActive,
     rotate,
+    assignPolicy,
     clearCredential,
   }
 }

@@ -6,7 +6,9 @@ import {
   createClient,
   deactivateClient,
   listClients,
+  listModerationPolicies,
   rotateClientAPIKey,
+  updateClientPolicy,
 } from '@/api'
 import type { ClientApplication } from '@/types'
 import { useClients } from './useClients'
@@ -14,7 +16,8 @@ import { useClients } from './useClients'
 vi.mock('@/api', async (importOriginal) => ({
   ...await importOriginal<typeof import('@/api')>(),
   activateClient: vi.fn(), createClient: vi.fn(), deactivateClient: vi.fn(),
-  listClients: vi.fn(), rotateClientAPIKey: vi.fn(),
+  listClients: vi.fn(), listModerationPolicies: vi.fn(), rotateClientAPIKey: vi.fn(),
+  updateClientPolicy: vi.fn(),
 }))
 
 const client: ClientApplication = {
@@ -158,5 +161,41 @@ describe('useClients', () => {
     await deactivating
 
     expect(listClients).not.toHaveBeenCalled()
+  })
+
+  it('loads policy thresholds and assigns then resets a client policy', async () => {
+    vi.mocked(listClients).mockResolvedValue([client])
+    vi.mocked(listModerationPolicies).mockResolvedValue([
+      { version: 'default-v1', review_threshold: 0.4, block_threshold: 0.75, default: true },
+      { version: 'strict-v1', review_threshold: 0.2, block_threshold: 0.5, default: false },
+    ])
+    vi.mocked(updateClientPolicy)
+      .mockResolvedValueOnce({ ...client, policy_version: 'strict-v1' })
+      .mockResolvedValueOnce((({ policy_version: _policyVersion, ...withoutPolicy }) => withoutPolicy)({
+        ...client, policy_version: 'strict-v1',
+      }))
+    const state = useClients({ token: 'jwt', onUnauthorized: vi.fn() })
+
+    await state.load()
+    await state.loadPolicies()
+    await state.assignPolicy(client, 'strict-v1')
+    expect(state.items.value[0].policy_version).toBe('strict-v1')
+    expect(state.notice.value).toContain('strict-v1')
+    await state.assignPolicy(state.items.value[0], '')
+
+    expect(updateClientPolicy).toHaveBeenNthCalledWith(1, 'jwt', 4, 'strict-v1')
+    expect(updateClientPolicy).toHaveBeenNthCalledWith(2, 'jwt', 4, '')
+    expect(state.items.value[0].policy_version).toBe('')
+    expect(state.policies.value).toHaveLength(2)
+  })
+
+  it('ends the session when policy assignment returns unauthorized', async () => {
+    vi.mocked(updateClientPolicy).mockRejectedValue(new ApiError('expired', 401))
+    const onUnauthorized = vi.fn()
+    const state = useClients({ token: 'jwt', onUnauthorized })
+
+    await state.assignPolicy(client, 'strict-v1')
+
+    expect(onUnauthorized).toHaveBeenCalledOnce()
   })
 })

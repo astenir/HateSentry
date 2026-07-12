@@ -4,6 +4,7 @@ import { onMounted } from 'vue'
 import ClientCreateForm from './ClientCreateForm.vue'
 import ClientList from './ClientList.vue'
 import OneTimeCredentialPanel from './OneTimeCredentialPanel.vue'
+import PolicyCatalog from './PolicyCatalog.vue'
 import { useClients } from '@/composables/useClients'
 import type { ClientApplication } from '@/types'
 
@@ -15,7 +16,10 @@ const clients = useClients({
   onUnauthorized: () => emit('unauthorized'),
 })
 
-onMounted(clients.load)
+onMounted(() => {
+  void clients.load()
+  void clients.loadPolicies()
+})
 
 function setActive(client: ClientApplication, active: boolean): void {
   void clients.setActive(client, active)
@@ -50,13 +54,19 @@ function setActive(client: ClientApplication, active: boolean): void {
         :locked="Boolean(clients.credential.value)"
         @submit="clients.create"
       />
+      <PolicyCatalog
+        :policies="clients.policies.value"
+        :loading="clients.isLoadingPolicies.value"
+      />
       <ClientList
         :items="clients.items.value"
         :loading="clients.isLoading.value"
         :busy-client-ids="clients.busyClientIds.value"
         :credential-open="Boolean(clients.credential.value)"
+        :policies="clients.policies.value"
         @set-active="setActive"
         @rotate="clients.rotate"
+        @assign-policy="clients.assignPolicy"
       />
     </div>
   </div>

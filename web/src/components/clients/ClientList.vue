@@ -1,18 +1,21 @@
 <script setup lang="ts">
 import { shallowRef } from 'vue'
 
-import type { ClientApplication } from '@/types'
+import ClientPolicyEditor from './ClientPolicyEditor.vue'
+import type { ClientApplication, ModerationPolicy } from '@/types'
 
 defineProps<{
   items: readonly ClientApplication[]
   loading: boolean
   busyClientIds: ReadonlySet<number>
   credentialOpen: boolean
+  policies: readonly ModerationPolicy[]
 }>()
 
 const emit = defineEmits<{
   setActive: [client: ClientApplication, active: boolean]
   rotate: [client: ClientApplication]
+  assignPolicy: [client: ClientApplication, policyVersion: string]
 }>()
 
 const confirmingRotation = shallowRef<number | null>(null)
@@ -37,6 +40,11 @@ function requestStatus(client: ClientApplication): void {
   confirmingRotation.value = null
   emit('setActive', client, client.status !== 'active')
 }
+
+function assignPolicy(client: ClientApplication, policyVersion: string): void {
+  confirmingRotation.value = null
+  emit('assignPolicy', client, policyVersion)
+}
 </script>
 
 <template>
@@ -44,7 +52,7 @@ function requestStatus(client: ClientApplication): void {
     <div class="list-heading">
       <div>
         <h3 id="client-list-title">外部客户端</h3>
-        <p>策略与 Webhook 在本页只读展示。</p>
+        <p>可分配服务端已配置策略；Webhook 状态仍为只读。</p>
       </div>
       <span>{{ items.length }} 个客户端</span>
     </div>
@@ -53,6 +61,10 @@ function requestStatus(client: ClientApplication): void {
     <div v-else-if="items.length === 0" class="list-state">尚未创建外部客户端。</div>
     <div v-else class="client-table-wrap">
       <table>
+        <colgroup>
+          <col class="col-client"><col class="col-status"><col class="col-prefix">
+          <col class="col-policy"><col class="col-webhook"><col class="col-created"><col class="col-actions">
+        </colgroup>
         <thead>
           <tr>
             <th>客户端</th><th>状态</th><th>API Key 前缀</th><th>策略</th><th>Webhook</th><th>创建时间</th><th>操作</th>
@@ -63,7 +75,14 @@ function requestStatus(client: ClientApplication): void {
             <td data-label="客户端"><strong :title="client.name">{{ client.name }}</strong><small>#{{ client.id }}</small></td>
             <td data-label="状态"><span class="status" :class="`status-${client.status}`">{{ client.status === 'active' ? '已启用' : '已停用' }}</span></td>
             <td data-label="API Key 前缀"><code :title="client.api_key_prefix">{{ client.api_key_prefix }}</code></td>
-            <td data-label="策略"><span :title="client.policy_version || '默认策略'">{{ client.policy_version || '默认策略' }}</span></td>
+            <td data-label="策略">
+              <ClientPolicyEditor
+                :client="client"
+                :policies="policies"
+                :busy="busyClientIds.has(client.id)"
+                @assign="assignPolicy"
+              />
+            </td>
             <td data-label="Webhook"><span :class="client.webhook_url ? 'configured' : 'muted'">{{ client.webhook_url ? '已配置' : '未配置' }}</span></td>
             <td data-label="创建时间"><time :datetime="client.created_at">{{ formatDate(client.created_at) }}</time></td>
             <td data-label="操作">
@@ -106,6 +125,13 @@ function requestStatus(client: ClientApplication): void {
 .list-state { @apply p-8 text-center text-sm text-[#687169]; }
 .client-table-wrap { @apply min-w-0; }
 table { @apply w-full table-fixed border-collapse text-left; }
+.col-client { width: 13%; }
+.col-status { width: 8%; }
+.col-prefix { width: 11%; }
+.col-policy { width: 23%; }
+.col-webhook { width: 9%; }
+.col-created { width: 14%; }
+.col-actions { width: 22%; }
 th { @apply bg-[#f4f1e8] px-3 py-3 text-[0.68rem] font-bold uppercase tracking-wide text-[#69736b]; }
 td { @apply border-t border-[#e4e3da] px-3 py-4 align-top text-xs text-[#4e5c51]; }
 td strong, td span, td code { @apply block max-w-full truncate; }
@@ -121,7 +147,8 @@ td code { @apply font-mono text-[#334037]; }
 .row-actions .confirming { @apply border-[#bf7348] bg-[#fff0e8] text-[#874122]; }
 .row-actions .cancel-button { @apply border-transparent text-[#687169]; }
 
-@media (max-width: 900px) {
+@media (max-width: 1100px) {
+  colgroup { @apply hidden; }
   thead { @apply sr-only; }
   table, tbody, tr, td { @apply block w-full; }
   tbody { @apply grid gap-3 p-3; }

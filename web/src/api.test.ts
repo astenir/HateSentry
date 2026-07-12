@@ -6,10 +6,12 @@ import {
   deactivateClient,
   finalizeReview,
   listClients,
+  listModerationPolicies,
   listPendingReviews,
   listReviewHistory,
   login,
   rotateClientAPIKey,
+  updateClientPolicy,
 } from './api'
 
 afterEach(() => {
@@ -162,5 +164,37 @@ describe('review console API client', () => {
       '/api/v1/admin/clients/11/api-key/rotate',
     ])
     expect(rotated.api_key).toBe('hs_new_secret')
+  })
+
+  it('loads configured policies and updates a client policy assignment', async () => {
+    const policyResponse = { items: [{
+      version: 'strict-v1', review_threshold: 0.2, block_threshold: 0.5, default: false,
+    }] }
+    const clientResponse = {
+      id: 11, name: 'blog', status: 'active', api_key_prefix: 'hs_blog_',
+      policy_version: 'strict-v1', created_at: '2026-07-12T08:00:00Z',
+    }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(policyResponse), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(clientResponse), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify((({ policy_version: _policyVersion, ...withoutPolicy }) => withoutPolicy)(clientResponse)), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const policies = await listModerationPolicies('jwt-token')
+    const updated = await updateClientPolicy('jwt-token', 11, 'strict-v1')
+    const reset = await updateClientPolicy('jwt-token', 11, '')
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/v1/admin/moderation/policies', expect.objectContaining({
+      headers: expect.objectContaining({ Authorization: 'Bearer jwt-token' }),
+    }))
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/v1/admin/clients/11/policy', expect.objectContaining({
+      method: 'POST', body: JSON.stringify({ policy_version: 'strict-v1' }),
+    }))
+    expect(policies[0].review_threshold).toBe(0.2)
+    expect(updated.policy_version).toBe('strict-v1')
+    expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/v1/admin/clients/11/policy', expect.objectContaining({
+      body: JSON.stringify({ policy_version: '' }),
+    }))
+    expect(reset.policy_version).toBeUndefined()
   })
 })

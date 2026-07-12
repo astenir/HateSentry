@@ -110,6 +110,14 @@ try {
   await oneTimeKey.waitFor({ state: 'detached' })
 
   const clientRow = page.locator('tr').filter({ hasText: clientName })
+  const policySelect = clientRow.getByLabel(`${clientName} 的审核策略`)
+  await policySelect.selectOption('strict-v1')
+  await clientRow.getByRole('button', { name: '应用策略' }).click()
+  await page.getByText('客户端策略已更新为 strict-v1，将用于后续审核请求。').waitFor()
+  if (await policySelect.inputValue() !== 'strict-v1') {
+    throw new Error('client policy selection did not persist strict-v1')
+  }
+
   await clientRow.getByRole('button', { name: '停用' }).click()
   await clientRow.getByRole('button', { name: '启用' }).waitFor()
   const inactiveResponse = await submitWithAPIKey(page, baseURL, createdKey, 'inactive')
@@ -135,8 +143,39 @@ try {
   if (!newKeyResponse.ok()) {
     throw new Error(`rotated new key failed with ${newKeyResponse.status()}`)
   }
+  const newKeyModeration = await newKeyResponse.json()
+  if (newKeyModeration.policy_version !== 'strict-v1') {
+    throw new Error(`new key policy = ${newKeyModeration.policy_version}, want strict-v1`)
+  }
 
   await page.getByRole('button', { name: '关闭一次性 API Key' }).click()
+  await policySelect.selectOption('')
+  await clientRow.getByRole('button', { name: `将 ${clientName} 恢复为跟随默认策略` }).click()
+  await page.getByText('客户端已恢复为跟随系统默认策略。').waitFor()
+  if (await policySelect.inputValue() !== '') {
+    throw new Error('client policy selection did not reset to following the default')
+  }
+  const clientID = (await clientRow.locator('small').first().textContent())?.replace('#', '').trim()
+  if (!clientID) throw new Error('client row did not expose its identifier')
+  const resetClientResponse = await page.request.get(
+    `${baseURL}/api/v1/admin/clients/${clientID}`,
+    { headers: { Authorization: `Bearer ${token}` } },
+  )
+  if (!resetClientResponse.ok()) {
+    throw new Error(`reset client lookup failed with ${resetClientResponse.status()}`)
+  }
+  const resetClient = await resetClientResponse.json()
+  if ('policy_version' in resetClient) {
+    throw new Error(`reset client still has explicit policy ${resetClient.policy_version}`)
+  }
+  const defaultPolicyResponse = await submitWithAPIKey(page, baseURL, rotatedKey, 'reset-default')
+  if (!defaultPolicyResponse.ok()) {
+    throw new Error(`default policy moderation failed with ${defaultPolicyResponse.status()}`)
+  }
+  const defaultPolicyModeration = await defaultPolicyResponse.json()
+  if (defaultPolicyModeration.policy_version !== 'default-v1') {
+    throw new Error(`reset policy = ${defaultPolicyModeration.policy_version}, want default-v1`)
+  }
   await clientRow.getByRole('button', { name: '停用' }).click()
   await clientRow.getByRole('button', { name: '启用' }).waitFor()
 
@@ -145,6 +184,9 @@ try {
     client_deactivated: true,
     client_reactivated: true,
     api_key_rotated: true,
+    policy_assigned: true,
+    policy_applied_to_moderation: true,
+    policy_reset_to_default: true,
     old_key_rejected: true,
     new_key_accepted: true,
   }, null, 2)}\n`)

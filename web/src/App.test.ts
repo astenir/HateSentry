@@ -1,7 +1,14 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { ApiError, getReview, listClients, listPendingReviews, listReviewHistory } from '@/api'
+import {
+  ApiError,
+  getReview,
+  listClients,
+  listModerationPolicies,
+  listPendingReviews,
+  listReviewHistory,
+} from '@/api'
 import type { ReviewCase, Session } from '@/types'
 import App from './App.vue'
 
@@ -14,6 +21,7 @@ vi.mock('@/api', async (importOriginal) => {
     listPendingReviews: vi.fn(),
     listReviewHistory: vi.fn(),
     listClients: vi.fn(),
+    listModerationPolicies: vi.fn(),
     login: vi.fn(),
   }
 })
@@ -22,6 +30,7 @@ const mockedGet = vi.mocked(getReview)
 const mockedList = vi.mocked(listPendingReviews)
 const mockedHistory = vi.mocked(listReviewHistory)
 const mockedClients = vi.mocked(listClients)
+const mockedPolicies = vi.mocked(listModerationPolicies)
 
 const session: Session = {
   token: 'jwt-token',
@@ -60,6 +69,9 @@ describe('App authentication boundary', () => {
     mockedList.mockResolvedValue([pendingCase])
     mockedHistory.mockResolvedValue({ items: [approvedCase] })
     mockedClients.mockResolvedValue([])
+    mockedPolicies.mockResolvedValue([
+      { version: 'default-v1', review_threshold: 0.4, block_threshold: 0.75, default: true },
+    ])
   })
 
   it('clears the session and returns to login after a detail 401', async () => {
@@ -128,10 +140,23 @@ describe('App authentication boundary', () => {
     expect(mockedClients).toHaveBeenCalledWith('jwt-token')
     expect(wrapper.text()).toContain('客户端管理')
     expect(wrapper.text()).toContain('blog')
+    expect(wrapper.text()).toContain('可分配审核策略')
   })
 
   it('clears the session after a client list 401', async () => {
     mockedClients.mockRejectedValue(new ApiError('Token expired', 401, 'UNAUTHORIZED'))
+    const wrapper = mount(App)
+    await flushPromises()
+
+    await wrapper.get('button:nth-child(3)[aria-pressed="false"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('进入复核队列')
+    expect(sessionStorage.getItem('hatesentry-operator-session')).toBeNull()
+  })
+
+  it('clears the session after a policy catalog 401', async () => {
+    mockedPolicies.mockRejectedValue(new ApiError('Token expired', 401, 'UNAUTHORIZED'))
     const wrapper = mount(App)
     await flushPromises()
 
