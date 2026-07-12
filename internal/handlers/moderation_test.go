@@ -697,6 +697,52 @@ func TestModerationHandlerListReviewCases(t *testing.T) {
 	}
 }
 
+func TestModerationHandlerListCompletedReviewCasesReturnsCursor(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	reviewedAt := time.Date(2026, 7, 12, 8, 0, 0, 0, time.UTC)
+	repository := &moderationHandlerRepository{
+		reviewNextCursor: &moderation.ReviewCaseCursor{
+			Version:    1,
+			Status:     moderation.ReviewStatusCompleted,
+			ReviewedAt: reviewedAt,
+			ID:         9,
+		},
+	}
+	handler := NewModerationHandler(moderation.NewService(
+		moderationHandlerAnalyzer{},
+		repository,
+		moderation.DefaultPolicy(),
+	))
+
+	engine := gin.New()
+	engine.GET("/api/v1/reviews", func(c *gin.Context) {
+		c.Set(auth.UserContextKey, &auth.Claims{UserID: 42, Role: "admin"})
+		handler.ListReviewCases(c)
+	})
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/reviews?status=completed&limit=25",
+		nil,
+	)
+
+	engine.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var response moderation.ReviewCaseListOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.NextCursor == "" {
+		t.Fatal("next_cursor = empty, want opaque cursor")
+	}
+	if repository.reviewFilter.Status != moderation.ReviewStatusCompleted || repository.reviewFilter.Limit != 25 {
+		t.Fatalf("repository filter = %#v, want completed limit 25", repository.reviewFilter)
+	}
+}
+
 func TestModerationHandlerGetReviewCase(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -1206,6 +1252,8 @@ type moderationHandlerRepository struct {
 	externalID            string
 	requestID             string
 	reviewStatus          moderation.ReviewStatus
+	reviewFilter          moderation.ReviewCaseFilter
+	reviewNextCursor      *moderation.ReviewCaseCursor
 	caseID                uint
 	webhookClientFound    bool
 	webhookDeliveryID     uint
@@ -1357,10 +1405,11 @@ func (r *moderationHandlerRepository) UpdateWebhookDeliveryAttempt(
 
 func (r *moderationHandlerRepository) ListReviewCases(
 	ctx context.Context,
-	status moderation.ReviewStatus,
-) ([]moderation.StoredReviewCase, error) {
-	r.reviewStatus = status
-	return r.reviewCases, nil
+	filter moderation.ReviewCaseFilter,
+) (moderation.StoredReviewCasePage, error) {
+	r.reviewStatus = filter.Status
+	r.reviewFilter = filter
+	return moderation.StoredReviewCasePage{Items: r.reviewCases, NextCursor: r.reviewNextCursor}, nil
 }
 
 func (r *moderationHandlerRepository) GetReviewCase(

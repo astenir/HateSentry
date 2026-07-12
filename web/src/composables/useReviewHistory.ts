@@ -1,4 +1,4 @@
-import { readonly, ref, shallowRef } from 'vue'
+import { computed, readonly, ref, shallowRef } from 'vue'
 
 import { ApiError, getReview, listReviewHistory } from '@/api'
 import type { ReviewCase, ReviewHistoryFilter } from '@/types'
@@ -19,8 +19,11 @@ export function useReviewHistory(options: UseReviewHistoryOptions) {
   const selected = shallowRef<ReviewCase | null>(null)
   const filter = shallowRef<ReviewHistoryFilter>('all')
   const isLoading = shallowRef(false)
+  const isLoadingMore = shallowRef(false)
   const isLoadingDetail = shallowRef(false)
   const error = shallowRef('')
+  const nextCursor = shallowRef('')
+  const hasMore = computed(() => nextCursor.value !== '')
   let listRequestSequence = 0
   let detailRequestSequence = 0
 
@@ -37,14 +40,16 @@ export function useReviewHistory(options: UseReviewHistoryOptions) {
     const requestedFilter = filter.value
     detailRequestSequence++
     isLoading.value = true
+    isLoadingMore.value = false
     isLoadingDetail.value = false
     error.value = ''
     try {
       const loaded = await listReviewHistory(options.token, requestedFilter)
       if (requestSequence !== listRequestSequence) return
 
-      items.value = loaded
-      if (selected.value && !loaded.some((item) => item.id === selected.value?.id)) {
+      items.value = loaded.items
+      nextCursor.value = loaded.next_cursor || ''
+      if (selected.value && !loaded.items.some((item) => item.id === selected.value?.id)) {
         selected.value = null
       }
     } catch (cause) {
@@ -54,10 +59,41 @@ export function useReviewHistory(options: UseReviewHistoryOptions) {
     }
   }
 
+  async function loadMore(): Promise<void> {
+    if (!nextCursor.value || isLoading.value || isLoadingMore.value) return
+
+    const requestSequence = listRequestSequence
+    const requestedFilter = filter.value
+    const requestedCursor = nextCursor.value
+    isLoadingMore.value = true
+    error.value = ''
+    try {
+      const loaded = await listReviewHistory(
+        options.token,
+        requestedFilter,
+        requestedCursor,
+      )
+      if (requestSequence !== listRequestSequence || requestedFilter !== filter.value) return
+
+      const existingIDs = new Set(items.value.map((item) => item.id))
+      items.value = [
+        ...items.value,
+        ...loaded.items.filter((item) => !existingIDs.has(item.id)),
+      ]
+      nextCursor.value = loaded.next_cursor || ''
+    } catch (cause) {
+      if (requestSequence === listRequestSequence) handleError(cause)
+    } finally {
+      if (requestSequence === listRequestSequence) isLoadingMore.value = false
+    }
+  }
+
   async function setFilter(nextFilter: ReviewHistoryFilter): Promise<void> {
     if (filter.value !== nextFilter) {
       filter.value = nextFilter
       detailRequestSequence++
+      items.value = []
+      nextCursor.value = ''
       selected.value = null
     }
     await loadHistory()
@@ -82,9 +118,12 @@ export function useReviewHistory(options: UseReviewHistoryOptions) {
     selected: readonly(selected),
     filter: readonly(filter),
     isLoading: readonly(isLoading),
+    isLoadingMore: readonly(isLoadingMore),
     isLoadingDetail: readonly(isLoadingDetail),
+    hasMore,
     error: readonly(error),
     loadHistory,
+    loadMore,
     setFilter,
     selectReview,
   }

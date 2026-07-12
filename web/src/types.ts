@@ -43,6 +43,11 @@ export interface ReviewCase {
   created_at: string
 }
 
+export interface ReviewHistoryPage {
+  items: ReviewCase[]
+  next_cursor?: string
+}
+
 export interface ReviewActionInput {
   action: ReviewAction
   notes: string

@@ -12,9 +12,9 @@ HateSentry 当前应被理解为一个文本内容审核网关，而不是完整
 
 旧版 `/api/v1/detection/*`、RabbitMQ 队列、批量检测、图片提示词和监控代码仍存在于仓库中，但不属于当前 MVP 的稳定主线。它们需要在后续阶段重新验证或重构后，才能作为当前能力对外说明。
 
-人工复核控制台位于 `web/`，生产构建由同一个 Go 服务在 `/console/` 提供。控制台包含待处理队列和已处理审核历史；历史视图复用管理员 reviews API，并按 `approved`、`rejected`、`mistake` 人工状态查询。控制台与 `/api/v1/*` 保持同源，不新增独立认证、跨域 cookie 或第二套后端代理边界。Docker 镜像固定使用 `/app` 工作目录并把产物复制到 `/app/web/dist`；非容器运行时，进程工作目录下必须存在 `web/dist`。
+人工复核控制台位于 `web/`，生产构建由同一个 Go 服务在 `/console/` 提供。控制台包含待处理队列和已处理审核历史；历史视图复用管理员 reviews API，“全部已处理”使用单次 `completed` 查询，单状态可按 `approved`、`rejected`、`mistake` 查询。控制台与 `/api/v1/*` 保持同源，不新增独立认证、跨域 cookie 或第二套后端代理边界。Docker 镜像固定使用 `/app` 工作目录并把产物复制到 `/app/web/dist`；非容器运行时，进程工作目录下必须存在 `web/dist`。
 
-当前历史视图是 MVP 读取模型：“全部已处理”会并行请求三种人工状态的完整列表并在浏览器排序。它适合小规模部署，但不是无界审计数据的最终查询模型；后续需要由后端提供单次 completed 查询、按 `reviewed_at` 和 ID 的稳定排序及分页游标。
+已处理历史由后端按 `reviewed_at DESC, id DESC` 稳定排序并生成不透明游标，默认每页 50 条、最多 100 条。仓储先查询一页 review cases，再分别批量加载关联的 moderation requests 和 moderation results，因此每页固定为三次读取，不随条目数产生 N+1 查询。前端只保存已经加载的页面，并在存在 `next_cursor` 时允许继续加载。
 
 ## 高层结构
 

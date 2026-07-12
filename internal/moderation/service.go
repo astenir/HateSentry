@@ -2,6 +2,7 @@ package moderation
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,6 +28,9 @@ const (
 	maxReviewNotesLen               = 2000
 	maxModerationHistoryListLimit   = 100
 	defaultModerationHistoryLimit   = 50
+	maxReviewCaseListLimit          = 100
+	defaultReviewCaseListLimit      = 50
+	reviewCaseCursorVersion         = 1
 	maxWebhookDeliveryListLimit     = 100
 	defaultWebhookDeliveryListLimit = 50
 	webhookDeliveryAttemptTimeout   = 6 * time.Second
@@ -84,7 +88,7 @@ type Repository interface {
 		attemptedAt time.Time,
 	) (models.WebhookDelivery, error)
 	GetStats(ctx context.Context) (StoredStats, error)
-	ListReviewCases(ctx context.Context, status ReviewStatus) ([]StoredReviewCase, error)
+	ListReviewCases(ctx context.Context, filter ReviewCaseFilter) (StoredReviewCasePage, error)
 	GetReviewCase(ctx context.Context, caseID uint) (StoredReviewCase, error)
 	FinalizeReviewCase(
 		ctx context.Context,
@@ -109,6 +113,27 @@ type StoredReviewCase struct {
 	Case    models.ReviewCase
 	Request models.ModerationRequest
 	Result  models.ModerationResult
+}
+
+// ReviewCaseCursor identifies the last completed review in a stable page.
+type ReviewCaseCursor struct {
+	Version    int          `json:"v"`
+	Status     ReviewStatus `json:"status"`
+	ReviewedAt time.Time    `json:"reviewed_at"`
+	ID         uint         `json:"id"`
+}
+
+// ReviewCaseFilter contains validated review-list filters.
+type ReviewCaseFilter struct {
+	Status ReviewStatus
+	Limit  int
+	Cursor *ReviewCaseCursor
+}
+
+// StoredReviewCasePage is one repository page of review cases.
+type StoredReviewCasePage struct {
+	Items      []StoredReviewCase
+	NextCursor *ReviewCaseCursor
 }
 
 // StoredHistoryItem is the repository representation of an operator history row.
@@ -291,6 +316,12 @@ type ReviewCaseOutput struct {
 	ReviewNotes    string       `json:"review_notes,omitempty"`
 	ReviewedAt     *time.Time   `json:"reviewed_at,omitempty"`
 	CreatedAt      time.Time    `json:"created_at"`
+}
+
+// ReviewCaseListOutput is a stable review-list response with optional pagination.
+type ReviewCaseListOutput struct {
+	Items      []ReviewCaseOutput `json:"items"`
+	NextCursor string             `json:"next_cursor,omitempty"`
 }
 
 // StatsOutput is the public representation of moderation and review operations metrics.
@@ -692,34 +723,49 @@ func checkOutputFromStored(stored StoredResult) (CheckOutput, error) {
 }
 
 // ListReviewCases returns moderation review cases for an authenticated operator.
-func (s *Service) ListReviewCases(ctx context.Context, reviewerID uint, status string) ([]ReviewCaseOutput, error) {
+func (s *Service) ListReviewCases(
+	ctx context.Context,
+	reviewerID uint,
+	status string,
+	limit string,
+	cursor string,
+) (ReviewCaseListOutput, error) {
 	if reviewerID == 0 {
-		return nil, apperrors.Unauthorized("User not authenticated")
+		return ReviewCaseListOutput{}, apperrors.Unauthorized("User not authenticated")
 	}
 	if s.repository == nil {
-		return nil, apperrors.ConfigurationError("moderation repository is not configured")
+		return ReviewCaseListOutput{}, apperrors.ConfigurationError("moderation repository is not configured")
 	}
 
-	reviewStatus, err := normalizeReviewStatus(status)
+	filter, err := normalizeReviewCaseFilter(status, limit, cursor)
 	if err != nil {
-		return nil, err
+		return ReviewCaseListOutput{}, err
 	}
 
-	storedCases, err := s.repository.ListReviewCases(ctx, reviewStatus)
+	storedPage, err := s.repository.ListReviewCases(ctx, filter)
 	if err != nil {
-		return nil, err
+		return ReviewCaseListOutput{}, err
 	}
 
-	output := make([]ReviewCaseOutput, 0, len(storedCases))
-	for _, stored := range storedCases {
+	output := make([]ReviewCaseOutput, 0, len(storedPage.Items))
+	for _, stored := range storedPage.Items {
 		item, err := mapReviewCaseOutput(stored)
 		if err != nil {
-			return nil, err
+			return ReviewCaseListOutput{}, err
 		}
 		output = append(output, item)
 	}
 
-	return output, nil
+	result := ReviewCaseListOutput{Items: output}
+	if storedPage.NextCursor != nil {
+		encoded, err := encodeReviewCaseCursor(*storedPage.NextCursor)
+		if err != nil {
+			return ReviewCaseListOutput{}, err
+		}
+		result.NextCursor = encoded
+	}
+
+	return result, nil
 }
 
 // GetReviewCase retrieves one review case for an authenticated operator.
@@ -1342,7 +1388,7 @@ func normalizeReviewStatus(status string) (ReviewStatus, error) {
 
 	reviewStatus := ReviewStatus(status)
 	if !isSupportedReviewStatus(reviewStatus) {
-		return "", apperrors.ValidationError("status must be pending, approved, rejected, or mistake")
+		return "", apperrors.ValidationError("status must be pending, approved, rejected, mistake, or completed")
 	}
 
 	return reviewStatus, nil
@@ -1350,11 +1396,81 @@ func normalizeReviewStatus(status string) (ReviewStatus, error) {
 
 func isSupportedReviewStatus(status ReviewStatus) bool {
 	switch status {
-	case ReviewStatusPending, ReviewStatusApproved, ReviewStatusRejected, ReviewStatusMistake:
+	case ReviewStatusPending, ReviewStatusApproved, ReviewStatusRejected, ReviewStatusMistake, ReviewStatusCompleted:
 		return true
 	default:
 		return false
 	}
+}
+
+func normalizeReviewCaseFilter(status string, limit string, cursor string) (ReviewCaseFilter, error) {
+	reviewStatus, err := normalizeReviewStatus(status)
+	if err != nil {
+		return ReviewCaseFilter{}, err
+	}
+
+	limit = strings.TrimSpace(limit)
+	cursor = strings.TrimSpace(cursor)
+	if reviewStatus == ReviewStatusPending {
+		if limit != "" || cursor != "" {
+			return ReviewCaseFilter{}, apperrors.ValidationError(
+				"limit and cursor are only supported for completed review history",
+			)
+		}
+		return ReviewCaseFilter{Status: reviewStatus}, nil
+	}
+
+	normalizedLimit, err := normalizeListLimit(
+		limit,
+		defaultReviewCaseListLimit,
+		maxReviewCaseListLimit,
+	)
+	if err != nil {
+		return ReviewCaseFilter{}, err
+	}
+
+	var decodedCursor *ReviewCaseCursor
+	if cursor != "" {
+		value, err := decodeReviewCaseCursor(cursor, reviewStatus)
+		if err != nil {
+			return ReviewCaseFilter{}, err
+		}
+		decodedCursor = &value
+	}
+
+	return ReviewCaseFilter{
+		Status: reviewStatus,
+		Limit:  normalizedLimit,
+		Cursor: decodedCursor,
+	}, nil
+}
+
+func encodeReviewCaseCursor(cursor ReviewCaseCursor) (string, error) {
+	if cursor.Version != reviewCaseCursorVersion || cursor.Status == "" || cursor.ID == 0 || cursor.ReviewedAt.IsZero() {
+		return "", apperrors.Internal("failed to encode review history cursor")
+	}
+	payload, err := json.Marshal(cursor)
+	if err != nil {
+		return "", apperrors.Internal("failed to encode review history cursor").WithDetails(err.Error())
+	}
+	return base64.RawURLEncoding.EncodeToString(payload), nil
+}
+
+func decodeReviewCaseCursor(value string, expectedStatus ReviewStatus) (ReviewCaseCursor, error) {
+	payload, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil {
+		return ReviewCaseCursor{}, apperrors.ValidationError("cursor is invalid")
+	}
+
+	var cursor ReviewCaseCursor
+	if err := json.Unmarshal(payload, &cursor); err != nil ||
+		cursor.Version != reviewCaseCursorVersion ||
+		cursor.Status != expectedStatus ||
+		cursor.ID == 0 ||
+		cursor.ReviewedAt.IsZero() {
+		return ReviewCaseCursor{}, apperrors.ValidationError("cursor is invalid")
+	}
+	return cursor, nil
 }
 
 func parseReviewCaseID(caseID string) (uint, error) {

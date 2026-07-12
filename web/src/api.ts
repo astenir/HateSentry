@@ -4,6 +4,7 @@ import type {
   ReviewActionInput,
   ReviewCase,
   ReviewHistoryFilter,
+  ReviewHistoryPage,
   ReviewStatus,
   Session,
 } from './types'
@@ -83,16 +84,16 @@ export function listPendingReviews(token: string): Promise<ReviewCase[]> {
 export async function listReviewHistory(
   token: string,
   filter: ReviewHistoryFilter,
-): Promise<ReviewCase[]> {
-  const statuses: ReviewStatus[] = filter === 'all'
-    ? ['approved', 'rejected', 'mistake']
-    : [filter]
-  const groups = await Promise.all(statuses.map((status) => listReviews(token, status)))
+  cursor = '',
+): Promise<ReviewHistoryPage> {
+  const query = new URLSearchParams({
+    status: filter === 'all' ? 'completed' : filter,
+    limit: '50',
+  })
+  if (cursor) query.set('cursor', cursor)
 
-  return groups.flat().sort((left, right) => {
-    const leftTime = Date.parse(left.reviewed_at || left.created_at)
-    const rightTime = Date.parse(right.reviewed_at || right.created_at)
-    return rightTime - leftTime || right.id - left.id
+  return request<ReviewHistoryPage>(`/reviews?${query.toString()}`, {
+    headers: authorized(token),
   })
 }
 

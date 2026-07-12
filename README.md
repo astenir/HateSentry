@@ -307,6 +307,31 @@ GET /api/v1/reviews?status=pending
 Authorization: Bearer <admin-token>
 ```
 
+#### 查询已处理复核历史
+
+```http
+GET /api/v1/reviews?status=completed&limit=50
+Authorization: Bearer <admin-token>
+```
+
+`status` 可使用 `completed`、`approved`、`rejected` 或 `mistake`。已处理历史按 `reviewed_at DESC, id DESC` 稳定排序，`limit` 默认 50、最大 100。存在下一页时响应包含不透明的 `next_cursor`：
+
+```json
+{
+  "items": [],
+  "next_cursor": "opaque-cursor"
+}
+```
+
+下一页请求必须在相同 `status` 下原样回传 cursor；切换状态筛选时应从第一页重新查询。跨状态使用 cursor 会返回参数错误：
+
+```http
+GET /api/v1/reviews?status=completed&limit=50&cursor=opaque-cursor
+Authorization: Bearer <admin-token>
+```
+
+待处理队列保持原有 FIFO 查询，不接受 `limit` 或 `cursor`。
+
 #### 查看单条复核记录
 ```http
 GET /api/v1/reviews/:id
@@ -679,7 +704,7 @@ VITE_API_PROXY_TARGET=http://127.0.0.1:9000 npm run dev
 
 当前 UI 覆盖管理员登录、待复核队列、单条案件详情、通过、拒绝、标记误判，以及按人工状态筛选的审核历史。历史详情会展示 AI 风险建议、策略决定、人工最终决定、复核人 ID、复核时间和备注。JWT 会话只保存在当前浏览器标签页的 `sessionStorage` 中。客户端管理、策略编辑、Webhook 管理和仪表盘仍属于后续阶段。
 
-审核历史当前面向小型应用和 MVP 数据量：选择“全部已处理”时，浏览器会分别读取 `approved`、`rejected`、`mistake` 三类完整列表并在本地按复核时间排序。服务端分页、单次 completed 查询和确定性的游标排序尚未实现；数据持续增长的部署应先补齐这些能力，再把该页面作为长期大规模审计入口。
+审核历史使用单次 `completed` 服务端查询和不透明游标分页，每页默认读取 50 条；按单一人工状态筛选时使用相同分页契约。列表查询会批量加载关联的审核请求和模型结果，避免随页面记录数增加的 N+1 查询。页面底部仅在存在 `next_cursor` 时显示“加载更多”。
 
 生产构建由 Go 服务在 `/console/` 同源提供。使用 Docker Compose 时，启动完成后直接访问：
 
@@ -703,7 +728,7 @@ npm --prefix web exec playwright install chromium
 make smoke-console-local
 ```
 
-`smoke-console-local` 会保留原有 API MVP 烟测，并额外使用真实 Chromium 从 `/console/` 登录管理员、通过真实 moderation API 创建一条 `review` 案件、在控制台批准、进入审核历史按 `approved` 筛选并查看该记录，再反查持久化后的 `approved` / `allow` 最终状态。
+`smoke-console-local` 会保留原有 API MVP 烟测，并额外使用真实 Chromium 从 `/console/` 登录管理员、通过真实 moderation API 创建一条 `review` 案件、在控制台批准、确认历史首页使用单次 `completed&limit=50` 查询、再按 `approved` 筛选并查看该记录，最后反查持久化后的 `approved` / `allow` 最终状态。
 
 ### 运行集成测试
 ```bash
@@ -801,6 +826,7 @@ make create-user
 - 管理端最近审核历史查询：`GET /api/v1/admin/moderation/results`，支持按 `decision`、`client_id`、`external_id` 过滤，默认返回 50 条，最多 100 条。
 - 管理端审核策略查询：`GET /api/v1/admin/moderation/policies`，返回当前已加载的策略版本、复核阈值、阻断阈值和默认策略标记。
 - 人工复核队列：`GET /api/v1/reviews?status=pending`。
+- 已处理复核历史：`GET /api/v1/reviews?status=completed&limit=50`，支持 `approved`、`rejected`、`mistake` 单状态过滤及不透明游标分页。
 - 单条复核记录查询：`GET /api/v1/reviews/:id`。
 - 复核与审核统计：`GET /api/v1/reviews/stats`。
 - 复核处理接口：`POST /api/v1/reviews/:id/approve`、`reject`、`mark-mistake`。

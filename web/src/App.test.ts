@@ -56,7 +56,7 @@ describe('App authentication boundary', () => {
     sessionStorage.clear()
     sessionStorage.setItem('hatesentry-operator-session', JSON.stringify(session))
     mockedList.mockResolvedValue([pendingCase])
-    mockedHistory.mockResolvedValue([approvedCase])
+    mockedHistory.mockResolvedValue({ items: [approvedCase] })
   })
 
   it('clears the session and returns to login after a detail 401', async () => {

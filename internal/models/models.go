@@ -118,18 +118,18 @@ type ModerationResult struct {
 
 // ReviewCase tracks human review for moderation results that need operator judgment.
 type ReviewCase struct {
-	ID            uint           `gorm:"primarykey" json:"id"`
+	ID            uint           `gorm:"primarykey;index:idx_review_cases_deleted_reviewed_cursor,priority:3;index:idx_review_cases_deleted_status_reviewed_cursor,priority:4" json:"id"`
 	CreatedAt     time.Time      `json:"created_at"`
 	UpdatedAt     time.Time      `json:"updated_at"`
-	DeletedAt     gorm.DeletedAt `gorm:"index" json:"-"`
+	DeletedAt     gorm.DeletedAt `gorm:"index;index:idx_review_cases_deleted_reviewed_cursor,priority:1;index:idx_review_cases_deleted_status_reviewed_cursor,priority:1" json:"-"`
 	RequestID     string         `gorm:"uniqueIndex;size:64;not null" json:"request_id"`
 	UserID        uint           `gorm:"not null;index" json:"user_id"`
 	ClientID      *uint          `gorm:"index" json:"client_id,omitempty"`
-	Status        string         `gorm:"size:20;not null;index;default:'pending'" json:"status"`
+	Status        string         `gorm:"size:20;not null;index;index:idx_review_cases_deleted_status_reviewed_cursor,priority:2;default:'pending'" json:"status"`
 	ReviewerID    *uint          `gorm:"index" json:"reviewer_id,omitempty"`
 	FinalDecision string         `gorm:"size:20;index" json:"final_decision,omitempty"`
 	ReviewNotes   string         `gorm:"type:text" json:"review_notes,omitempty"`
-	ReviewedAt    *time.Time     `gorm:"index" json:"reviewed_at,omitempty"`
+	ReviewedAt    *time.Time     `gorm:"index;index:idx_review_cases_deleted_reviewed_cursor,priority:2;index:idx_review_cases_deleted_status_reviewed_cursor,priority:3" json:"reviewed_at,omitempty"`
 }
 
 // WebhookDelivery stores latest callback status and retry count for a final decision.

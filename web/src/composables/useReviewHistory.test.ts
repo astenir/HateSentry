@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import { ApiError, getReview, listReviewHistory } from '@/api'
-import type { ReviewCase } from '@/types'
+import type { ReviewCase, ReviewHistoryPage } from '@/types'
 import { useReviewHistory } from './useReviewHistory'
 
 vi.mock('@/api', async (importOriginal) => {
@@ -37,8 +37,8 @@ const approvedCase: ReviewCase = {
 describe('useReviewHistory', () => {
   it('loads completed cases, selects a detail, and clears it when the filter changes', async () => {
     mockedList
-      .mockResolvedValueOnce([approvedCase])
-      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce({ items: [approvedCase] })
+      .mockResolvedValueOnce({ items: [] })
     mockedGet.mockResolvedValue(approvedCase)
     const history = useReviewHistory({ token: 'jwt', onUnauthorized: vi.fn() })
 
@@ -54,15 +54,15 @@ describe('useReviewHistory', () => {
   })
 
   it('ignores a stale list response after a newer filter resolves', async () => {
-    let resolveFirst: (value: ReviewCase[]) => void = () => undefined
+    let resolveFirst: (value: ReviewHistoryPage) => void = () => undefined
     mockedList
       .mockReturnValueOnce(new Promise((resolve) => { resolveFirst = resolve }))
-      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce({ items: [] })
     const history = useReviewHistory({ token: 'jwt', onUnauthorized: vi.fn() })
 
     const first = history.loadHistory()
     await history.setFilter('mistake')
-    resolveFirst([approvedCase])
+    resolveFirst({ items: [approvedCase] })
     await first
 
     expect(history.filter.value).toBe('mistake')
@@ -73,8 +73,8 @@ describe('useReviewHistory', () => {
   it('does not resurrect a stale detail after a history refresh', async () => {
     let resolveDetail: (value: ReviewCase) => void = () => undefined
     mockedList
-      .mockResolvedValueOnce([approvedCase])
-      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce({ items: [approvedCase] })
+      .mockResolvedValueOnce({ items: [] })
     mockedGet.mockReturnValueOnce(new Promise((resolve) => { resolveDetail = resolve }))
     const history = useReviewHistory({ token: 'jwt', onUnauthorized: vi.fn() })
 
@@ -89,6 +89,22 @@ describe('useReviewHistory', () => {
     expect(history.isLoadingDetail.value).toBe(false)
   })
 
+  it('appends the next page once and clears the cursor on the final page', async () => {
+    const secondCase = { ...approvedCase, id: 7, request_id: 'request-second' }
+    mockedList
+      .mockResolvedValueOnce({ items: [approvedCase], next_cursor: 'cursor-1' })
+      .mockResolvedValueOnce({ items: [approvedCase, secondCase] })
+    const history = useReviewHistory({ token: 'jwt', onUnauthorized: vi.fn() })
+
+    await history.loadHistory()
+    await history.loadMore()
+
+    expect(mockedList).toHaveBeenNthCalledWith(2, 'jwt', 'all', 'cursor-1')
+    expect(history.items.value.map((item) => item.id)).toEqual([8, 7])
+    expect(history.hasMore.value).toBe(false)
+    expect(history.isLoadingMore.value).toBe(false)
+  })
+
   it('ends the session when loading history returns unauthorized', async () => {
     mockedList.mockRejectedValue(new ApiError('Token expired', 401, 'UNAUTHORIZED'))
     const onUnauthorized = vi.fn()
@@ -97,5 +113,20 @@ describe('useReviewHistory', () => {
     await history.loadHistory()
 
     expect(onUnauthorized).toHaveBeenCalledOnce()
+  })
+
+  it('does not keep another filter items or cursor when the new filter fails', async () => {
+    mockedList
+      .mockResolvedValueOnce({ items: [approvedCase], next_cursor: 'approved-cursor' })
+      .mockRejectedValueOnce(new Error('筛选查询失败'))
+    const history = useReviewHistory({ token: 'jwt', onUnauthorized: vi.fn() })
+
+    await history.loadHistory()
+    await history.setFilter('rejected')
+
+    expect(history.filter.value).toBe('rejected')
+    expect(history.items.value).toEqual([])
+    expect(history.hasMore.value).toBe(false)
+    expect(history.error.value).toBe('筛选查询失败')
   })
 })

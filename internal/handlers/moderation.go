@@ -193,13 +193,15 @@ func (h *ModerationHandler) ListReviewCases(c *gin.Context) {
 		c.Request.Context(),
 		claims.UserID,
 		c.Query("status"),
+		c.Query("limit"),
+		c.Query("cursor"),
 	)
 	if err != nil {
 		apperrors.Handle(c, err)
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"items": results})
+	c.JSON(http.StatusOK, results)
 }
 
 // GetReviewCase returns one review case for operator inspection.

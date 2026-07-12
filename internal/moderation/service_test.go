@@ -1115,30 +1115,136 @@ func TestServiceListReviewCasesDefaultsToPending(t *testing.T) {
 		},
 	}, DefaultPolicy())
 
-	output, err := service.ListReviewCases(context.Background(), 7, "")
+	output, err := service.ListReviewCases(context.Background(), 7, "", "", "")
 	if err != nil {
 		t.Fatalf("ListReviewCases() error = %v", err)
 	}
 
-	if len(output) != 1 {
-		t.Fatalf("len(output) = %d, want 1", len(output))
+	if len(output.Items) != 1 {
+		t.Fatalf("len(output) = %d, want 1", len(output.Items))
 	}
-	if output[0].ID != 3 {
-		t.Fatalf("ID = %d, want 3", output[0].ID)
+	if output.Items[0].ID != 3 {
+		t.Fatalf("ID = %d, want 3", output.Items[0].ID)
 	}
-	if output[0].Status != ReviewStatusPending {
-		t.Fatalf("Status = %q, want pending", output[0].Status)
+	if output.Items[0].Status != ReviewStatusPending {
+		t.Fatalf("Status = %q, want pending", output.Items[0].Status)
 	}
-	if output[0].PolicyDecision != DecisionReview {
-		t.Fatalf("PolicyDecision = %q, want review", output[0].PolicyDecision)
+	if output.Items[0].PolicyDecision != DecisionReview {
+		t.Fatalf("PolicyDecision = %q, want review", output.Items[0].PolicyDecision)
 	}
-	if !equalStrings(output[0].Labels, []string{"harassment"}) {
-		t.Fatalf("Labels = %#v, want harassment", output[0].Labels)
+	if !equalStrings(output.Items[0].Labels, []string{"harassment"}) {
+		t.Fatalf("Labels = %#v, want harassment", output.Items[0].Labels)
 	}
 
 	repository := service.repository.(*fakeRepository)
 	if repository.reviewStatus != ReviewStatusPending {
 		t.Fatalf("repository status = %q, want pending", repository.reviewStatus)
+	}
+}
+
+func TestServiceListCompletedReviewCasesReturnsOpaqueCursor(t *testing.T) {
+	reviewedAt := time.Date(2026, 7, 12, 8, 0, 0, 0, time.UTC)
+	repository := &fakeRepository{
+		reviewCases: []StoredReviewCase{
+			{
+				Case: models.ReviewCase{
+					ID:         9,
+					RequestID:  "request-completed",
+					UserID:     7,
+					Status:     string(ReviewStatusApproved),
+					ReviewedAt: &reviewedAt,
+				},
+				Request: models.ModerationRequest{
+					RequestID: "request-completed",
+					UserID:    7,
+					Content:   "completed content",
+				},
+				Result: models.ModerationResult{
+					RequestID:     "request-completed",
+					Decision:      string(DecisionReview),
+					Labels:        `[]`,
+					PolicyVersion: "default-v1",
+				},
+			},
+		},
+		reviewNextCursor: &ReviewCaseCursor{
+			Version:    reviewCaseCursorVersion,
+			Status:     ReviewStatusCompleted,
+			ReviewedAt: reviewedAt,
+			ID:         9,
+		},
+	}
+	service := NewService(fakeAnalyzer{}, repository, DefaultPolicy())
+
+	output, err := service.ListReviewCases(
+		context.Background(),
+		7,
+		"completed",
+		"25",
+		"",
+	)
+	if err != nil {
+		t.Fatalf("ListReviewCases() error = %v", err)
+	}
+
+	if len(output.Items) != 1 || output.Items[0].ID != 9 {
+		t.Fatalf("Items = %#v, want completed case 9", output.Items)
+	}
+	if output.NextCursor == "" {
+		t.Fatal("NextCursor = empty, want opaque cursor")
+	}
+	decoded, err := decodeReviewCaseCursor(output.NextCursor, ReviewStatusCompleted)
+	if err != nil {
+		t.Fatalf("decode next cursor: %v", err)
+	}
+	if decoded.ID != 9 || !decoded.ReviewedAt.Equal(reviewedAt) {
+		t.Fatalf("decoded cursor = %#v, want reviewedAt/case 9", decoded)
+	}
+	if repository.reviewFilter.Status != ReviewStatusCompleted || repository.reviewFilter.Limit != 25 {
+		t.Fatalf("repository filter = %#v, want completed limit 25", repository.reviewFilter)
+	}
+}
+
+func TestServiceListReviewCasesValidatesPagination(t *testing.T) {
+	service := NewService(fakeAnalyzer{}, &fakeRepository{}, DefaultPolicy())
+	reviewedAt := time.Date(2026, 7, 12, 8, 0, 0, 0, time.UTC)
+	approvedCursor, err := encodeReviewCaseCursor(ReviewCaseCursor{
+		Version:    reviewCaseCursorVersion,
+		Status:     ReviewStatusApproved,
+		ReviewedAt: reviewedAt,
+		ID:         9,
+	})
+	if err != nil {
+		t.Fatalf("encode approved cursor: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		status string
+		limit  string
+		cursor string
+		want   string
+	}{
+		{name: "pending pagination", status: "pending", limit: "10", want: "only supported"},
+		{name: "invalid cursor", status: "completed", cursor: "not-base64", want: "cursor is invalid"},
+		{name: "cursor status mismatch", status: "mistake", cursor: approvedCursor, want: "cursor is invalid"},
+		{name: "large limit", status: "completed", limit: "101", want: "must not exceed 100"},
+		{name: "unknown status", status: "done", want: "status must be"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := service.ListReviewCases(
+				context.Background(),
+				7,
+				tt.status,
+				tt.limit,
+				tt.cursor,
+			)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("ListReviewCases() error = %v, want %q", err, tt.want)
+			}
+		})
 	}
 }
 
@@ -2342,6 +2448,8 @@ type fakeRepository struct {
 	externalID                      string
 	requestID                       string
 	reviewStatus                    ReviewStatus
+	reviewFilter                    ReviewCaseFilter
+	reviewNextCursor                *ReviewCaseCursor
 	caseID                          uint
 	webhookDeliveryID               uint
 	webhookDeliveryStatus           WebhookDeliveryStatus
@@ -2578,13 +2686,14 @@ func (r *fakeRepository) UpdateWebhookDeliveryAttempt(
 
 func (r *fakeRepository) ListReviewCases(
 	ctx context.Context,
-	status ReviewStatus,
-) ([]StoredReviewCase, error) {
+	filter ReviewCaseFilter,
+) (StoredReviewCasePage, error) {
 	if r.err != nil {
-		return nil, r.err
+		return StoredReviewCasePage{}, r.err
 	}
-	r.reviewStatus = status
-	return r.reviewCases, nil
+	r.reviewStatus = filter.Status
+	r.reviewFilter = filter
+	return StoredReviewCasePage{Items: r.reviewCases, NextCursor: r.reviewNextCursor}, nil
 }
 
 func (r *fakeRepository) GetReviewCase(ctx context.Context, caseID uint) (StoredReviewCase, error) {

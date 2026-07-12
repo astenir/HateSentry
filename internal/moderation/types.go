@@ -13,10 +13,11 @@ const (
 type ReviewStatus string
 
 const (
-	ReviewStatusPending  ReviewStatus = "pending"
-	ReviewStatusApproved ReviewStatus = "approved"
-	ReviewStatusRejected ReviewStatus = "rejected"
-	ReviewStatusMistake  ReviewStatus = "mistake"
+	ReviewStatusPending   ReviewStatus = "pending"
+	ReviewStatusApproved  ReviewStatus = "approved"
+	ReviewStatusRejected  ReviewStatus = "rejected"
+	ReviewStatusMistake   ReviewStatus = "mistake"
+	ReviewStatusCompleted ReviewStatus = "completed"
 )
 
 // WebhookDeliveryStatus is the persisted status of a final-decision callback.

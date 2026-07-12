@@ -20,9 +20,12 @@ const {
   selected,
   filter,
   isLoading,
+  isLoadingMore,
   isLoadingDetail,
+  hasMore,
   error,
   loadHistory,
+  loadMore,
   setFilter,
   selectReview,
 } = useReviewHistory({
@@ -51,7 +54,10 @@ function handleFilter(filterValue: ReviewHistoryFilter): void {
         :items="items"
         :selected-id="selected?.id"
         :loading="isLoading"
+        :loading-more="isLoadingMore"
+        :has-more="hasMore"
         @select="selectReview"
+        @load-more="loadMore"
       />
       <ReviewDetail
         context="history"

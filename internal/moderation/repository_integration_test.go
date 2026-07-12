@@ -5,6 +5,7 @@ package moderation
 import (
 	"context"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -79,11 +80,11 @@ func TestGormRepositoryReviewWorkflowIntegration(t *testing.T) {
 		t.Fatal("review case id was not populated")
 	}
 
-	cases, err := repository.ListReviewCases(ctx, ReviewStatusPending)
+	page, err := repository.ListReviewCases(ctx, ReviewCaseFilter{Status: ReviewStatusPending})
 	if err != nil {
 		t.Fatalf("ListReviewCases() error = %v", err)
 	}
-	if !containsReviewCase(cases, requestID) {
+	if !containsReviewCase(page.Items, requestID) {
 		t.Fatalf("pending review cases did not include request %q", requestID)
 	}
 
@@ -141,6 +142,123 @@ func TestGormRepositoryReviewWorkflowIntegration(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "Review case is already finalized") {
 		t.Fatalf("FinalizeReviewCase() second call error = %q, want already finalized", err.Error())
+	}
+}
+
+func TestGormRepositoryCompletedReviewPaginationIntegration(t *testing.T) {
+	dsn := os.Getenv("HATESENTRY_TEST_DSN")
+	if strings.TrimSpace(dsn) == "" {
+		t.Skip("HATESENTRY_TEST_DSN is required for integration repository tests")
+	}
+
+	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+	if err := db.AutoMigrate(
+		&models.User{},
+		&models.ModerationRequest{},
+		&models.ModerationResult{},
+		&models.ReviewCase{},
+	); err != nil {
+		t.Fatalf("auto migrate test database: %v", err)
+	}
+
+	ctx := context.Background()
+	repository := NewGormRepository(db)
+	user := createIntegrationUser(t, ctx, db, "review-pagination")
+	prefix := uuid.New().String()
+	baseTime := time.Date(2099, 7, 12, 8, 0, 0, 0, time.UTC)
+	statuses := []ReviewStatus{ReviewStatusApproved, ReviewStatusRejected, ReviewStatusMistake}
+	requestIDs := make([]string, 0, len(statuses))
+
+	t.Cleanup(func() {
+		db.Unscoped().Where("request_id LIKE ?", prefix+"%").Delete(&models.ReviewCase{})
+		db.Unscoped().Where("request_id LIKE ?", prefix+"%").Delete(&models.ModerationResult{})
+		db.Unscoped().Where("request_id LIKE ?", prefix+"%").Delete(&models.ModerationRequest{})
+		db.Unscoped().Delete(&models.User{}, user.ID)
+	})
+
+	for index, status := range statuses {
+		requestID := prefix + "-" + strconv.Itoa(index)
+		requestIDs = append(requestIDs, requestID)
+		reviewedAt := baseTime.Add(-time.Duration(index) * time.Minute)
+		request := models.ModerationRequest{
+			RequestID: requestID,
+			UserID:    user.ID,
+			Content:   "pagination fixture " + strconv.Itoa(index),
+			Source:    "integration",
+			Status:    "completed",
+		}
+		result := models.ModerationResult{
+			RequestID:     requestID,
+			UserID:        user.ID,
+			Provider:      "test-provider",
+			Model:         "test-model",
+			RiskScore:     0.6,
+			Labels:        `[]`,
+			Decision:      string(DecisionReview),
+			Reason:        "pagination fixture",
+			PolicyVersion: "default-v1",
+		}
+		reviewCase := models.ReviewCase{
+			RequestID:     requestID,
+			UserID:        user.ID,
+			Status:        string(status),
+			FinalDecision: string(DecisionAllow),
+			ReviewedAt:    &reviewedAt,
+		}
+		if err := db.WithContext(ctx).Create(&request).Error; err != nil {
+			t.Fatalf("create request %d: %v", index, err)
+		}
+		if err := db.WithContext(ctx).Create(&result).Error; err != nil {
+			t.Fatalf("create result %d: %v", index, err)
+		}
+		if err := db.WithContext(ctx).Create(&reviewCase).Error; err != nil {
+			t.Fatalf("create review case %d: %v", index, err)
+		}
+	}
+
+	queryCount := 0
+	callbackName := "hatesentry:count-review-pagination-queries"
+	if err := db.Callback().Query().Before("gorm:query").Register(callbackName, func(*gorm.DB) {
+		queryCount++
+	}); err != nil {
+		t.Fatalf("register query counter: %v", err)
+	}
+	firstPage, err := repository.ListReviewCases(ctx, ReviewCaseFilter{
+		Status: ReviewStatusCompleted,
+		Limit:  2,
+	})
+	if removeErr := db.Callback().Query().Remove(callbackName); removeErr != nil {
+		t.Fatalf("remove query counter: %v", removeErr)
+	}
+	if err != nil {
+		t.Fatalf("ListReviewCases(first page) error = %v", err)
+	}
+	if queryCount != 3 {
+		t.Fatalf("completed page query count = %d, want 3 batched queries", queryCount)
+	}
+	if len(firstPage.Items) != 2 || firstPage.NextCursor == nil {
+		t.Fatalf("first page = %#v, want 2 items and next cursor", firstPage)
+	}
+	if firstPage.Items[0].Case.RequestID != requestIDs[0] || firstPage.Items[1].Case.RequestID != requestIDs[1] {
+		t.Fatalf("first page order = %q, %q", firstPage.Items[0].Case.RequestID, firstPage.Items[1].Case.RequestID)
+	}
+
+	secondPage, err := repository.ListReviewCases(ctx, ReviewCaseFilter{
+		Status: ReviewStatusCompleted,
+		Limit:  2,
+		Cursor: firstPage.NextCursor,
+	})
+	if err != nil {
+		t.Fatalf("ListReviewCases(second page) error = %v", err)
+	}
+	if len(secondPage.Items) != 1 || secondPage.NextCursor != nil {
+		t.Fatalf("second page = %#v, want final single item", secondPage)
+	}
+	if secondPage.Items[0].Case.RequestID != requestIDs[2] {
+		t.Fatalf("second page request = %q, want %q", secondPage.Items[0].Case.RequestID, requestIDs[2])
 	}
 }
 

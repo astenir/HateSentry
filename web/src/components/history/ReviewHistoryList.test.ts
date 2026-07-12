@@ -25,7 +25,13 @@ const item: ReviewCase = {
 describe('ReviewHistoryList', () => {
   it('shows decision trace and emits the selected case', async () => {
     const wrapper = mount(ReviewHistoryList, {
-      props: { items: [item], selectedId: item.id, loading: false },
+      props: {
+        items: [item],
+        selectedId: item.id,
+        loading: false,
+        loadingMore: false,
+        hasMore: true,
+      },
     })
 
     expect(wrapper.text()).toContain('策略 review → 人工 allow')
@@ -34,6 +40,9 @@ describe('ReviewHistoryList', () => {
 
     await wrapper.get('.history-item').trigger('click')
     expect(wrapper.emitted('select')).toEqual([[item.id]])
+
+    await wrapper.get('.pagination-footer button').trigger('click')
+    expect(wrapper.emitted('loadMore')).toHaveLength(1)
   })
 
   it('distinguishes rejected and mistake outcomes', () => {
@@ -44,6 +53,8 @@ describe('ReviewHistoryList', () => {
           { ...item, id: 10, status: 'mistake', final_decision: 'allow' },
         ],
         loading: false,
+        loadingMore: false,
+        hasMore: false,
       },
     })
 
@@ -51,5 +62,6 @@ describe('ReviewHistoryList', () => {
     expect(wrapper.text()).toContain('人工 block')
     expect(wrapper.text()).toContain('误判')
     expect(wrapper.text()).toContain('人工 allow')
+    expect(wrapper.text()).toContain('已加载全部记录')
   })
 })

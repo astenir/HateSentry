@@ -46,42 +46,36 @@ describe('review console API client', () => {
     )
   })
 
-  it('combines completed review statuses and sorts them by review time', async () => {
-    const fetchMock = vi.fn().mockImplementation((url: string) => {
-      const status = new URL(url, 'http://console.local').searchParams.get('status')
-      const items = status === 'approved'
-        ? [{ id: 1, reviewed_at: '2026-07-12T09:00:00Z', created_at: '2026-07-12T07:00:00Z' }]
-        : status === 'rejected'
-          ? [{ id: 2, reviewed_at: '2026-07-12T09:00:00Z', created_at: '2026-07-12T07:30:00Z' }]
-          : []
-      return Promise.resolve(new Response(JSON.stringify({ items }), { status: 200 }))
-    })
+  it('loads all completed reviews through one cursor-paginated request', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ items: [], next_cursor: 'cursor-3' }), { status: 200 }),
+    )
     vi.stubGlobal('fetch', fetchMock)
 
-    const history = await listReviewHistory('jwt-token', 'all')
+    const history = await listReviewHistory('jwt-token', 'all', 'cursor-2')
 
-    expect(fetchMock).toHaveBeenCalledTimes(3)
-    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
-      '/api/v1/reviews?status=approved',
-      '/api/v1/reviews?status=rejected',
-      '/api/v1/reviews?status=mistake',
-    ])
-    expect(history.map((item) => item.id)).toEqual([2, 1])
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/v1/reviews?status=completed&limit=50&cursor=cursor-2',
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: 'Bearer jwt-token' }),
+      }),
+    )
+    expect(history.next_cursor).toBe('cursor-3')
   })
 
-  it('does not return partial all-history results when one status request fails', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockImplementation((url: string) => {
-      const failed = url.includes('status=rejected')
-      return Promise.resolve(new Response(
-        JSON.stringify(failed ? { message: '历史查询失败' } : { items: [] }),
-        { status: failed ? 503 : 200 },
-      ))
-    }))
+  it('uses the selected completed status without client-side aggregation', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ items: [] }), { status: 200 }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
 
-    await expect(listReviewHistory('jwt-token', 'all')).rejects.toMatchObject({
-      message: '历史查询失败',
-      status: 503,
-    })
+    await listReviewHistory('jwt-token', 'mistake')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/v1/reviews?status=mistake&limit=50',
+      expect.any(Object),
+    )
   })
 
   it('preserves conflict status and code for concurrent review handling', async () => {

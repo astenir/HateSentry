@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 
@@ -38,7 +39,7 @@ func TestUserScopedResultQueryFiltersByUserAndRequestID(t *testing.T) {
 func TestReviewCaseListQueryFiltersByStatus(t *testing.T) {
 	db := openDryRunDB(t)
 
-	stmt := reviewCaseListQuery(db, ReviewStatusPending).
+	stmt := reviewCaseListQuery(db, ReviewCaseFilter{Status: ReviewStatusPending}).
 		Find(&models.ReviewCase{}).
 		Statement
 
@@ -53,6 +54,35 @@ func TestReviewCaseListQueryFiltersByStatus(t *testing.T) {
 	wantVars := []interface{}{string(ReviewStatusPending)}
 	if !reflect.DeepEqual(stmt.Vars, wantVars) {
 		t.Fatalf("Vars = %#v, want %#v", stmt.Vars, wantVars)
+	}
+}
+
+func TestCompletedReviewCaseListQueryUsesStableCursorPagination(t *testing.T) {
+	db := openDryRunDB(t)
+	reviewedAt := time.Date(2026, 7, 12, 8, 0, 0, 0, time.UTC)
+
+	stmt := reviewCaseListQuery(db, ReviewCaseFilter{
+		Status: ReviewStatusCompleted,
+		Limit:  50,
+		Cursor: &ReviewCaseCursor{
+			Version:    reviewCaseCursorVersion,
+			Status:     ReviewStatusCompleted,
+			ReviewedAt: reviewedAt,
+			ID:         42,
+		},
+	}).Find(&models.ReviewCase{}).Statement
+
+	sql := stmt.SQL.String()
+	for _, want := range []string{
+		"status IN",
+		"reviewed_at IS NOT NULL",
+		"reviewed_at < ? OR (reviewed_at = ? AND id < ?)",
+		"ORDER BY reviewed_at DESC, id DESC",
+		"LIMIT 51",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("SQL = %q, want %q", sql, want)
+		}
 	}
 }
 

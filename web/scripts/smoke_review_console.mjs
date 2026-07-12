@@ -59,7 +59,20 @@ try {
   await page.getByText('复核结果已保存，待处理队列已更新。').waitFor()
   await page.getByText('人工最终决定：allow').waitFor()
 
+  const completedHistoryResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url())
+    return url.pathname === '/api/v1/reviews'
+      && url.searchParams.get('status') === 'completed'
+  })
   await page.getByRole('button', { name: '审核历史' }).click()
+  const completedResponse = await completedHistoryResponse
+  if (!completedResponse.ok()) {
+    throw new Error(`completed history request failed with ${completedResponse.status()}`)
+  }
+  const completedURL = new URL(completedResponse.url())
+  if (completedURL.searchParams.get('limit') !== '50') {
+    throw new Error(`completed history limit = ${completedURL.searchParams.get('limit')}, want 50`)
+  }
   await page.getByRole('heading', { name: '审核历史', exact: true }).waitFor()
   await page.getByLabel('人工状态').selectOption('approved')
   const historyContent = page.getByText(content, { exact: true })
@@ -89,6 +102,7 @@ try {
     decision: moderation.decision,
     final_decision: result.final_decision,
     history_filter: 'approved',
+    history_query: 'completed',
     request_id: moderation.request_id,
     review_status: result.review_status,
   }, null, 2)}\n`)

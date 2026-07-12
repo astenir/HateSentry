@@ -5,10 +5,13 @@ defineProps<{
   items: readonly ReviewCase[]
   selectedId?: number
   loading: boolean
+  loadingMore: boolean
+  hasMore: boolean
 }>()
 
 const emit = defineEmits<{
   select: [id: number]
+  loadMore: []
 }>()
 
 const dateFormatter = new Intl.DateTimeFormat('zh-CN', {
@@ -67,6 +70,17 @@ function formatDate(value: string): string {
         </button>
       </li>
     </ol>
+    <div v-if="!loading && items.length > 0" class="pagination-footer">
+      <button
+        v-if="hasMore"
+        type="button"
+        :disabled="loadingMore"
+        @click="emit('loadMore')"
+      >
+        {{ loadingMore ? '正在加载…' : '加载更多' }}
+      </button>
+      <span v-else>已加载全部记录</span>
+    </div>
   </section>
 </template>
 
@@ -139,5 +153,17 @@ function formatDate(value: string): string {
 
 .item-operator {
   @apply mt-1 text-xs text-[#758078];
+}
+
+.pagination-footer {
+  @apply border-t border-[#d8d8cd] p-3 text-center;
+}
+
+.pagination-footer button {
+  @apply min-h-11 w-full rounded-xl border border-[#c7cabf] bg-white px-4 text-sm font-semibold text-[#334037] transition hover:bg-[#f8f7f1] focus:outline-none focus:ring-4 focus:ring-[#456b4d]/15 disabled:cursor-wait disabled:opacity-50;
+}
+
+.pagination-footer span {
+  @apply text-xs text-[#758078];
 }
 </style>

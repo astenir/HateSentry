@@ -522,28 +522,70 @@ type statsCountQuery struct {
 // ListReviewCases retrieves review cases by workflow status.
 func (r *GormRepository) ListReviewCases(
 	ctx context.Context,
-	status ReviewStatus,
-) ([]StoredReviewCase, error) {
+	filter ReviewCaseFilter,
+) (StoredReviewCasePage, error) {
 	if r == nil || r.db == nil {
-		return nil, apperrors.ConfigurationError("moderation database is not configured")
+		return StoredReviewCasePage{}, apperrors.ConfigurationError("moderation database is not configured")
 	}
 
+	db := r.db.WithContext(ctx)
 	var cases []models.ReviewCase
-	if err := reviewCaseListQuery(r.db.WithContext(ctx), status).
+	if err := reviewCaseListQuery(db, filter).
 		Find(&cases).Error; err != nil {
-		return nil, apperrors.DatabaseError(err, "failed to list review cases")
+		return StoredReviewCasePage{}, apperrors.DatabaseError(err, "failed to list review cases")
+	}
+	if len(cases) == 0 {
+		return StoredReviewCasePage{Items: []StoredReviewCase{}}, nil
+	}
+
+	page := StoredReviewCasePage{}
+	if filter.Limit > 0 && len(cases) > filter.Limit {
+		cases = cases[:filter.Limit]
+		last := cases[len(cases)-1]
+		if last.ReviewedAt == nil {
+			return StoredReviewCasePage{}, apperrors.Internal("completed review case is missing reviewed_at")
+		}
+		page.NextCursor = &ReviewCaseCursor{
+			Version:    reviewCaseCursorVersion,
+			Status:     filter.Status,
+			ReviewedAt: *last.ReviewedAt,
+			ID:         last.ID,
+		}
+	}
+
+	requestIDs := make([]string, 0, len(cases))
+	for _, reviewCase := range cases {
+		requestIDs = append(requestIDs, reviewCase.RequestID)
+	}
+
+	requestsByID, err := loadModerationRequestsByID(ctx, db, requestIDs)
+	if err != nil {
+		return StoredReviewCasePage{}, err
+	}
+	resultsByID, err := loadModerationResultsByID(ctx, db, requestIDs)
+	if err != nil {
+		return StoredReviewCasePage{}, err
 	}
 
 	storedCases := make([]StoredReviewCase, 0, len(cases))
 	for _, reviewCase := range cases {
-		stored, err := r.loadStoredReviewCase(ctx, reviewCase)
-		if err != nil {
-			return nil, err
+		request, found := requestsByID[reviewCase.RequestID]
+		if !found {
+			return StoredReviewCasePage{}, apperrors.RecordNotFound("Moderation request not found")
 		}
-		storedCases = append(storedCases, stored)
+		result, found := resultsByID[reviewCase.RequestID]
+		if !found {
+			return StoredReviewCasePage{}, apperrors.RecordNotFound("Moderation result not found")
+		}
+		storedCases = append(storedCases, StoredReviewCase{
+			Case:    reviewCase,
+			Request: request,
+			Result:  result,
+		})
 	}
 
-	return storedCases, nil
+	page.Items = storedCases
+	return page, nil
 }
 
 // GetReviewCase retrieves one review case with its moderation request/result details.
@@ -673,6 +715,26 @@ func loadModerationRequestsByID(
 	return requestsByID, nil
 }
 
+func loadModerationResultsByID(
+	ctx context.Context,
+	db *gorm.DB,
+	requestIDs []string,
+) (map[string]models.ModerationResult, error) {
+	var results []models.ModerationResult
+	if err := db.WithContext(ctx).
+		Where("request_id IN ?", requestIDs).
+		Find(&results).Error; err != nil {
+		return nil, apperrors.DatabaseError(err, "failed to load moderation results")
+	}
+
+	resultsByID := make(map[string]models.ModerationResult, len(results))
+	for _, result := range results {
+		resultsByID[result.RequestID] = result
+	}
+
+	return resultsByID, nil
+}
+
 func loadReviewCasesByRequestID(
 	ctx context.Context,
 	db *gorm.DB,
@@ -730,10 +792,39 @@ func isDuplicateKeyError(err error) bool {
 		strings.Contains(message, "duplicate key")
 }
 
-func reviewCaseListQuery(db *gorm.DB, status ReviewStatus) *gorm.DB {
-	return db.
-		Where("status = ?", string(status)).
-		Order("created_at ASC")
+func reviewCaseListQuery(db *gorm.DB, filter ReviewCaseFilter) *gorm.DB {
+	if filter.Status == ReviewStatusPending {
+		return db.
+			Where("status = ?", string(ReviewStatusPending)).
+			Order("created_at ASC, id ASC")
+	}
+
+	query := db.Where("reviewed_at IS NOT NULL")
+	if filter.Status == ReviewStatusCompleted {
+		query = query.Where(
+			"status IN ?",
+			[]string{
+				string(ReviewStatusApproved),
+				string(ReviewStatusRejected),
+				string(ReviewStatusMistake),
+			},
+		)
+	} else {
+		query = query.Where("status = ?", string(filter.Status))
+	}
+	if filter.Cursor != nil {
+		query = query.Where(
+			"reviewed_at < ? OR (reviewed_at = ? AND id < ?)",
+			filter.Cursor.ReviewedAt,
+			filter.Cursor.ReviewedAt,
+			filter.Cursor.ID,
+		)
+	}
+	if filter.Limit > 0 {
+		query = query.Limit(filter.Limit + 1)
+	}
+
+	return query.Order("reviewed_at DESC, id DESC")
 }
 
 func reviewCaseByIDQuery(db *gorm.DB, caseID uint) *gorm.DB {
