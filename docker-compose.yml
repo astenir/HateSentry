@@ -2,21 +2,25 @@ services:
   # HateSentry API
   hatesentry:
     build: .
+    image: hatesentry:${APP_VERSION:-dev}
     container_name: hatesentry-api
     ports:
       - "8080:8080"
     environment:
       - DB_HOST=mysql
       - DB_PORT=3306
-      - DB_USERNAME=root
-      - DB_PASSWORD=password
-      - DB_DATABASE=hatesentry
+      - DB_USERNAME=${DB_USERNAME:-hatesentry}
+      - DB_PASSWORD=${DB_PASSWORD:-hatesentry}
+      - DB_DATABASE=${DB_DATABASE:-hatesentry}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
       - RABBITMQ_HOST=rabbitmq
       - RABBITMQ_PORT=5672
-      - RABBITMQ_USERNAME=guest
-      - RABBITMQ_PASSWORD=guest
+      - RABBITMQ_USERNAME=${RABBITMQ_USERNAME:-guest}
+      - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD:-guest}
+      - SERVER_MODE=${SERVER_MODE:-debug}
+      - APP_VERSION=${APP_VERSION:-dev}
       - ADMIN_BOOTSTRAP_TOKEN=${ADMIN_BOOTSTRAP_TOKEN:-}
       - JWT_SECRET=${JWT_SECRET:-dev-jwt-secret-change-me}
       - AI_PROVIDER=${AI_PROVIDER:-openai}
@@ -45,12 +49,12 @@ services:
     image: mysql:8.0
     container_name: hatesentry-mysql
     environment:
-      - MYSQL_ROOT_PASSWORD=password
-      - MYSQL_DATABASE=hatesentry
-      - MYSQL_USER=hatesentry
-      - MYSQL_PASSWORD=hatesentry
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-password}
+      - MYSQL_DATABASE=${DB_DATABASE:-hatesentry}
+      - MYSQL_USER=${DB_USERNAME:-hatesentry}
+      - MYSQL_PASSWORD=${DB_PASSWORD:-hatesentry}
     ports:
-      - "3306:3306"
+      - "127.0.0.1:3306:3306"
     volumes:
       - mysql-data:/var/lib/mysql
     networks:
@@ -67,14 +71,22 @@ services:
     image: redis:7-alpine
     container_name: hatesentry-redis
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+    command: >-
+      sh -c 'if [ -n "$$REDIS_PASSWORD" ]; then
+        exec redis-server --requirepass "$$REDIS_PASSWORD";
+      else
+        exec redis-server;
+      fi'
     volumes:
       - redis-data:/data
     networks:
       - hatesentry-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "if [ -n \"$$REDIS_PASSWORD\" ]; then REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping; else redis-cli ping; fi"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -84,11 +96,11 @@ services:
     image: rabbitmq:3-management-alpine
     container_name: hatesentry-rabbitmq
     ports:
-      - "5672:5672"
-      - "15672:15672"
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
     environment:
-      - RABBITMQ_DEFAULT_USER=guest
-      - RABBITMQ_DEFAULT_PASS=guest
+      - RABBITMQ_DEFAULT_USER=${RABBITMQ_USERNAME:-guest}
+      - RABBITMQ_DEFAULT_PASS=${RABBITMQ_PASSWORD:-guest}
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
     networks:
@@ -124,6 +136,25 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
+
+  # Deterministic OpenAI-compatible provider used only by release smoke tests.
+  openai-stub:
+    profiles:
+      - release-smoke
+    image: python:3.13-alpine
+    container_name: hatesentry-openai-stub
+    environment:
+      - PORT=8000
+    volumes:
+      - ./scripts/openai_stub_server.py:/app/openai_stub_server.py:ro
+    networks:
+      - hatesentry-network
+    command: ["python", "/app/openai_stub_server.py"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 10
 
 volumes:
   mysql-data:

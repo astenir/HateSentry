@@ -12,6 +12,7 @@ import (
 
 func TestHealthReportsMissingRabbitMQManager(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	t.Setenv("APP_VERSION", "0.2.0")
 
 	handler := NewHealthHandler(nil)
 	engine := gin.New()
@@ -32,6 +33,9 @@ func TestHealthReportsMissingRabbitMQManager(t *testing.T) {
 	}
 	if response.Status != "unhealthy" {
 		t.Fatalf("Status = %q, want unhealthy", response.Status)
+	}
+	if response.Version != "0.2.0" {
+		t.Fatalf("Version = %q, want 0.2.0", response.Version)
 	}
 	rabbitStatus := response.Services["rabbitmq"]
 	if !strings.Contains(rabbitStatus, "RabbitMQ manager is not configured") {

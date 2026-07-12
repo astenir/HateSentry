@@ -17,7 +17,23 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MYSQL_ROOT_PASSWORD = os.getenv("HATESENTRY_SMOKE_MYSQL_PASSWORD", "password")
+MYSQL_ROOT_PASSWORD = os.getenv(
+    "HATESENTRY_SMOKE_MYSQL_PASSWORD",
+    os.getenv("MYSQL_ROOT_PASSWORD", "password"),
+)
+REDIS_PASSWORD = os.getenv(
+    "HATESENTRY_SMOKE_REDIS_PASSWORD",
+    os.getenv("REDIS_PASSWORD", ""),
+)
+RABBITMQ_USERNAME = os.getenv(
+    "HATESENTRY_SMOKE_RABBITMQ_USERNAME",
+    os.getenv("RABBITMQ_USERNAME", "guest"),
+)
+RABBITMQ_PASSWORD = os.getenv(
+    "HATESENTRY_SMOKE_RABBITMQ_PASSWORD",
+    os.getenv("RABBITMQ_PASSWORD", "guest"),
+)
+APP_VERSION = os.getenv("HATESENTRY_SMOKE_APP_VERSION", "0.2.0")
 ADMIN_EMAIL = "smoke-admin@example.test"
 ADMIN_PASSWORD = "password123"
 ADMIN_BOOTSTRAP_TOKEN = "smoke-bootstrap-token"
@@ -32,9 +48,13 @@ def main():
     openai_server = None
     failed = False
     database_name = "hatesentry_smoke_" + uuid.uuid4().hex[:12]
+    restored_database_name = database_name + "_restore"
 
     try:
-        run(["docker", "compose", "up", "-d", "mysql", "redis", "rabbitmq"])
+        run(
+            ["docker", "compose", "up", "-d", "mysql", "redis", "rabbitmq"],
+            env=smoke_compose_environment(),
+        )
         wait_for_mysql()
         wait_for_redis()
         wait_for_rabbitmq()
@@ -50,6 +70,10 @@ def main():
         run_smoke_workflow(api_port)
         if console_smoke_enabled():
             run_console_workflow(api_port)
+        verify_database_backup_restore(
+            database_name,
+            restored_database_name,
+        )
     except BaseException:
         failed = True
         raise
@@ -61,7 +85,15 @@ def main():
         if openai_server is not None:
             openai_server.shutdown()
             openai_server.server_close()
-        drop_database(database_name)
+        restored_cleaned = drop_database(restored_database_name)
+        source_cleaned = drop_database(database_name)
+        if api_log_path is not None:
+            try:
+                os.remove(api_log_path)
+            except FileNotFoundError:
+                pass
+        if not (restored_cleaned and source_cleaned) and not failed:
+            raise SystemExit("smoke database cleanup failed")
 
 
 def start_openai_stub():
@@ -69,6 +101,21 @@ def start_openai_stub():
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server
+
+
+def smoke_compose_environment():
+    env = os.environ.copy()
+    env.update(
+        {
+            "MYSQL_ROOT_PASSWORD": MYSQL_ROOT_PASSWORD,
+            "DB_USERNAME": "hatesentry_smoke",
+            "DB_PASSWORD": "smoke-app-password",
+            "REDIS_PASSWORD": REDIS_PASSWORD,
+            "RABBITMQ_USERNAME": RABBITMQ_USERNAME,
+            "RABBITMQ_PASSWORD": RABBITMQ_PASSWORD,
+        }
+    )
+    return env
 
 
 class OpenAIStubHandler(BaseHTTPRequestHandler):
@@ -142,10 +189,11 @@ def start_api(database_name, api_port, openai_port):
             "DB_DATABASE": database_name,
             "REDIS_HOST": "127.0.0.1",
             "REDIS_PORT": "6379",
+            "REDIS_PASSWORD": REDIS_PASSWORD,
             "RABBITMQ_HOST": "127.0.0.1",
             "RABBITMQ_PORT": "5672",
-            "RABBITMQ_USERNAME": "guest",
-            "RABBITMQ_PASSWORD": "guest",
+            "RABBITMQ_USERNAME": RABBITMQ_USERNAME,
+            "RABBITMQ_PASSWORD": RABBITMQ_PASSWORD,
             "ADMIN_BOOTSTRAP_TOKEN": ADMIN_BOOTSTRAP_TOKEN,
             "JWT_SECRET": "local-smoke-jwt-secret",
             "AI_PROVIDER": "openai",
@@ -155,6 +203,7 @@ def start_api(database_name, api_port, openai_port):
             "LOG_LEVEL": "error",
             "LOG_FORMAT": "console",
             "MODERATION_WEBHOOK_RETRY_ENABLED": "false",
+            "APP_VERSION": APP_VERSION,
         }
     )
 
@@ -187,6 +236,14 @@ def wait_for_health(api_port):
         try:
             with urllib.request.urlopen(url, timeout=2) as response:
                 if response.getcode() == 200:
+                    payload = json.load(response)
+                    if payload.get("version") != APP_VERSION:
+                        raise SystemExit(
+                            "local API version = {!r}, want {!r}".format(
+                                payload.get("version"),
+                                APP_VERSION,
+                            )
+                        )
                     return
         except (TimeoutError, urllib.error.URLError) as err:
             last_error = str(err)
@@ -236,47 +293,179 @@ def console_smoke_enabled():
 
 def create_database(database_name):
     run(
-        [
-            "docker",
-            "compose",
-            "exec",
-            "-T",
-            "mysql",
+        mysql_root_command(
             "mysql",
             "-uroot",
-            "-p" + MYSQL_ROOT_PASSWORD,
             "-e",
             "CREATE DATABASE `{}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci".format(
                 database_name
             ),
-        ]
+        )
     )
+
+
+def mysql_root_command(*args):
+    return [
+        "docker",
+        "compose",
+        "exec",
+        "-T",
+        "mysql",
+        "sh",
+        "-c",
+        'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec "$@"',
+        "hatesentry-mysql-root",
+        *args,
+    ]
+
+
+def verify_database_backup_restore(source_database, restored_database):
+    with tempfile.TemporaryDirectory(prefix="hatesentry-release-backup-") as directory:
+        backup_path = os.path.join(directory, "backup.sql")
+        verify_database_backup_restore_with_file(
+            source_database,
+            restored_database,
+            backup_path,
+        )
+
+
+def verify_database_backup_restore_with_file(source_database, restored_database, backup_path):
+    dump_args = mysql_root_command(
+        "mysqldump",
+        "-uroot",
+        "--single-transaction",
+        "--skip-lock-tables",
+        "--no-tablespaces",
+        source_database,
+    )
+    print("+ {} > <private-temporary-backup>".format(" ".join(redact_command_args(dump_args))))
+    try:
+        with open(backup_path, "wb") as output:
+            completed = subprocess.run(
+                dump_args,
+                cwd=ROOT_DIR,
+                stdout=output,
+                stderr=subprocess.PIPE,
+                timeout=60,
+            )
+    except subprocess.TimeoutExpired:
+        raise SystemExit("database backup timed out after 60 seconds") from None
+    if completed.returncode != 0:
+        raise SystemExit("database backup failed with exit {}".format(completed.returncode))
+
+    create_database(restored_database)
+    restore_args = mysql_root_command(
+        "mysql",
+        "-uroot",
+        restored_database,
+    )
+    print("+ {} < <private-temporary-backup>".format(" ".join(redact_command_args(restore_args))))
+    try:
+        with open(backup_path, "rb") as source:
+            completed = subprocess.run(
+                restore_args,
+                cwd=ROOT_DIR,
+                stdin=source,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                timeout=60,
+            )
+    except subprocess.TimeoutExpired:
+        raise SystemExit("database restore timed out after 60 seconds") from None
+    if completed.returncode != 0:
+        raise SystemExit("database restore failed with exit {}".format(completed.returncode))
+
+    source_counts = database_table_counts(source_database)
+    restored_counts = database_table_counts(restored_database)
+    if source_counts != restored_counts:
+        raise SystemExit("restored database table counts do not match the source database")
+
+    for table in (
+        "users",
+        "client_applications",
+        "moderation_requests",
+        "moderation_results",
+        "review_cases",
+    ):
+        if source_counts.get(table, 0) < 1:
+            raise SystemExit("backup verification source table {} is unexpectedly empty".format(table))
+
+    print(json.dumps({
+        "backup_restore_verified": True,
+        "table_counts": source_counts,
+    }, indent=2, sort_keys=True))
+
+
+def database_table_counts(database_name):
+    tables = (
+        "users",
+        "client_applications",
+        "moderation_requests",
+        "moderation_results",
+        "review_cases",
+        "webhook_deliveries",
+    )
+    query = " UNION ALL ".join(
+        "SELECT '{}', COUNT(*) FROM `{}`".format(table, table)
+        for table in tables
+    )
+    args = mysql_root_command(
+        "mysql",
+        "-N",
+        "-B",
+        "-uroot",
+        database_name,
+        "-e",
+        query,
+    )
+    print("+ {} # compare release backup counts".format(" ".join(redact_command_args(args))))
+    try:
+        completed = subprocess.run(
+            args,
+            cwd=ROOT_DIR,
+            text=True,
+            capture_output=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        raise SystemExit("database count query timed out after 30 seconds") from None
+    if completed.returncode != 0:
+        raise SystemExit("database count query failed with exit {}".format(completed.returncode))
+
+    counts = {}
+    for line in completed.stdout.splitlines():
+        table, count = line.split("\t", 1)
+        counts[table] = int(count)
+    return counts
 
 
 def wait_for_mysql():
     wait_for_dependency(
         "MySQL",
-        [
-            "docker",
-            "compose",
-            "exec",
-            "-T",
-            "mysql",
+        mysql_root_command(
             "mysqladmin",
             "ping",
             "-h",
             "127.0.0.1",
             "-uroot",
-            "-p" + MYSQL_ROOT_PASSWORD,
             "--silent",
-        ],
+        ),
     )
 
 
 def wait_for_redis():
     wait_for_dependency(
         "Redis",
-        ["docker", "compose", "exec", "-T", "redis", "redis-cli", "ping"],
+        [
+            "docker",
+            "compose",
+            "exec",
+            "-T",
+            "redis",
+            "sh",
+            "-c",
+            'if [ -n "$REDIS_PASSWORD" ]; then REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli ping; else redis-cli ping; fi',
+        ],
     )
 
 
@@ -328,19 +517,13 @@ def wait_for_dependency(name, args):
 
 def drop_database(database_name):
     try:
-        run(
-            [
-                "docker",
-                "compose",
-                "exec",
-                "-T",
-                "mysql",
+        completed = run(
+            mysql_root_command(
                 "mysql",
                 "-uroot",
-                "-p" + MYSQL_ROOT_PASSWORD,
                 "-e",
                 "DROP DATABASE IF EXISTS `{}`".format(database_name),
-            ],
+            ),
             check=False,
             timeout=CLEANUP_TIMEOUT_SECONDS,
         )
@@ -351,6 +534,14 @@ def drop_database(database_name):
             ),
             file=sys.stderr,
         )
+        return False
+    if completed.returncode != 0:
+        print(
+            "warning: failed to drop smoke database {}".format(database_name),
+            file=sys.stderr,
+        )
+        return False
+    return True
 
 
 def stop_process(process):

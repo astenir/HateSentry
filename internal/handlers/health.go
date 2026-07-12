@@ -5,6 +5,7 @@ import (
 	"hatesentry/internal/database"
 	"hatesentry/internal/queue"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -25,6 +26,7 @@ func NewHealthHandler(rabbitMQManager *queue.RabbitMQManager) *HealthHandler {
 // HealthResponse represents health check response
 type HealthResponse struct {
 	Status    string            `json:"status"`
+	Version   string            `json:"version"`
 	Timestamp string            `json:"timestamp"`
 	Services  map[string]string `json:"services"`
 }
@@ -69,6 +71,7 @@ func (h *HealthHandler) Health(c *gin.Context) {
 
 	c.JSON(statusCode, HealthResponse{
 		Status:    overallStatus,
+		Version:   os.Getenv("APP_VERSION"),
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 		Services:  services,
 	})

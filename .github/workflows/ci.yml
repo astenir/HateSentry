@@ -35,6 +35,9 @@ jobs:
       - name: Run unit tests
         run: go test ./...
 
+      - name: Test release verification tools
+        run: make test-release-tools
+
       - name: Build all packages
         run: go build ./...
 
@@ -104,6 +107,55 @@ jobs:
 
       - name: Install review console dependencies
         run: npm ci --prefix web
+
+      - name: Verify release-mode Compose with fresh strong credentials
+        run: |
+          set -eu
+          release_env="$RUNNER_TEMP/hatesentry-release.env"
+          install -m 600 /dev/null "$release_env"
+          {
+            echo 'APP_VERSION=0.2.0'
+            echo 'SERVER_MODE=release'
+            echo 'JWT_SECRET=jwt-A3d9K7m2Q8x4R6t1V5z0P2n8S4w6'
+            echo 'DB_USERNAME=hatesentry_ci'
+            echo 'DB_PASSWORD=db-B4e8L2q6U0y3I7o1P5a9D3f7'
+            echo 'DB_DATABASE=hatesentry'
+            echo 'MYSQL_ROOT_PASSWORD=root-C5f9M3r7V1z4J8p2T6b0E4g8'
+            echo 'REDIS_PASSWORD=redis-D6g0N4s8W2a5K9q3U7c1F5h9'
+            echo 'RABBITMQ_USERNAME=hatesentry_queue'
+            echo 'RABBITMQ_PASSWORD=queue-E7h1P5t9X3b6L0r4V8d2G6j0'
+            echo 'ADMIN_BOOTSTRAP_TOKEN=bootstrap-F8j2Q6u0Y4c7M1s5W9e3H7k1'
+            echo 'AI_PROVIDER=openai'
+            echo 'OPENAI_API_KEY=sk-live-G9k3R7v1Z5d8N2t6X0f4J8m2'
+            echo 'OPENAI_BASE_URL=http://openai-stub:8000/v1'
+            echo 'OPENAI_MODEL=release-smoke-model'
+          } >> "$release_env"
+          trap 'docker compose --profile release-smoke --env-file "$release_env" down -v; rm -f "$release_env"' EXIT
+          RELEASE_ENV_FILE="$release_env" RELEASE_BOOTSTRAP=1 make release-preflight
+          docker compose --profile release-smoke --env-file "$release_env" up -d --build
+          for attempt in $(seq 1 30); do
+            if health=$(curl -fsS http://127.0.0.1:8080/api/v1/health 2>/dev/null); then
+              break
+            fi
+            sleep 2
+          done
+          printf '%s' "$health" | python3 -c 'import json,sys; payload=json.load(sys.stdin); assert payload["status"] == "healthy"; assert payload["version"] == "0.2.0"'
+          docker compose --env-file "$release_env" exec -T mysql sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" mysql -u"$MYSQL_USER" "$MYSQL_DATABASE" -e "SELECT 1"'
+          docker compose --env-file "$release_env" exec -T redis sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli ping'
+          docker compose --env-file "$release_env" exec -T rabbitmq sh -c 'rabbitmqctl authenticate_user "$RABBITMQ_DEFAULT_USER" "$RABBITMQ_DEFAULT_PASS"'
+          HATESENTRY_BASE_URL=http://127.0.0.1:8080 \
+          HATESENTRY_ADMIN_EMAIL=release-smoke@example.test \
+          HATESENTRY_ADMIN_PASSWORD=release-smoke-password \
+          HATESENTRY_ADMIN_BOOTSTRAP_TOKEN=bootstrap-F8j2Q6u0Y4c7M1s5W9e3H7k1 \
+          HATESENTRY_ADMIN_USERNAME=release-smoke \
+          HATESENTRY_EXPECT_DECISION=review \
+          python3 scripts/smoke_moderation_workflow.py
+          sed -i 's/^ADMIN_BOOTSTRAP_TOKEN=.*/ADMIN_BOOTSTRAP_TOKEN=/' "$release_env"
+          RELEASE_ENV_FILE="$release_env" make release-preflight
+          docker image inspect hatesentry:0.2.0 --format '{{.Id}}'
+          docker compose --profile release-smoke --env-file "$release_env" down -v
+          rm -f "$release_env"
+          trap - EXIT
 
       - name: Install Chromium
         run: npm --prefix web exec playwright install --with-deps chromium

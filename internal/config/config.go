@@ -220,6 +220,7 @@ func validateConfig(config *Config) error {
 
 func applyEnvironmentOverrides(config *Config) error {
 	overrideString("SERVER_HOST", &config.Server.Host)
+	overrideString("SERVER_MODE", &config.Server.Mode)
 	overrideString("DB_HOST", &config.Database.Host)
 	overrideString("DB_USERNAME", &config.Database.Username)
 	overrideString("DB_PASSWORD", &config.Database.Password)

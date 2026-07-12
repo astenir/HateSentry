@@ -1,4 +1,4 @@
-.PHONY: all build run clean test test-integration web-test web-build deps docker-build docker-up docker-down docker-logs verify-compose smoke-moderation smoke-mvp-local smoke-console-local install-deps
+.PHONY: all build run clean test test-integration web-test web-build test-release-tools release-preflight deps docker-build docker-up docker-down docker-logs verify-compose smoke-moderation smoke-mvp-local smoke-console-local install-deps
 
 # Variables
 BINARY_NAME=hatesentry
@@ -49,6 +49,20 @@ web-test:
 web-build:
 	@echo "Building review console..."
 	@npm --prefix web run build
+
+# Test release verification helpers without external dependencies
+test-release-tools:
+	@echo "Testing release verification tools..."
+	@python3 -m unittest discover -s scripts -p '*_test.py'
+
+# Validate a private release env file. Set RELEASE_BOOTSTRAP=1 for a fresh database.
+release-preflight:
+	@[ -n "$$RELEASE_ENV_FILE" ] || (echo "RELEASE_ENV_FILE is required" && exit 1)
+	@if [ "$$RELEASE_BOOTSTRAP" = "1" ]; then \
+		python3 scripts/release_preflight.py "$$RELEASE_ENV_FILE" --bootstrap; \
+	else \
+		python3 scripts/release_preflight.py "$$RELEASE_ENV_FILE"; \
+	fi
 
 # Run tests with coverage
 test-coverage:
